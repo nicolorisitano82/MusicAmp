@@ -7,6 +7,10 @@ final class EqView: SkinView {
     private var pressed: String?
     private var pressInside = false
     private var dragSlider: Int?   // -1 = preamp, 0...9 = bands
+    private var shadeDrag: String?  // "vol" / "bal" in shade mode
+
+    private static let shadeVol = R(61, 4, 97, 7)
+    private static let shadeBal = R(164, 4, 43, 7)
 
     private let labels = ["60HZ", "170HZ", "310HZ", "600HZ", "1KHZ", "3KHZ", "6KHZ", "12KHZ", "14KHZ", "16KHZ"]
 
@@ -18,11 +22,27 @@ final class EqView: SkinView {
     private func sliderRect(_ i: Int) -> CGRect { i < 0 ? R(21, 38, 14, 63) : R(78 + CGFloat(i) * 18, 38, 14, 63) }
     private func down(_ id: String) -> Bool { pressed == id && pressInside }
 
+    override var renderSignature: Int {
+        var h = Hasher()
+        h.combine(isActive); h.combine(ObjectIdentifier(skin)); h.combine(ctl.eqShade)
+        h.combine(ctl.bands); h.combine(ctl.preamp); h.combine(ctl.eqOn); h.combine(ctl.eqAuto)
+        h.combine(pressed); h.combine(pressInside); h.combine(dragSlider)
+        if ctl.eqShade { h.combine(ctl.volume); h.combine(ctl.balance) }
+        return h.finalize()
+    }
+
     override func render(_ r: Renderer) {
         if ctl.eqShade {
             r.blit("eq_ex", isActive ? R(0, 0, 275, 14) : R(0, 15, 275, 14), 0, 0)
             if down("close") { r.blit("eq_ex", R(11, 47, 9, 9), 264, 3) }
             if down("shade") { r.blit("eq_ex", R(1, 47, 9, 9), 254, 3) }
+            // Volume and balance thumbs (eq_ex.bmp y 30: left/center/right variants by position)
+            let v = ctl.volume / 100
+            let vx = Self.shadeVol.minX + (v * (Self.shadeVol.width - 3)).rounded()
+            r.blit("eq_ex", R(v < 1.0 / 3 ? 1 : (v < 2.0 / 3 ? 4 : 7), 30, 3, 7), vx, 4)
+            let b = (ctl.balance + 100) / 200
+            let bx = Self.shadeBal.minX + (b * (Self.shadeBal.width - 3)).rounded()
+            r.blit("eq_ex", R(b < 1.0 / 3 ? 11 : (b < 2.0 / 3 ? 14 : 17), 30, 3, 7), bx, 4)
             return
         }
         r.blit("eqmain", R(0, 0, 275, 116), 0, 0)
@@ -77,7 +97,13 @@ final class EqView: SkinView {
 
     override func hitDown(_ p: CGPoint, _ e: NSEvent) -> Bool {
         for (id, r) in buttons() where r.contains(p) { pressed = id; pressInside = true; return true }
-        if !ctl.eqShade {
+        if ctl.eqShade {
+            for (k, r) in [("vol", Self.shadeVol), ("bal", Self.shadeBal)] where r.insetBy(dx: -2, dy: -2).contains(p) {
+                shadeDrag = k
+                updateShadeDrag(p)
+                return true
+            }
+        } else {
             for i in -1..<10 where sliderRect(i).contains(p) {
                 dragSlider = i
                 updateSlider(p)
@@ -90,10 +116,16 @@ final class EqView: SkinView {
 
     override func hitDrag(_ p: CGPoint, _ e: NSEvent) {
         if dragSlider != nil { updateSlider(p); return }
+        if shadeDrag != nil { updateShadeDrag(p); return }
         if let id = pressed { pressInside = buttons().first { $0.0 == id }?.1.contains(p) ?? false }
     }
 
     override func hitUp(_ p: CGPoint, _ e: NSEvent) {
+        if shadeDrag != nil {
+            shadeDrag = nil
+            ctl.marqueeOverride = nil
+            return
+        }
         if dragSlider != nil {
             dragSlider = nil
             ctl.marqueeOverride = nil
@@ -108,6 +140,19 @@ final class EqView: SkinView {
         case "shade": ctl.toggleEQShade()
         case "close": ctl.toggleEQ()
         default: break
+        }
+    }
+
+    private func updateShadeDrag(_ p: CGPoint) {
+        if shadeDrag == "vol" {
+            ctl.volume = max(0, min(100, (p.x - Self.shadeVol.minX - 1.5) / (Self.shadeVol.width - 3) * 100))
+            ctl.marqueeOverride = "VOLUME: \(Int(ctl.volume.rounded()))%"
+        } else {
+            var b = max(-100, min(100, (p.x - Self.shadeBal.minX - 1.5) / (Self.shadeBal.width - 3) * 200 - 100))
+            if abs(b) < 15 { b = 0 }
+            ctl.balance = b
+            let pct = Int(abs(b).rounded())
+            ctl.marqueeOverride = b == 0 ? "BALANCE: CENTER" : "BALANCE: \(pct)% \(b < 0 ? "LEFT" : "RIGHT")"
         }
     }
 
@@ -128,7 +173,9 @@ final class EqView: SkinView {
     }
 
     override func cursorAreas() -> [(String, CGRect)] {
-        if ctl.eqShade { return [("eqnormal", R(0, 0, 275, 14)), ("eqclose", R(264, 3, 9, 9))] }
+        if ctl.eqShade {
+            return [("eqnormal", R(0, 0, 275, 14)), ("volbal", Self.shadeVol), ("volbal", Self.shadeBal), ("eqclose", R(264, 3, 9, 9))]
+        }
         var a: [(String, CGRect)] = [("eqnormal", R(0, 0, 275, 116)), ("eqtitle", R(0, 0, 275, 14)), ("eqclose", R(264, 3, 9, 9))]
         for i in -1..<10 { a.append(("eqslid", sliderRect(i))) }
         return a

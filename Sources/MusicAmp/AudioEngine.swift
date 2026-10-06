@@ -15,6 +15,10 @@ final class AudioEngine {
     private(set) var file: AVAudioFile?
     private(set) var bitrate = 0
     var onFinish: (() -> Void)?
+    /// Called after any transport change (load, play, pause, stop, seek).
+    var onChange: (() -> Void)?
+    /// FFT/waveform analysis is skipped when nobody is looking at the visualizer.
+    var analysisEnabled = true
 
     private var startFrame: AVAudioFramePosition = 0
     private var pausedTime: Double = 0
@@ -82,12 +86,14 @@ final class AudioEngine {
         engine.connect(eq, to: engine.mainMixerNode, format: f.processingFormat)
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         bitrate = duration > 0 ? Int((Double(size) * 8 / duration / 1000).rounded()) : 0
+        onChange?()
     }
 
     func unload() {
         stop()
         file = nil
         bitrate = 0
+        onChange?()
     }
 
     func play() {
@@ -105,6 +111,7 @@ final class AudioEngine {
             player.play()
             state = .playing
         }
+        onChange?()
     }
 
     func pause() {
@@ -112,7 +119,10 @@ final class AudioEngine {
         case .playing:
             pausedTime = currentTime
             player.pause()
+            // Release the audio hardware while idle; play() restarts the engine.
+            engine.pause()
             state = .paused
+            onChange?()
         case .paused:
             play()
         case .stopped:
@@ -123,10 +133,12 @@ final class AudioEngine {
     func stop() {
         token &+= 1
         player.stop()
+        if engine.isRunning { engine.pause() }
         state = .stopped
         startFrame = 0
         pausedTime = 0
         lastKnownTime = 0
+        onChange?()
     }
 
     func seek(to time: Double) {
@@ -140,6 +152,7 @@ final class AudioEngine {
         } else {
             pausedTime = t
         }
+        onChange?()
     }
 
     func setVolume(_ v: Double) {
@@ -205,7 +218,7 @@ final class AudioEngine {
     }
 
     private func analyze(_ buf: AVAudioPCMBuffer) {
-        guard let ch = buf.floatChannelData else { return }
+        guard analysisEnabled, let ch = buf.floatChannelData else { return }
         let n = Int(buf.frameLength)
         guard n > 0 else { return }
         let chans = max(1, Int(buf.format.channelCount))
@@ -249,7 +262,7 @@ final class AudioEngine {
             var m: Float = 0
             for k in a...min(b, half - 1) { m = max(m, mags[k]) }
             let db = 20 * log10f(max(m / Float(half), 1e-9)) + Float(i) * 0.2
-            spec[i] = max(0, min(1, (db + 62) / 56))
+            spec[i] = max(0, min(1, (db + 70) / 52))
         }
 
         lock.lock()

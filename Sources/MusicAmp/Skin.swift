@@ -35,12 +35,13 @@ final class Skin {
     var visColors: [CGColor] = Skin.defaultVisColors
     var playlist = PlaylistStyle()
     var regions: [String: [[CGPoint]]] = [:]
-    var cursors: [String: NSCursor] = [:]
+    var cursors: [String: SkinCursor] = [:]
 
     init(name: String) { self.name = name }
 
     static let sheetNames = ["main", "titlebar", "cbuttons", "numbers", "nums_ex", "text", "posbar",
-                             "volume", "balance", "shufrep", "playpaus", "monoster", "eqmain", "eq_ex", "pledit"]
+                             "volume", "balance", "shufrep", "playpaus", "monoster", "eqmain", "eq_ex", "pledit",
+                             "gen", "genex"]
     static let cursorNames = ["normal", "close", "min", "mainmenu", "titlebar", "posbar", "volbal", "volbar",
                               "songname", "winbut", "wsnormal", "wsclose", "wsmin", "wsposbar", "wswinbut",
                               "eqnormal", "eqclose", "eqslid", "eqtitle", "pnormal", "pclose", "psize",
@@ -112,7 +113,7 @@ final class Skin {
         if let f = files["pledit.txt"], let s = readText(f) { skin.parsePledit(s) }
         if let f = files["region.txt"], let s = readText(f) { skin.parseRegions(s) }
         for c in cursorNames {
-            if let f = files["\(c).cur"], let cur = loadCursor(f) { skin.cursors[c] = cur }
+            if let f = files["\(c).ani"] ?? files["\(c).cur"], let cur = SkinCursor.load(f) { skin.cursors[c] = cur }
         }
         // Some skins ship the playlist font next to the bitmaps.
         let fonts = files.filter { ["ttf", "otf"].contains(($0.key as NSString).pathExtension) }.values.compactMap { try? Data(contentsOf: $0) }
@@ -131,15 +132,6 @@ final class Skin {
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return img }
         ctx.draw(img, in: CGRect(x: 0, y: 0, width: img.width, height: img.height))
         return ctx.makeImage() ?? img
-    }
-
-    /// .cur files: ICO layout with the hotspot stored in the planes/bitcount fields.
-    static func loadCursor(_ url: URL) -> NSCursor? {
-        guard let data = try? Data(contentsOf: url), data.count > 22,
-              let img = NSImage(data: data), img.isValid else { return nil }
-        let hx = Int(data[10]) | Int(data[11]) << 8
-        let hy = Int(data[12]) | Int(data[13]) << 8
-        return NSCursor(image: img, hotSpot: NSPoint(x: hx, y: hy))
     }
 
     static func readText(_ url: URL) -> String? {

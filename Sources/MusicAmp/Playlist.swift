@@ -4,6 +4,9 @@ final class Track {
     let url: URL
     var title: String
     var duration: Double?
+    var artist: String?
+    var songTitle: String?
+    var album: String?
 
     init(url: URL) {
         self.url = url
@@ -15,10 +18,13 @@ final class Playlist {
     static let audioExtensions: Set<String> = ["mp3", "m4a", "m4b", "aac", "alac", "wav", "aif", "aiff", "aifc",
                                                "flac", "caf", "mp4", "mp2", "ac3", "3gp", "amr"]
 
-    var tracks: [Track] = []
-    var selection = Set<Int>()
+    var tracks: [Track] = [] { didSet { version &+= 1 } }
+    var selection = Set<Int>() { didSet { version &+= 1 } }
     /// Identity of the loaded track, so reorders and removals keep it.
-    var currentTrack: Track?
+    var currentTrack: Track? { didSet { version &+= 1 } }
+    /// Bumped on every change (including metadata arriving), so views know when to redraw.
+    private(set) var version = 0
+    var onCurrentMetadata: (() -> Void)?
 
     var current: Int? {
         guard let c = currentTrack else { return nil }
@@ -100,18 +106,25 @@ final class Playlist {
             let md = (try? await asset.load(.commonMetadata)) ?? []
             var artist: String?
             var title: String?
+            var album: String?
             for item in md {
                 if item.commonKey == .commonKeyArtist { artist = try? await item.load(.stringValue) }
                 if item.commonKey == .commonKeyTitle { title = try? await item.load(.stringValue) }
+                if item.commonKey == .commonKeyAlbumName { album = try? await item.load(.stringValue) }
             }
             var display: String?
             if let title, !title.isEmpty {
                 display = (artist?.isEmpty == false) ? "\(artist!) - \(title)" : title
             }
             let seconds = dur?.seconds
-            await MainActor.run { [display] in
+            await MainActor.run { [display, artist, title, album] in
                 if let d = seconds, d.isFinite, d > 0 { t.duration = d }
                 if let display { t.title = display }
+                t.artist = artist
+                t.songTitle = title
+                t.album = album
+                self.version &+= 1
+                if t === self.currentTrack { self.onCurrentMetadata?() }
             }
         }
     }

@@ -27,9 +27,9 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var volume: Double = 75 { didSet { audio.setVolume(volume) } }
     var balance: Double = 0 { didSet { audio.setBalance(balance) } }
     var eqOn = true { didSet { applyEQ() } }
-    var eqAuto = false
-    var preamp: Double = 0 { didSet { applyEQ() } }
-    var bands = [Double](repeating: 0, count: 10) { didSet { applyEQ() } }
+    var eqAuto = false { didSet { if eqAuto, !oldValue { applyAutoEQ(announce: true) } } }
+    var preamp: Double = 0 { didSet { applyEQ(); rememberAutoEQ() } }
+    var bands = [Double](repeating: 0, count: 10) { didSet { applyEQ(); rememberAutoEQ() } }
     var mainShade = false
     var eqShade = false
     var plShade = false
@@ -52,6 +52,9 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var plFontSize = 9 { didSet { notify() } }
     var plShowNumbers = true { didSet { notify() } }
     var plUseSkinFont = true { didSet { notify() } }
+    var menuBarEnabled = true { didSet { menuBar?.setEnabled(menuBarEnabled); notify() } }
+    var notifyTrackChange = true { didSet { notify() } }
+    var notifyOnlyInBackground = true { didSet { notify() } }
     var autoDownloadFonts = true { didSet { FontResolver.shared.autoDownload = autoDownloadFonts; notify() } }
 
     // Transient UI state
@@ -64,6 +67,22 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     private(set) var visWave = [Float](repeating: 0, count: 76)
     private var timer: Timer?
     var prefsWindowRef: NSWindow?
+    var libraryWindowRef: NSWindow?
+    private var menuBar: MenuBarController?
+    private var notifier: TrackNotifier?
+    /// True once output was routed to an explicit device; from then on the default must be re-applied by hand.
+    private var outputPinned = false
+    var infoWindows: [SkinWindow] = []
+    /// Debug snapshots: draw visualizers as if playing.
+    var snapshotMode = false
+
+    func debugFillVis() {
+        for i in 0..<75 {
+            visBars[i] = Float(0.35 + 0.6 * abs(sin(Double(i) / 9)))
+            visPeaks[i] = min(1, visBars[i] + 0.12)
+        }
+    }
+    private var nowPlaying: NowPlaying?
 
     private func notify() { objectWillChange.send() }
 
@@ -106,6 +125,10 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     func start() {
         loadSettings()
         audio.onFinish = { [weak self] in self?.next(auto: true) }
+        audio.onChange = { [weak self] in self?.transportChanged() }
+        nowPlaying = NowPlaying(ctl: self)
+        playlist.onCurrentMetadata = { [weak self] in self?.nowPlaying?.update() }
+        loadAutoEQ()
         mainWindow = SkinWindow(view: mainView)
         eqWindow = SkinWindow(view: eqView)
         plWindow = SkinWindow(view: plView)
@@ -115,21 +138,132 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         applyEQ()
         audio.setVolume(volume)
         audio.setBalance(balance)
-        if outputDeviceUID != nil { audio.setOutputDevice(uid: outputDeviceUID) }
+        if outputDeviceUID != nil { selectOutput(outputDeviceUID) }
+        AudioDevice.observeDefaultOutput { [weak self] in
+            // Control Center / AirPlay picker changed the system output: follow it unless a device is pinned.
+            guard let self, self.outputDeviceUID == nil, self.outputPinned else { return }
+            self.audio.setOutputDevice(uid: nil)
+        }
+        menuBar = MenuBarController(ctl: self)
+        menuBar?.setEnabled(menuBarEnabled)
+        notifier = TrackNotifier(ctl: self)
         restorePlaylist()
 
         mainWindow.makeKeyAndOrderFront(nil)
         if eqVisible { eqWindow.orderFront(nil) }
         if plVisible { plWindow.orderFront(nil) }
 
-        let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.tick() }
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification, NSWindow.didChangeOcclusionStateNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] n in
+                guard let self, let w = n.object as? NSWindow, self.windows.contains(where: { $0 === w }) else { return }
+                w.contentView?.needsDisplay = true
+                self.wake()
+            }
+        }
+        setTimerInterval(Self.activeInterval)
+        nowPlaying?.update()
+    }
+
+    // MARK: Render pacing
+    // Fast (30 fps) only while the visualizer animates; ~9 Hz for marquee/clock/blink; 2 Hz when idle.
+    // Each tick redraws only the windows whose rendered state changed (SkinView.renderSignature).
+
+    static let fastInterval: TimeInterval = 1.0 / 30
+    static let activeInterval: TimeInterval = 0.11
+    static let idleInterval: TimeInterval = 0.5
+
+    private var timerInterval: TimeInterval = 0
+    private var lastMarqueeStep = Date.distantPast
+    private var lastSave = Date()
+    private var lastTrack: Track?
+
+    /// Paused time display blinks at 1 Hz like Winamp.
+    var blinkOn: Bool { Int(Date().timeIntervalSinceReferenceDate * 2) % 2 == 0 }
+
+    private func isShowing(_ w: NSWindow?) -> Bool {
+        guard let w, w.isVisible else { return false }
+        return w.occlusionState.contains(.visible)
+    }
+
+    /// Playlist hosts the visualizer while the main window is shaded and the playlist is wide enough.
+    var plVisDisplayed: Bool { mainShade && plW >= 3 && !plShade }
+
+    private var visShown: Bool { visMode != 2 && (isShowing(mainWindow) || (plVisDisplayed && isShowing(plWindow))) }
+
+    private var marqueeScrolls: Bool {
+        marqueeScroll && marqueeOverride == nil && !mainShade && isShowing(mainWindow) && marqueeText.count * 5 > 154
+    }
+
+    private func setTimerInterval(_ i: TimeInterval) {
+        guard i != timerInterval else { return }
+        timer?.invalidate()
+        let t = Timer(timeInterval: i, repeats: true) { [weak self] _ in self?.tick() }
+        t.tolerance = i * 0.2
         RunLoop.main.add(t, forMode: .common)
         timer = t
+        timerInterval = i
+    }
+
+    /// Something changed outside the views (transport, settings): tick soon at active pace.
+    func wake() {
+        if timerInterval > Self.activeInterval { setTimerInterval(Self.activeInterval) }
+    }
+
+    private func transportChanged() {
+        if playlist.currentTrack !== lastTrack {
+            lastTrack = playlist.currentTrack
+            applyAutoEQ(announce: true)
+        }
+        nowPlaying?.update()
+        notifier?.transportChanged()
+        menuBar?.update()
+        notify()
+        mainView.needsDisplay = true
+        plView.needsDisplay = true
+        wake()
+    }
+
+    func selectOutput(_ uid: String?) {
+        outputDeviceUID = uid
+        outputPinned = true
+        audio.setOutputDevice(uid: uid)
     }
 
     private func tick() {
         tickCount += 1
+        let now = Date()
         let playing = audio.state == .playing
+        let showVis = visShown
+        audio.analysisEnabled = playing && showVis
+        var animating = false
+        if showVis {
+            animating = updateVis(playing: playing) || playing
+        } else if visBars.contains(where: { $0 > 0 }) || visPeaks.contains(where: { $0 > 0 }) {
+            visBars = [Float](repeating: 0, count: 75)
+            visPeaks = [Float](repeating: 0, count: 75)
+        }
+        let scrolling = marqueeScrolls
+        if scrolling, now.timeIntervalSince(lastMarqueeStep) >= 0.22 {
+            marqueeOffset += 5
+            lastMarqueeStep = now
+        }
+
+        if animating {
+            if isShowing(mainWindow) { mainView.needsDisplay = true }
+            if plVisDisplayed, isShowing(plWindow) { plView.needsDisplay = true }
+        }
+        for w in allSkinWindows where isShowing(w) { (w.contentView as? SkinView)?.refreshIfChanged() }
+
+        if now.timeIntervalSince(lastSave) > 30 {
+            saveSettings()
+            lastSave = now
+        }
+        let busy = playing || audio.state == .paused || scrolling || marqueeOverride != nil
+        setTimerInterval(animating ? Self.fastInterval : (busy ? Self.activeInterval : Self.idleInterval))
+    }
+
+    /// Advances bars/peaks; returns true while anything is still moving.
+    private func updateVis(playing: Bool) -> Bool {
         let (spec, wave) = audio.visData()
         let decay: [Float] = [0.012, 0.025, 0.045, 0.07, 0.1]
         let gravity: [Float] = [0.0004, 0.0008, 0.0015, 0.003, 0.006]
@@ -145,9 +279,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             }
         }
         visWave = playing ? wave : [Float](repeating: 0, count: 76)
-        if tickCount % 7 == 0, marqueeOverride == nil, marqueeScroll { marqueeOffset += 5 }
-        redraw()
-        if tickCount % 900 == 0 { saveSettings() }
+        return visBars.contains { $0 > 0 } || visPeaks.contains { $0 > 0 }
     }
 
     func barValue(_ b: Int) -> Float {
@@ -163,8 +295,12 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     }
 
     func redraw() {
-        for w in visibleWindows { w.contentView?.needsDisplay = true }
+        for w in allSkinWindows where w.isVisible { w.contentView?.needsDisplay = true }
+        wake()
     }
+
+    /// Main/EQ/playlist plus any skinned secondary (gen.bmp) windows.
+    var allSkinWindows: [SkinWindow] { NSApp.windows.compactMap { $0 as? SkinWindow } }
 
     // MARK: Text helpers
 
@@ -268,8 +404,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     @objc func addFolder() { chooseAudio(directories: true) { playlist.add($0) } }
 
     @objc func addURL() {
-        marqueeOverride = "SOLO FILE LOCALI"
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.marqueeOverride = nil }
+        flashMarquee("SOLO FILE LOCALI")
     }
 
     func replacePlaylist(_ urls: [URL], play: Bool) {
@@ -314,19 +449,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
 
     func showFileInfo(_ index: Int?) {
         guard let i = index, playlist.tracks.indices.contains(i) else { NSSound.beep(); return }
-        let t = playlist.tracks[i]
-        let a = NSAlert()
-        a.messageText = t.title
-        var lines = [t.url.path]
-        if let d = t.duration { lines.append("Durata: \(Ctl.hmmss(d))") }
-        if i == playlist.current, audio.file != nil {
-            lines.append("\(audio.bitrate) kbps · \(Int(audio.sampleRate)) Hz · \(audio.channels == 1 ? "mono" : "stereo")")
-        }
-        a.informativeText = lines.joined(separator: "\n")
-        a.addButton(withTitle: "OK")
-        a.addButton(withTitle: "Mostra nel Finder")
-        NSApp.activate(ignoringOtherApps: true)
-        if a.runModal() == .alertSecondButtonReturn { NSWorkspace.shared.activateFileViewerSelecting([t.url]) }
+        showInfoWindow(i)
     }
 
     // MARK: Skins
@@ -660,6 +783,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         m.addItem(vis)
         m.addItem(.separator())
         item(m, "Preferenze…", #selector(showPreferences))
+        item(m, "Libreria…", #selector(showLibrary))
         m.addItem(.separator())
         item(m, "Equalizzatore", #selector(toggleEQ))
         item(m, "Playlist", #selector(togglePL))
@@ -680,6 +804,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     func presetsMenu() -> NSMenu {
         let m = NSMenu()
         item(m, "Flat (reset)", #selector(resetEQ))
+        m.addItem(.separator())
+        item(m, "AUTO: rimuovi preset di questo brano", #selector(forgetAutoEQ))
         m.addItem(.separator())
         for (i, p) in Ctl.artistPresets.enumerated() { item(m, p.0, #selector(applyArtistPreset(_:)), tag: i) }
         m.addItem(.separator())
@@ -767,9 +893,64 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         case #selector(selectSkinItem(_:)): on((it.representedObject as? URL)?.path == skinPath)
         case #selector(savePlaylistFile): return !playlist.tracks.isEmpty
         case #selector(fileInfo): return playlist.current != nil
+        case #selector(forgetAutoEQ): return playlist.currentTrack.map { autoEQ[Self.autoKey($0)] != nil } ?? false
         default: break
         }
         return true
+    }
+
+    // MARK: EQ AUTO
+    // Like Winamp's auto-load presets: with AUTO on, EQ changes are remembered for the playing file
+    // (keyed by file name) and restored whenever that file is loaded again.
+
+    private var autoEQ: [String: [Double]] = [:]
+    private var applyingAutoEQ = false
+    private var autoEQSave: DispatchWorkItem?
+
+    private var autoEQURL: URL { skinsDir.deletingLastPathComponent().appendingPathComponent("eq-auto.json") }
+    private static func autoKey(_ t: Track) -> String { t.url.lastPathComponent.lowercased() }
+
+    private func loadAutoEQ() {
+        guard let d = try? Data(contentsOf: autoEQURL),
+              let m = try? JSONDecoder().decode([String: [Double]].self, from: d) else { return }
+        autoEQ = m.filter { $0.value.count == 11 }
+    }
+
+    private func rememberAutoEQ() {
+        guard eqAuto, !applyingAutoEQ, let t = playlist.currentTrack else { return }
+        autoEQ[Self.autoKey(t)] = bands + [preamp]
+        autoEQSave?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let d = try? JSONEncoder().encode(self.autoEQ) else { return }
+            try? d.write(to: self.autoEQURL, options: .atomic)
+        }
+        autoEQSave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
+    }
+
+    private func applyAutoEQ(announce: Bool) {
+        guard eqAuto, let t = playlist.currentTrack, let v = autoEQ[Self.autoKey(t)] else { return }
+        applyingAutoEQ = true
+        bands = Array(v[0..<10])
+        preamp = v[10]
+        applyingAutoEQ = false
+        eqView.needsDisplay = true
+        if announce { flashMarquee("EQ AUTO: PRESET DEL BRANO") }
+    }
+
+    @objc func forgetAutoEQ() {
+        guard let t = playlist.currentTrack else { return }
+        autoEQ[Self.autoKey(t)] = nil
+        if let d = try? JSONEncoder().encode(autoEQ) { try? d.write(to: autoEQURL, options: .atomic) }
+        flashMarquee("EQ AUTO: PRESET RIMOSSO")
+    }
+
+    func flashMarquee(_ text: String, seconds: Double = 2) {
+        marqueeOverride = text
+        wake()
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+            if self?.marqueeOverride == text { self?.marqueeOverride = nil }
+        }
     }
 
     // MARK: Persistence
@@ -813,6 +994,9 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         plShowNumbers = bool("plShowNumbers", true)
         plUseSkinFont = bool("plUseSkinFont", true)
         autoDownloadFonts = bool("autoDownloadFonts", true)
+        menuBarEnabled = bool("menuBarEnabled", true)
+        notifyTrackChange = bool("notifyTrackChange", true)
+        notifyOnlyInBackground = bool("notifyOnlyInBackground", true)
     }
 
     func saveSettings() {
@@ -826,6 +1010,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             "resumeOnLaunch": resumeOnLaunch, "visThinBands": visThinBands, "visPeaksOn": visPeaksOn,
             "visFalloff": visFalloff, "peakFalloff": peakFalloff, "oscStyle": oscStyle, "plFontSize": plFontSize,
             "plShowNumbers": plShowNumbers, "plUseSkinFont": plUseSkinFont, "autoDownloadFonts": autoDownloadFonts,
+            "menuBarEnabled": menuBarEnabled, "notifyTrackChange": notifyTrackChange,
+            "notifyOnlyInBackground": notifyOnlyInBackground,
             "playlist": playlist.tracks.map(\.url.path), "current": playlist.current ?? -1,
             "resumeTime": audio.currentTime, "resumePlaying": audio.state == .playing,
         ]

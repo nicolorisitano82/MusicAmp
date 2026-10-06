@@ -77,6 +77,12 @@ private struct GeneralTab: View {
             Section("Avvio") {
                 Toggle("Riprendi la riproduzione all'avvio", isOn: ctl.binding(\.resumeOnLaunch))
             }
+            Section("Barra dei menu e notifiche") {
+                Toggle("Mini controller nella barra dei menu", isOn: ctl.binding(\.menuBarEnabled))
+                Toggle("Notifica al cambio brano", isOn: ctl.binding(\.notifyTrackChange))
+                Toggle("Solo quando MusicAmp è in secondo piano", isOn: ctl.binding(\.notifyOnlyInBackground))
+                    .disabled(!ctl.notifyTrackChange)
+            }
         }
         .formStyle(.grouped)
     }
@@ -89,14 +95,16 @@ private struct AudioTab: View {
     var body: some View {
         Form {
             Section("Uscita") {
-                Picker("Dispositivo", selection: Binding(get: { ctl.outputDeviceUID }, set: { uid in
-                    ctl.outputDeviceUID = uid
-                    ctl.audio.setOutputDevice(uid: uid)
-                })) {
+                Picker("Dispositivo", selection: Binding(get: { ctl.outputDeviceUID }, set: { ctl.selectOutput($0) })) {
                     Text("Predefinito di sistema").tag(String?.none)
                     ForEach(devices) { d in Text(d.name).tag(Optional(d.uid)) }
                 }
                 Button("Aggiorna elenco") { devices = AudioDevice.outputDevices() }
+                LabeledContent("AirPlay e uscite di sistema") {
+                    RoutePicker().frame(width: 28, height: 22)
+                }
+                Text("Con \"Predefinito di sistema\" MusicAmp segue l'uscita scelta qui, nel Centro di controllo o nelle Impostazioni Suono, anche se è un altoparlante AirPlay.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Riproduzione") {
                 Toggle("Shuffle", isOn: ctl.binding(\.shuffle))

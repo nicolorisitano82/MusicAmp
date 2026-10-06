@@ -20,6 +20,12 @@
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Public domain (The Unlicense)</string>
+    <key>NSAppleMusicUsageDescription</key>
+    <string>MusicAmp legge la libreria di Musica per sfogliare e riprodurre i tuoi brani locali.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>CFBundleDocumentTypes</key>

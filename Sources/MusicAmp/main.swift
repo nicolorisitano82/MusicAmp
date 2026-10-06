@@ -70,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let view = sub("Vista")
         c.item(view, "Equalizzatore", #selector(Ctl.toggleEQ), "g", [.option])
         c.item(view, "Playlist", #selector(Ctl.togglePL), "e", [.option])
+        c.item(view, "Libreria", #selector(Ctl.showLibrary), "l", [.option])
         view.addItem(.separator())
         c.item(view, "Modalità ridotta", #selector(Ctl.toggleMainShade), "w", [.option])
         c.item(view, "Equalizzatore ridotto", #selector(Ctl.toggleEQShade), "w", [.option, .shift])
@@ -107,9 +108,22 @@ func snapshot(_ args: [String]) -> Never {
             return r.image()
         }
     }
+    c.snapshotMode = true
+    c.debugFillVis()
     var images = renderAll()
-    (c.mainShade, c.eqShade, c.plShade) = (true, true, true)
+    (c.mainShade, c.eqShade, c.plW) = (true, true, 3)
     images += renderAll()
+    c.plShade = true
+    images += [c.plView].compactMap { v -> CGImage? in
+        guard let r = Renderer(width: Int(v.logicalSize.width), height: 14, skin: c.skin) else { return nil }
+        v.render(r)
+        return r.image()
+    }
+    let info = c.makeInfoView(1)
+    if let r = Renderer(width: Int(info.size.width), height: Int(info.size.height), skin: c.skin) {
+        info.render(r)
+        if let img = r.image() { images.append(img) }
+    }
     let w = images.map(\.width).max() ?? 1, h = images.reduce(0) { $0 + $1.height }
     let ctx = CGContext(data: nil, width: w * 2, height: h * 2, bitsPerComponent: 8, bytesPerRow: 0,
                         space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
@@ -134,6 +148,14 @@ if let i = CommandLine.arguments.firstIndex(of: "--resolve-fonts") {
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     }
     for n in names { print("\(n) -> \(fr.family(for: n) ?? "Arial (fallback)")  [\(fr.status(for: n).map { "\($0)" } ?? "?")]") }
+    exit(0)
+}
+
+/// Debug: `MusicAmp --parse-cursor file.ani|file.cur` prints frame count, delays and hotspots.
+if let i = CommandLine.arguments.firstIndex(of: "--parse-cursor"), CommandLine.arguments.count > i + 1 {
+    guard let c = SkinCursor.load(URL(fileURLWithPath: CommandLine.arguments[i + 1])) else { print("parse failed"); exit(1) }
+    print("frames: \(c.frames.count)  delays: \(c.delays.map { String(format: "%.3f", $0) })")
+    print("hotspots: \(c.frames.map { "\(Int($0.hotSpot.x)),\(Int($0.hotSpot.y))" })")
     exit(0)
 }
 

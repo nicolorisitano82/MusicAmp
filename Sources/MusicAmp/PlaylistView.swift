@@ -99,6 +99,11 @@ final class PlaylistView: SkinView {
         r.blit("pledit", R(126, 72, 150, 38), W - 150, H - 38)
         if down("close") { r.blit("pledit", R(52, 42, 9, 9), W - 11, 3) }
         if down("shade") { r.blit("pledit", R(62, 42, 9, 9), W - 20, 3) }
+        // With the main window shaded, Winamp moves the visualizer here (needs 75 px of bottom tile).
+        if ctl.plVisDisplayed {
+            r.blit("pledit", R(205, 0, 75, 38), W - 225, H - 38)
+            if ctl.audio.state == .playing || ctl.snapshotMode { r.visualizer(ctl, R(W - 223, H - 27, 72, 16)) }
+        }
 
         // List
         let list = listRect
@@ -152,6 +157,17 @@ final class PlaylistView: SkinView {
     }
 
     private func down(_ id: String) -> Bool { pressed == id && pressInside }
+
+    override var renderSignature: Int {
+        let a = ctl.audio
+        var h = Hasher()
+        h.combine(isActive); h.combine(ObjectIdentifier(skin)); h.combine(ctl.playlist.version)
+        h.combine("\(a.state)"); h.combine(a.state == .stopped ? 0 : Int(a.currentTime)); h.combine(ctl.timeRemaining)
+        h.combine(scrollRow); h.combine(ctl.plShade); h.combine(ctl.plW); h.combine(ctl.plH)
+        h.combine(ctl.plFontSize); h.combine(ctl.plShowNumbers); h.combine(ctl.plUseSkinFont)
+        h.combine(pressed); h.combine(pressInside); h.combine(openMenu?.id); h.combine(menuHover); h.combine(scrolling)
+        return h.finalize()
+    }
 
     // MARK: Mouse
 

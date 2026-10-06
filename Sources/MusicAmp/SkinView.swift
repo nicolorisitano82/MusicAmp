@@ -31,6 +31,14 @@ class SkinView: NSView {
     var isActive: Bool { previewSkin != nil || (window?.isKeyWindow ?? false) }
 
     private var windowDrag = false
+    private var drawnSignature: Int?
+
+    /// Hash of everything the view shows. The timer redraws only when it differs from the last drawn frame.
+    var renderSignature: Int { 0 }
+
+    func refreshIfChanged() {
+        if renderSignature != drawnSignature { needsDisplay = true }
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -54,6 +62,7 @@ class SkinView: NSView {
         guard let cg = NSGraphicsContext.current?.cgContext else { return }
         let size = logicalSize
         guard let r = Renderer(width: Int(size.width), height: Int(size.height), skin: skin) else { return }
+        drawnSignature = renderSignature
         render(r)
         guard let img = r.image() else { return }
         cg.clear(bounds)
@@ -114,7 +123,7 @@ class SkinView: NSView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .cursorUpdate, .activeAlways, .inVisibleRect],
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .cursorUpdate, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
                                        owner: self, userInfo: nil))
     }
 
@@ -122,7 +131,12 @@ class SkinView: NSView {
     func updateCursor(_ e: NSEvent) {
         let p = point(e)
         let name = cursorAreas().last { $0.1.contains(p) }?.0
-        (name.flatMap { skin.cursors[$0] } ?? NSCursor.arrow).set()
+        CursorAnimator.shared.show(name.flatMap { skin.cursors[$0] })
+    }
+
+    override func mouseExited(with e: NSEvent) {
+        CursorAnimator.shared.stop()
+        NSCursor.arrow.set()
     }
 
     override func mouseMoved(with e: NSEvent) { updateCursor(e) }

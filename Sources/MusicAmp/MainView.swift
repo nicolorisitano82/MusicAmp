@@ -29,6 +29,20 @@ final class MainView: SkinView {
     ]
 
     private func down(_ id: String) -> Bool { pressed == id && pressInside }
+
+    override var renderSignature: Int {
+        let a = ctl.audio
+        var h = Hasher()
+        h.combine(isActive); h.combine(ObjectIdentifier(skin)); h.combine(shade)
+        h.combine("\(a.state)"); h.combine(Int(a.currentTime)); h.combine(a.state == .paused && ctl.blinkOn)
+        h.combine(a.file != nil); h.combine(a.bitrate); h.combine(a.channels); h.combine(a.sampleRate)
+        h.combine(ctl.marqueeOffset); h.combine(ctl.marqueeOverride); h.combine(ctl.marqueeText)
+        h.combine(ctl.volume); h.combine(ctl.balance); h.combine(ctl.shuffle); h.combine(ctl.repeatOn)
+        h.combine(ctl.eqVisible); h.combine(ctl.plVisible); h.combine(ctl.alwaysOnTop); h.combine(ctl.doubleSize)
+        h.combine(ctl.timeRemaining); h.combine(ctl.visMode)
+        h.combine(pressed); h.combine(pressInside); h.combine(dragKind); h.combine(seekPreview)
+        return h.finalize()
+    }
     private var loaded: Bool { ctl.audio.file != nil && ctl.audio.state != .stopped }
 
     // MARK: Render
@@ -60,7 +74,7 @@ final class MainView: SkinView {
         }
 
         // Time (blinks while paused)
-        if a.file != nil, a.state != .stopped, !(a.state == .paused && (ctl.tickCount / 15) % 2 == 1) {
+        if a.file != nil, a.state != .stopped, !(a.state == .paused && !ctl.blinkOn) {
             drawTime(r)
         }
 
@@ -157,49 +171,14 @@ final class MainView: SkinView {
     }
 
     private func drawVis(_ r: Renderer) {
-        guard ctl.visMode != 2 else { return }
-        let vc = skin.visColors
-        r.fill(vc[0], R(24, 43, 76, 16))
-        for y in stride(from: 1, to: 16, by: 2) {
-            for x in stride(from: 1, to: 76, by: 2) { r.fill(vc[1], R(24 + CGFloat(x), 43 + CGFloat(y), 1, 1)) }
-        }
-        if ctl.visMode == 0 {
-            // Thick: 19 bars of 3 px + 1 px gap. Thin: 75 one-pixel columns.
-            let thin = ctl.visThinBands
-            for b in 0..<(thin ? 75 : 19) {
-                let v = thin ? ctl.visBars[b] : ctl.barValue(b)
-                let pk = thin ? ctl.visPeaks[b] : ctl.barPeak(b)
-                let x = 24 + CGFloat(thin ? b : b * 4), w: CGFloat = thin ? 1 : 3
-                let h = Int((v * 16).rounded())
-                if h > 0 {
-                    for row in (16 - h)..<16 { r.fill(vc[2 + row], R(x, 43 + CGFloat(row), w, 1)) }
-                }
-                let p = Int((pk * 16).rounded())
-                if ctl.visPeaksOn, p > 0 { r.fill(vc[23], R(x, 43 + CGFloat(16 - p), w, 1)) }
-            }
-        } else {
-            var prev: Int?
-            for x in 0..<75 {
-                let y = max(0, min(15, Int((8 - ctl.visWave[x] * 8).rounded())))
-                let lo: Int, hi: Int
-                switch ctl.oscStyle {
-                case 0: (lo, hi) = (y, y)
-                case 2: (lo, hi) = (min(8, y), max(8, y))
-                default: (lo, hi) = prev.map { (min($0, y), max($0, y)) } ?? (y, y)
-                }
-                for yy in lo...hi {
-                    let idx = 18 + min(4, abs(yy - 8) / 2)
-                    r.fill(vc[idx], R(24 + CGFloat(x), 43 + CGFloat(yy), 1, 1))
-                }
-                prev = y
-            }
-        }
+        r.visualizer(ctl, R(24, 43, 76, 16))
     }
 
     private func renderShade(_ r: Renderer) {
         let a = ctl.audio
         r.blit("titlebar", isActive ? R(27, 29, 275, 14) : R(27, 42, 275, 14), 0, 0)
         titleButtons(r, shade: true)
+        if a.state == .playing || ctl.snapshotMode { r.visualizer(ctl, R(79, 5, 38, 5), dots: false) }
         if loaded {
             let cur = a.currentTime
             let t = ctl.timeRemaining ? max(0, a.duration - cur) : cur
@@ -312,5 +291,60 @@ final class MainView: SkinView {
                 ("min", R(244, 3, 9, 9)), ("winbut", R(254, 3, 9, 9)), ("close", R(264, 3, 9, 9)),
                 ("songname", R(111, 24, 155, 12)), ("posbar", R(16, 72, 248, 10)),
                 ("volbal", R(107, 57, 68, 13)), ("volbal", R(177, 57, 38, 13))]
+    }
+}
+
+extension Renderer {
+    /// Winamp visualizer in any rect: main window 76x16, shaded main 38x5, playlist 72x16.
+    /// Rows map onto viscolor.txt's 16 spectrum colours, columns onto the 75 analyzer bins.
+    func visualizer(_ ctl: Ctl, _ rect: CGRect, dots: Bool = true) {
+        guard ctl.visMode != 2 else { return }
+        let vc = skin.visColors
+        let w = Int(rect.width), h = Int(rect.height)
+        let x0 = rect.minX, y0 = rect.minY
+        fill(vc[0], rect)
+        if dots, h >= 16 {
+            for y in stride(from: 1, to: h, by: 2) {
+                for x in stride(from: 1, to: w, by: 2) { fill(vc[1], R(x0 + CGFloat(x), y0 + CGFloat(y), 1, 1)) }
+            }
+        }
+        func rowColor(_ row: Int) -> CGColor { vc[2 + min(15, row * 16 / h)] }
+        func bin(_ col: Int, _ cols: Int) -> Int { min(74, col * 75 / max(1, cols)) }
+
+        if ctl.visMode == 0 {
+            // Thick: bars of 3 px + 1 px gap. Thin: one-pixel columns.
+            let thin = ctl.visThinBands
+            let count = thin ? w : (w + 1) / 4
+            for b in 0..<count {
+                let lo = bin(b, count), hi = max(lo, bin(b + 1, count) - 1)
+                var v: Float = 0, pk: Float = 0
+                for i in lo...hi { v = max(v, ctl.visBars[i]); pk = max(pk, ctl.visPeaks[i]) }
+                let x = x0 + CGFloat(thin ? b : b * 4), bw: CGFloat = thin ? 1 : 3
+                let bh = Int((v * Float(h)).rounded())
+                if bh > 0 {
+                    for row in (h - bh)..<h { fill(rowColor(row), R(x, y0 + CGFloat(row), bw, 1)) }
+                }
+                let p = Int((pk * Float(h)).rounded())
+                if ctl.visPeaksOn, p > 0, h >= 8 { fill(vc[23], R(x, y0 + CGFloat(h - p), bw, 1)) }
+            }
+        } else {
+            let mid = h / 2
+            var prev: Int?
+            for x in 0..<w {
+                let sample = ctl.visWave[min(75, x * 76 / w)]
+                let y = max(0, min(h - 1, Int((Float(mid) - sample * Float(mid)).rounded())))
+                let lo: Int, hi: Int
+                switch ctl.oscStyle {
+                case 0: (lo, hi) = (y, y)
+                case 2: (lo, hi) = (min(mid, y), max(mid, y))
+                default: (lo, hi) = prev.map { (min($0, y), max($0, y)) } ?? (y, y)
+                }
+                for yy in lo...hi {
+                    let idx = 18 + min(4, abs(yy - mid) * 8 / max(1, h) )
+                    fill(vc[idx], R(x0 + CGFloat(x), y0 + CGFloat(yy), 1, 1))
+                }
+                prev = y
+            }
+        }
     }
 }

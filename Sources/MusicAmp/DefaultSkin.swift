@@ -156,7 +156,7 @@ enum DefaultSkin {
             "main": main(), "titlebar": titlebar(), "cbuttons": cbuttons(), "numbers": numbers(),
             "text": text(), "posbar": posbar(), "volume": volume(balance: false), "balance": volume(balance: true),
             "shufrep": shufrep(), "playpaus": playpaus(), "monoster": monoster(), "eqmain": eqmain(),
-            "eq_ex": eqex(), "pledit": pledit(),
+            "eq_ex": eqex(), "pledit": pledit(), "gen": gen(), "genex": genex(),
         ]
         s.playlist = PlaylistStyle(normal: C(0x3CE060), current: C(0xFFFFFF), normalBG: C(0x070A08),
                                    selectedBG: C(0x23406E), font: "Arial")
@@ -440,7 +440,65 @@ enum DefaultSkin {
         for (y, active) in [(CGFloat(0), true), (CGFloat(15), false)] {
             c.bevel(R(0, y, 275, 14), active ? titleA : titleI, active ? titleAHi : light, dark)
             c.text("EQUALIZER", 12, y + 5, active ? titleText : titleTextI)
+            c.inset(R(61, y + 4, 97, 7), lcd)
+            c.inset(R(164, y + 4, 43, 7), lcd)
         }
+        // Shade volume/balance thumbs: left, centre, right variants (3x7)
+        for (i, x) in [1, 4, 7, 11, 14, 17].enumerated() {
+            c.fill(R(CGFloat(x), 30, 3, 7), i % 3 == 1 ? icon : light)
+        }
+        for (x, y) in [(CGFloat(1), CGFloat(38)), (1, 47), (11, 38), (11, 47)] { c.button(R(x, y, 9, 9), down: true) }
+        return c.image
+    }
+
+    /// Generic window frame (gen.bmp): title pieces at y 0/21, sides, bottom corners, title font at y 88/96.
+    static func gen() -> CGImage {
+        let c = Canvas(194, 109)
+        let sep = C(0x00C6FF)
+        c.fill(R(0, 0, 194, 109), face)
+        for (y, active) in [(CGFloat(0), true), (CGFloat(21), false)] {
+            let strip = active ? titleA : titleI, tc = active ? titleText : titleTextI
+            for x in [CGFloat(0), 26, 52, 78, 104, 130] {
+                c.fill(R(x, y, 25, 20), face)
+                c.fill(R(x, y, 25, 1), light)
+                c.fill(R(x, y + 2, 25, 11), strip)
+            }
+            for (x, w) in [(CGFloat(8), CGFloat(17)), (26, 22), (81, 22), (104, 25), (130, 10)] {
+                c.fill(R(x, y + 5, w, 1), tc); c.fill(R(x, y + 9, w, 1), tc)
+            }
+            c.fill(R(0, y, 1, 20), light); c.fill(R(154, y, 1, 20), dark)
+            for i in 0..<5 { c.fill(130 + 16 + CGFloat(i), y + 5 + CGFloat(i), 1, 1, tc); c.fill(130 + 20 - CGFloat(i), y + 5 + CGFloat(i), 1, 1, tc) }
+        }
+        c.bevel(R(0, 42, 125, 14), face, light, dark)
+        c.bevel(R(0, 57, 125, 14), face, light, dark)
+        for i in 0..<4 { c.fill(R(121 - CGFloat(i) * 3, 67 - CGFloat(i) * 3, 1, 1 + CGFloat(i) * 3), light) }
+        for (x, w, h) in [(CGFloat(127), CGFloat(11), CGFloat(29)), (139, 8, 29), (158, 11, 24), (170, 8, 24)] {
+            c.fill(R(x, 42, w, h), face)
+            c.fill(R(x, 42, 1, h), x == 127 || x == 158 ? light : dark)
+        }
+        c.button(R(148, 42, 9, 9), down: true)
+        c.fill(R(127, 72, 25, 14), face); c.fill(R(127, 85, 25, 1), dark)
+        for (y, col, cell) in [(CGFloat(88), titleText, titleA), (CGFloat(96), titleTextI, titleI)] {
+            c.fill(R(0, y, 194, 7), sep)
+            var x: CGFloat = 1
+            for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" {
+                c.fill(R(x, y, 5, 6), cell)
+                c.glyph(ch, x + 1, y + 1, col)
+                x += 6
+            }
+        }
+        return c.image
+    }
+
+    /// genex.bmp: button (normal y 0, pressed y 16) and the 18 system colours at y 0, x 48...82.
+    static func genex() -> CGImage {
+        let c = Canvas(130, 75)
+        c.fill(R(0, 0, 130, 75), face)
+        c.button(R(0, 0, 47, 15), down: false)
+        c.button(R(0, 16, 47, 15), down: true)
+        let colors: [CGColor] = [lcd, lcdText, face, icon, icon, light, C(0x23406E), btnFace, icon,
+                                 light, dark, btnDown, face, btnFace, dark, btnDown, dark, face]
+        for (i, col) in colors.enumerated() { c.fill(R(48 + CGFloat(i * 2), 0, 1, 1), col) }
         return c.image
     }
 
