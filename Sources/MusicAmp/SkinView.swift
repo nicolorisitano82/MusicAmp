@@ -78,7 +78,9 @@ class SkinView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let cg = NSGraphicsContext.current?.cgContext else { return }
         let size = logicalSize
-        guard let r = Renderer(width: Int(size.width), height: Int(size.height), skin: skin) else { return }
+        let k = pixelScale
+        guard let r = Renderer(width: Int(size.width), height: Int(size.height), skin: skin, pixelScale: k,
+                               hiRes: ctl.retinaSkins && skin.isRetina) else { return }
         drawnSignature = renderSignature
         render(r)
         guard let img = r.image() else { return }
@@ -98,6 +100,17 @@ class SkinView: NSView {
         cg.scaleBy(x: 1, y: -1)
         cg.draw(img, in: CGRect(x: 0, y: 0, width: size.width * scale, height: size.height * scale))
         cg.restoreGState()
+    }
+
+    /// Device pixels per skin pixel (Retina × double size). The framebuffer is drawn at this resolution so
+    /// system-font text (playlist) is sharp; 1x bitmaps upscale nearest-neighbour, looking exactly as before.
+    var pixelScale: Int {
+        Int(max(1, min(4, (scale * (window?.backingScaleFactor ?? 2)).rounded())))
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        needsDisplay = true   // moved between a Retina and a non-Retina screen
     }
 
     func point(_ e: NSEvent) -> CGPoint {

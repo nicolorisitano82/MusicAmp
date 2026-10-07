@@ -20,6 +20,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
 
     // Settings (didSet notify() keeps the SwiftUI preferences panel in sync with clicks on the skin)
     var doubleSize = false { didSet { notify() } }
+    /// Use the @2x bitmaps of Retina skins when the screen (or double size) has the pixels for them.
+    var retinaSkins = true { didSet { notify(); windows.forEach { $0.contentView?.needsDisplay = true } } }
     var alwaysOnTop = false { didSet { notify() } }
     var shuffle = false { didSet { notify(); if shuffle != oldValue { invalidateTransition() } } }
     var repeatOn = false { didSet { notify(); if repeatOn != oldValue { invalidateTransition() } } }
@@ -60,6 +62,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var oscStyle = 1 { didSet { notify() } }        // 0 dots, 1 lines, 2 solid
     var plFontSize = 9 { didSet { notify() } }
     var plShowNumbers = true { didSet { notify() } }
+    /// Playlist grouped artist → album → track instead of the flat list.
+    var plTree = false { didSet { notify(); plView.needsDisplay = true } }
     var plUseSkinFont = true { didSet { notify() } }
     var ffmpegEnabled = true { didSet { FFmpeg.enabled = ffmpegEnabled; notify() } }
     /// Seconds of radio audio buffered before playback starts (and after an underrun).
@@ -86,6 +90,11 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var prefsWindowRef: NSWindow?
     var libraryWindowRef: NSWindow?
     var radioWindowRef: NSWindow?
+    var podcastWindowRef: NSWindow?
+    var lyricsWindowRef: NSWindow?
+    var karaokeWindowRef: NSWindow?
+    var milkdropWindowRef: NSWindow?
+    var milkdropController: MilkdropController?
     private var menuBar: MenuBarController?
     private var notifier: TrackNotifier?
     /// True once output was routed to an explicit device; from then on the default must be re-applied by hand.
@@ -110,6 +119,12 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var scale: CGFloat { doubleSize ? 2 : 1 }
     var windows: [SkinWindow] { [mainWindow, eqWindow, plWindow].compactMap { $0 } }
     var visibleWindows: [SkinWindow] { windows.filter(\.isVisible) }
+    /// Windows that dock and snap together: the skin windows plus the lyrics panel (not in full screen).
+    var dockWindows: [NSWindow] {
+        var w: [NSWindow] = visibleWindows
+        if let l = lyricsWindowRef, l.isVisible, !l.styleMask.contains(.fullScreen) { w.append(l) }
+        return w
+    }
 
     /// Custom presets (bands 60 Hz…16 kHz in dB, then preamp). Preamp compensates the largest boost to avoid clipping.
     static let artistPresets: [(String, [Double], Double)] = [
@@ -146,7 +161,10 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
 
     func start() {
         loadSettings()
-        audio.onFinish = { [weak self] in self?.next(auto: true) }
+        audio.onFinish = { [weak self] in
+            self?.finishedListening()
+            self?.next(auto: true)
+        }
         audio.onChange = { [weak self] in self?.transportChanged() }
         audio.onStreamInfo = { [weak self] in self?.streamInfoChanged() }
         audio.nextProvider = { [weak self] in self?.peekNext() }
@@ -185,6 +203,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         mainWindow.makeKeyAndOrderFront(nil)
         if eqVisible { eqWindow.orderFront(nil) }
         if plVisible { plWindow.orderFront(nil) }
+        updateWindowGroups()
+        if ProcessInfo.processInfo.environment["MUSICAMP_TEST_GROUPS"] != nil { debugGroupSequence() }
 
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification, NSWindow.didChangeOcclusionStateNotification] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] n in
@@ -208,6 +228,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     private var timerInterval: TimeInterval = 0
     private var lastMarqueeStep = Date.distantPast
     private var lastSave = Date()
+    private var lastPositionSave = Date()
     private var lastTrack: Track?
 
     /// Paused time display blinks at 1 Hz like Winamp.
@@ -246,6 +267,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         if playlist.currentTrack !== lastTrack {
             lastTrack = playlist.currentTrack
             applyAutoEQ(announce: true)
+            refreshLyrics()
         }
         nowPlaying?.update()
         notifier?.transportChanged()
@@ -280,6 +302,129 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             }
         }
         mainView.needsDisplay = true
+    }
+
+    // MARK: Speed, pitch, resume (podcasts and audiobooks)
+
+    /// Speed for music; each podcast keeps its own (default `podcastSpeed`); radio always plays at 1×.
+    var musicSpeed: Double = 1 { didSet { applySpeed(); notify() } }
+    var podcastSpeed: Double = 1 { didSet { applySpeed(); notify() } }
+    /// Pitch shift for music, in semitones.
+    var pitchSemitones: Double = 0 { didSet { applySpeed(); notify() } }
+
+    var currentEpisode: (PodcastFeed, PodcastEpisode)? {
+        playlist.currentTrack.flatMap { $0.isEpisode ? PodcastStore.shared.lookup($0.url) : nil }
+    }
+
+    func applySpeed() {
+        guard let t = playlist.currentTrack else { audio.rate = musicSpeed; audio.pitchCents = pitchSemitones * 100; return }
+        if t.isStream {
+            audio.rate = 1
+            audio.pitchCents = 0
+        } else if let (f, _) = currentEpisode {
+            audio.rate = f.speed ?? podcastSpeed
+            audio.pitchCents = 0
+        } else {
+            audio.rate = musicSpeed
+            audio.pitchCents = pitchSemitones * 100
+        }
+    }
+
+    func setSpeed(_ v: Double) {
+        let v = (max(0.5, min(3, v)) * 100).rounded() / 100
+        if let (f, _) = currentEpisode {
+            PodcastStore.shared.setSpeed(f.feedURL, v)
+        } else if playlist.currentTrack?.isStream == true {
+            flashMarquee("LA RADIO VA A 1X")
+            return
+        } else {
+            musicSpeed = v
+        }
+        applySpeed()
+        flashMarquee(String(format: "VELOCITA %.2gX", v), seconds: 1.5)
+        notify()
+    }
+
+    @objc func setSpeedItem(_ s: NSMenuItem) { setSpeed(Double(s.tag) / 100) }
+    @objc func faster() { setSpeed(audio.rate + 0.25) }
+    @objc func slower() { setSpeed(audio.rate - 0.25) }
+    @objc func pitchUp() { pitchSemitones = min(12, pitchSemitones + 1); flashPitch() }
+    @objc func pitchDown() { pitchSemitones = max(-12, pitchSemitones - 1); flashPitch() }
+    @objc func pitchReset() { pitchSemitones = 0; flashPitch() }
+    private func flashPitch() { flashMarquee(pitchSemitones == 0 ? "INTONAZIONE ORIGINALE" : String(format: "INTONAZIONE %+.0f SEMITONI", pitchSemitones), seconds: 1.5) }
+    @objc func skipBack15() { seek(by: -15) }
+    @objc func skipForward30() { seek(by: 30) }
+
+    /// Where to resume: the episode's saved position, or an audiobook/long file's.
+    private func resumePoint(for t: Track) -> Double? {
+        if t.isEpisode, let (f, e) = PodcastStore.shared.lookup(t.url) {
+            let s = PodcastStore.shared.state(f, e)
+            return !s.played && s.position > 5 ? s.position : nil
+        }
+        guard t.url.isFileURL, let p = PlaybackPositions.shared.position(t.url), p > 5 else { return nil }
+        return p
+    }
+
+    /// Saves the listening position of the current long file / episode (every 5 s while playing, and on pause).
+    func savePosition() {
+        guard let t = playlist.currentTrack, audio.hasSource, !t.isStream else { return }
+        let pos = audio.currentTime, d = audio.duration
+        if t.isEpisode, let (f, e) = PodcastStore.shared.lookup(t.url) {
+            PodcastStore.shared.update(f, e) { s in
+                s.position = pos
+                if d > 0, pos > d - 30 { s.played = true; s.position = 0 }
+            }
+        } else if t.url.isFileURL, PlaybackPositions.remembers(t.url, duration: d) {
+            PlaybackPositions.shared.set(t.url, d > 0 && pos > d - 10 ? nil : pos)
+        }
+    }
+
+    /// Reached the end: episodes become "played", audiobooks start over next time.
+    private func finishedListening() {
+        guard let t = playlist.currentTrack else { return }
+        if t.isEpisode, let (f, e) = PodcastStore.shared.lookup(t.url) {
+            PodcastStore.shared.update(f, e) { $0.played = true; $0.position = 0 }
+        } else if t.url.isFileURL {
+            PlaybackPositions.shared.set(t.url, nil)
+        }
+    }
+
+    /// Adds an episode to the playlist (downloaded file if present) and plays it.
+    func playEpisode(_ feed: PodcastFeed, _ ep: PodcastEpisode, play: Bool = true) {
+        guard let url = PodcastStore.shared.playableURL(feed, ep) else { return }
+        let i: Int
+        if let existing = playlist.tracks.firstIndex(where: { $0.url == url || $0.url.absoluteString == ep.enclosure }) {
+            i = existing
+            playlist.tracks[i] = makeEpisodeTrack(url, feed, ep)
+        } else {
+            playlist.tracks.append(makeEpisodeTrack(url, feed, ep))
+            i = playlist.tracks.count - 1
+        }
+        if play { playIndex(i) } else { plView.ensureVisible(i) }
+    }
+
+    private func makeEpisodeTrack(_ url: URL, _ feed: PodcastFeed, _ ep: PodcastEpisode) -> Track {
+        let t = Track(url: url, title: "\(feed.title) - \(ep.title)")
+        t.artist = feed.title
+        t.songTitle = ep.title
+        t.album = feed.title
+        t.duration = ep.duration
+        return t
+    }
+
+    func speedMenu() -> NSMenu {
+        let m = NSMenu(title: "Velocità")
+        for v in [50, 75, 100, 125, 150, 175, 200, 250, 300] {
+            item(m, String(format: "%.2g×", Double(v) / 100), #selector(setSpeedItem(_:)), tag: v)
+        }
+        m.addItem(.separator())
+        item(m, "Più veloce", #selector(faster), "]")
+        item(m, "Più lenta", #selector(slower), "[")
+        m.addItem(.separator())
+        item(m, "Intonazione +1 semitono", #selector(pitchUp), "]", [.command, .option])
+        item(m, "Intonazione −1 semitono", #selector(pitchDown), "[", [.command, .option])
+        item(m, "Intonazione originale", #selector(pitchReset))
+        return m
     }
 
     // MARK: Gapless / crossfade / ReplayGain
@@ -349,7 +494,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         let now = Date()
         let playing = audio.state == .playing
         let showVis = visShown
-        audio.analysisEnabled = playing && showVis
+        audio.analysisEnabled = playing && (showVis || audio.milkdropEnabled)
         var animating = false
         if showVis {
             animating = updateVis(playing: playing) || playing
@@ -369,6 +514,10 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         }
         for w in allSkinWindows where isShowing(w) { (w.contentView as? SkinView)?.refreshIfChanged() }
 
+        if playing, now.timeIntervalSince(lastPositionSave) > 5 {
+            lastPositionSave = now
+            savePosition()
+        }
         if now.timeIntervalSince(lastSave) > 30 {
             saveSettings()
             lastSave = now
@@ -455,6 +604,14 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         marqueeOffset = 0
         plView.ensureVisible(i)
         loadToken &+= 1
+        let resume = resumePoint(for: t)
+        if !t.url.isFileURL && !t.isStream {
+            // Podcast episode not downloaded: stream it with AVPlayer (seekable), from where you left off.
+            if start { audio.playRemote(t.url, at: resume ?? 0, index: i) } else { audio.unload() }
+            applySpeed()
+            then?()
+            return
+        }
         if t.isStream {
             t.streamTitle = nil
             if start {
@@ -485,7 +642,11 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
                     NSSound.beep()
                     return
                 }
-                if start { self.audio.play() }
+                if start {
+                    self.audio.play()
+                    if let r = resume, r < self.audio.duration - 10 { self.audio.seek(to: r) }
+                }
+                self.applySpeed()
                 then?()
             }
         }
@@ -502,7 +663,10 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         audio.play()
     }
 
-    @objc func pause() { audio.pause() }
+    @objc func pause() {
+        audio.pause()
+        savePosition()
+    }
     @objc func stop() { audio.stop() }
 
     @objc func next() { next(auto: false) }
@@ -611,6 +775,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         if t.streamTitle != info.title {
             t.streamTitle = info.title
             marqueeOffset = 0
+            refreshLyrics()   // the radio moved on to another song
         }
         playlist.touch()
         if let e = info.error, audio.state == .stopped { flashMarquee(e.uppercased(), seconds: 3) }
@@ -776,6 +941,9 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         let old = w.frame
         let s = size(of: v)
         guard old.size != s else { v.needsDisplay = true; return }
+        // Children follow their parent's origin on their own: detach so docked windows move exactly once.
+        detachGroups()
+        defer { updateWindowGroups() }
         let below = moveDocked ? windowsBelow(w) : []
         let nf = CGRect(x: old.minX, y: old.maxY - s.height, width: s.width, height: s.height)
         w.setFrame(nf, display: true)
@@ -789,7 +957,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         var res: [NSWindow] = []
         var queue: [NSWindow] = [w]
         while let cur = queue.popLast() {
-            for o in visibleWindows where o !== w && !res.contains(o) {
+            for o in dockWindows where o !== w && !res.contains(o) {
                 let a = cur.frame, b = o.frame
                 if abs(b.maxY - a.minY) <= 1, b.minX < a.maxX, b.maxX > a.minX {
                     res.append(o)
@@ -811,12 +979,64 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         var res: [NSWindow] = [w]
         var queue: [NSWindow] = [w]
         while let c = queue.popLast() {
-            for o in visibleWindows where !res.contains(o) && touches(c.frame, o.frame) {
+            for o in dockWindows where !res.contains(o) && touches(c.frame, o.frame) {
                 res.append(o)
                 queue.append(o)
             }
         }
         return res
+    }
+
+    // MARK: Window groups (Mission Control)
+    // Docked windows become child windows of one root (main if present, else EQ, else playlist), so Mission
+    // Control/Exposé shows them as a single window and they move together; undocked windows stay separate.
+
+    func detachGroups() {
+        for w in windows { for c in w.childWindows ?? [] where c is SkinWindow || c === lyricsWindowRef { w.removeChildWindow(c) } }
+        if let l = lyricsWindowRef { for c in l.childWindows ?? [] { l.removeChildWindow(c) } }
+    }
+
+    func updateWindowGroups() {
+        guard mainWindow != nil else { return }
+        detachGroups()
+        var remaining = dockWindows
+        while let first = remaining.first {
+            let group = connected(from: first)
+            remaining.removeAll { w in group.contains { $0 === w } }
+            let root: NSWindow = group.first { $0 === mainWindow } ?? group.first { $0 === eqWindow } ?? first
+            for w in group where w !== root { root.addChildWindow(w, ordered: .above) }
+        }
+        if ProcessInfo.processInfo.environment["MUSICAMP_DEBUG_GROUPS"] != nil {
+            let line = dockWindows.map { w in "\(w.title)\((w.childWindows ?? []).map(\.title))" }.joined(separator: " ")
+            NSLog("groups: %@", line)
+        }
+    }
+
+    /// Debug (MUSICAMP_TEST_GROUPS): runs the drag/dock code paths on the real windows and logs the groups.
+    func debugGroupSequence() {
+        let pl = plWindow!, eq = eqWindow!, main = mainWindow!
+        let home = (main.frame.origin, eq.frame.origin, pl.frame.origin)
+        func step(_ name: String, _ after: Double, _ body: @escaping () -> Void) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + after) {
+                body()
+                let line = self.windows.map { w in "\(w.title)\((w.childWindows ?? []).map(\.title))" }.joined(separator: " ")
+                NSLog("step %@ -> %@ | pl at %@", name, line, NSStringFromPoint(pl.frame.origin))
+            }
+        }
+        step("1 stacca playlist", 0.5) { self.beginDrag(pl); pl.setFrameOrigin(NSPoint(x: pl.frame.minX + 400, y: pl.frame.minY)); self.endDrag() }
+        step("2 riaggancia playlist", 1.0) { self.beginDrag(pl); pl.setFrameOrigin(NSPoint(x: eq.frame.minX, y: eq.frame.minY - pl.frame.height)); self.endDrag() }
+        step("3 stacca EQ+playlist sotto", 1.5) {
+            self.beginDrag(eq); eq.setFrameOrigin(NSPoint(x: eq.frame.minX + 400, y: eq.frame.minY)); self.endDrag()
+            self.beginDrag(pl); pl.setFrameOrigin(NSPoint(x: eq.frame.minX, y: eq.frame.minY - pl.frame.height)); self.endDrag()
+        }
+        step("4 sposta principale (EQ+PL restano)", 2.0) {
+            self.beginDrag(main); main.setFrameOrigin(NSPoint(x: main.frame.minX, y: main.frame.minY - 30)); self.endDrag()
+        }
+        step("5 ripristina", 2.5) {
+            self.detachGroups()
+            main.setFrameOrigin(home.0); eq.setFrameOrigin(home.1); pl.setFrameOrigin(home.2)
+            self.updateWindowGroups()
+        }
     }
 
     // Window dragging with docking (main drags its docked group) and 10 px edge snapping.
@@ -829,6 +1049,11 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         dragWindow = w
         dragMouse = NSEvent.mouseLocation
         dragGroup = w === mainWindow ? connected(from: w) : [w]
+        if w !== mainWindow {
+            // EQ/playlist leave their group when dragged (Winamp): detach them and their own children.
+            w.parent?.removeChildWindow(w)
+            for c in w.childWindows ?? [] { w.removeChildWindow(c) }
+        }
         dragOrigins = Dictionary(uniqueKeysWithValues: dragGroup.map { ($0, $0.frame.origin) })
     }
 
@@ -839,7 +1064,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         let moved = dragGroup.compactMap { g in dragOrigins[g].map { CGRect(origin: CGPoint(x: $0.x + dx, y: $0.y + dy), size: g.frame.size) } }
         guard let first = moved.first else { return }
         let union = moved.dropFirst().reduce(first) { $0.union($1) }
-        let others = visibleWindows.filter { !dragGroup.contains($0) }.map(\.frame)
+        let others = dockWindows.filter { w in !dragGroup.contains { $0 === w } }.map(\.frame)
         let screen = (NSScreen.screens.first { $0.frame.contains(m) } ?? NSScreen.main)?.visibleFrame ?? .zero
         let s = snapEnabled ? snapDelta(union, others, screen) : .zero
         dx += s.x
@@ -853,6 +1078,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         dragWindow = nil
         dragGroup = []
         dragOrigins = [:]
+        updateWindowGroups()   // dropped against another window = docked again
     }
 
     private func snapDelta(_ f: CGRect, _ targets: [CGRect], _ screen: CGRect) -> CGPoint {
@@ -880,12 +1106,16 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
 
     @objc func toggleEQ() {
         eqVisible.toggle()
+        detachGroups()   // a hidden child would come back with its parent
         if eqVisible { eqWindow.orderFront(nil) } else { eqWindow.orderOut(nil) }
+        updateWindowGroups()
     }
 
     @objc func togglePL() {
         plVisible.toggle()
+        detachGroups()
         if plVisible { plWindow.orderFront(nil) } else { plWindow.orderOut(nil) }
+        updateWindowGroups()
     }
 
     @objc func toggleMainShade() {
@@ -908,6 +1138,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         doubleSize.toggle()
         let new = scale
         let anchor = CGPoint(x: mainWindow.frame.minX, y: mainWindow.frame.maxY)
+        detachGroups()
+        defer { updateWindowGroups() }
         for w in windows {
             guard let v = w.contentView as? SkinView else { continue }
             let tl = CGPoint(x: w.frame.minX, y: w.frame.maxY)
@@ -1012,6 +1244,10 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         item(m, "Preferenze…", #selector(showPreferences))
         item(m, "Libreria…", #selector(showLibrary))
         item(m, "Radio…", #selector(showRadio))
+        item(m, "Podcast…", #selector(showPodcasts))
+        item(m, "Testi…", #selector(showLyrics))
+        item(m, "Karaoke a schermo intero", #selector(showKaraoke))
+        item(m, "Milkdrop", #selector(showMilkdrop))
         item(m, "Apri URL…", #selector(openURL))
         m.addItem(.separator())
         item(m, "Equalizzatore", #selector(toggleEQ))
@@ -1085,11 +1321,14 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         item(m, "Accoda / togli dalla coda (Q)", #selector(queueSelected))
         item(m, "Svuota coda", #selector(clearQueue))
         item(m, "Vai al brano in riproduzione (J)", #selector(jumpToCurrent))
+        m.addItem(.separator())
+        item(m, "Raggruppa per artista e album", #selector(togglePlTree))
         return m
     }
 
     @objc func setVisMode(_ s: NSMenuItem) { visMode = s.tag }
     @objc func toggleTimeRemaining() { timeRemaining.toggle() }
+    @objc func togglePlTree() { plTree.toggle(); plView.clampScroll() }
     @objc func toggleShuffle() { shuffle.toggle() }
     @objc func toggleRepeat() { repeatOn.toggle() }
     @objc func resetEQ() { bands = Array(repeating: 0, count: 10); preamp = 0 }
@@ -1145,6 +1384,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         case #selector(togglePLShade): on(plShade)
         case #selector(toggleEQShade): on(eqShade)
         case #selector(toggleDoubleSize): on(doubleSize)
+        case #selector(togglePlTree): on(plTree)
         case #selector(toggleAlwaysOnTop): on(alwaysOnTop)
         case #selector(toggleTimeRemaining): on(timeRemaining)
         case #selector(toggleShuffle): on(shuffle)
@@ -1155,6 +1395,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         case #selector(fileInfo): return playlist.current != nil
         case #selector(clearQueue): return !playlist.queue.isEmpty
         case #selector(queueSelected): return !playlist.selection.isEmpty
+        case #selector(setSpeedItem(_:)): on(Int((audio.rate * 100).rounded()) == it.tag)
         case #selector(forgetAutoEQ): return playlist.currentTrack.map { autoEQ[Self.autoKey($0)] != nil } ?? false
         default: break
         }
@@ -1229,6 +1470,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         preamp = dbl("preamp", 0)
         if let b = d.array(forKey: "bands") as? [Double], b.count == 10 { bands = b }
         doubleSize = bool("doubleSize", false)
+        retinaSkins = bool("retinaSkins", true)
         alwaysOnTop = bool("alwaysOnTop", false)
         shuffle = bool("shuffle", false)
         repeatOn = bool("repeat", false)
@@ -1254,8 +1496,12 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         oscStyle = int("oscStyle", 1)
         plFontSize = int("plFontSize", 9)
         plShowNumbers = bool("plShowNumbers", true)
+        plTree = bool("plTree", false)
         plUseSkinFont = bool("plUseSkinFont", true)
         radioBuffer = dbl("radioBuffer", 2)
+        musicSpeed = dbl("musicSpeed", 1)
+        podcastSpeed = dbl("podcastSpeed", 1)
+        pitchSemitones = dbl("pitchSemitones", 0)
         gapless = bool("gapless", true)
         ffmpegEnabled = bool("ffmpegEnabled", true)
         crossfadeOn = bool("crossfadeOn", false)
@@ -1274,19 +1520,20 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         let d = UserDefaults.standard
         let values: [String: Any] = [
             "volume": volume, "balance": balance, "eqOn": eqOn, "eqAuto": eqAuto, "preamp": preamp, "bands": bands,
-            "doubleSize": doubleSize, "alwaysOnTop": alwaysOnTop, "shuffle": shuffle, "repeat": repeatOn,
+            "doubleSize": doubleSize, "retinaSkins": retinaSkins, "alwaysOnTop": alwaysOnTop, "shuffle": shuffle, "repeat": repeatOn,
             "timeRemaining": timeRemaining, "visMode": visMode, "mainShade": mainShade, "eqShade": eqShade,
             "plShade": plShade, "eqVisible": eqVisible, "plVisible": plVisible, "plW": plW, "plH": plH,
             "snapEnabled": snapEnabled, "snapDistance": snapDistance, "marqueeScroll": marqueeScroll,
             "resumeOnLaunch": resumeOnLaunch, "visThinBands": visThinBands, "visPeaksOn": visPeaksOn,
             "visFalloff": visFalloff, "peakFalloff": peakFalloff, "oscStyle": oscStyle, "plFontSize": plFontSize,
-            "plShowNumbers": plShowNumbers, "plUseSkinFont": plUseSkinFont, "autoDownloadFonts": autoDownloadFonts,
+            "plShowNumbers": plShowNumbers, "plTree": plTree, "plUseSkinFont": plUseSkinFont, "autoDownloadFonts": autoDownloadFonts,
             "menuBarEnabled": menuBarEnabled, "notifyTrackChange": notifyTrackChange,
             "notifyOnlyInBackground": notifyOnlyInBackground,
             "playlist": playlist.tracks.map { $0.url.isFileURL ? $0.url.path : $0.url.absoluteString },
             "streamTitles": Dictionary(playlist.tracks.filter(\.isStream).map { ($0.url.absoluteString, $0.title) },
                                        uniquingKeysWith: { a, _ in a }),
-            "radioBuffer": radioBuffer, "ffmpegEnabled": ffmpegEnabled, "gapless": gapless, "crossfadeOn": crossfadeOn,
+            "radioBuffer": radioBuffer, "ffmpegEnabled": ffmpegEnabled, "musicSpeed": musicSpeed,
+            "podcastSpeed": podcastSpeed, "pitchSemitones": pitchSemitones, "gapless": gapless, "crossfadeOn": crossfadeOn,
             "crossfadeSeconds": crossfadeSeconds, "rgMode": rgMode, "rgPreamp": rgPreamp, "rgAnalyze": rgAnalyze,
             "rgPreventClip": rgPreventClip,
             "current": playlist.current ?? -1,

@@ -92,7 +92,7 @@ struct MiniPlayerView: View {
                            in: 0...max(1, a.duration)) { editing in
                         if !editing, let s = scrub { a.seek(to: s); scrub = nil }
                     }
-                    .disabled(a.file == nil || a.state == .stopped || a.isStream)
+                    .disabled(!a.hasSource || a.state == .stopped || a.isStream)
                     HStack {
                         Text(Ctl.mmss(scrub ?? a.currentTime))
                         Spacer()

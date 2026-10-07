@@ -213,6 +213,7 @@ private struct PlaylistTab: View {
                 Toggle("Usa il font indicato dalla skin (pledit.txt)", isOn: ctl.binding(\.plUseSkinFont))
                 Toggle("Cerca online i font mancanti (Google Fonts)", isOn: ctl.binding(\.autoDownloadFonts))
                 Toggle("Mostra numerazione", isOn: ctl.binding(\.plShowNumbers))
+                Toggle("Raggruppa per artista e album (albero)", isOn: ctl.binding(\.plTree))
                 Toggle("Playlist ridotta (shade)", isOn: ctl.toggleBinding(\.plShade) { ctl.togglePLShade() })
             }
             SkinFontSection(ctl: ctl, fonts: FontResolver.shared)
@@ -280,9 +281,17 @@ private struct SkinTab: View {
                 }
                 .frame(width: 340, height: 150)
                 if let u = selection {
-                    Text(u == Self.defaultURL ? "Predefinita" : u.lastPathComponent).font(.headline)
+                    HStack(spacing: 6) {
+                        Text(u == Self.defaultURL ? "Predefinita" : u.lastPathComponent).font(.headline)
+                        if let s = cache[u], s.isRetina {
+                            Text("Retina").font(.caption2.bold()).padding(.horizontal, 5).padding(.vertical, 1)
+                                .background(Capsule().fill(Color.accentColor.opacity(0.25)))
+                                .help("\(s.images2x.count) bitmap @2x")
+                        }
+                    }
                     Text(isCurrent(u) ? "Skin attiva" : "").font(.caption).foregroundStyle(.secondary)
                 }
+                Toggle("Usa la grafica Retina (@2x) delle skin quando disponibile", isOn: $ctl.retinaSkins)
                 HStack {
                     Button("Applica") { apply() }
                         .keyboardShortcut(.defaultAction)

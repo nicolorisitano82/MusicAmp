@@ -20,7 +20,57 @@ final class PlaylistView: SkinView {
         "list": SpriteMenu(bar: R(250, 111, 3, 54), items: [(R(204, 111, 22, 18), "newlist"), (R(204, 130, 22, 18), "savelist"), (R(204, 149, 22, 18), "loadlist")]),
     ]
 
-    var scrollRow = 0
+    /// Scroll position in rows; fractional, so trackpads and the wheel animation move the list pixel by pixel.
+    var scrollPos: CGFloat = 0
+    var scrollRow: Int {
+        get { Int(floor(scrollPos)) }
+        set { scrollPos = CGFloat(newValue) }
+    }
+    private var scrollTarget: CGFloat?
+    private var scrollTimer: Timer?
+    /// Display row under a y coordinate of the list.
+    private func rowAt(_ y: CGFloat) -> Int { Int(floor(scrollPos + (y - 20) / rowH)) }
+
+    // MARK: Artist → album → track view
+
+    /// Closed headers (PlaylistTree.Node.key).
+    private var collapsed: Set<String> = []
+    private var treeCache: (key: Int, tree: PlaylistTree)?
+
+    /// The tree when the grouped view is on, rebuilt only when the playlist or the closed headers change.
+    var tree: PlaylistTree? {
+        guard ctl.plTree else { return nil }
+        var h = Hasher()
+        h.combine(ctl.playlist.version)
+        h.combine(collapsed)
+        let key = h.finalize()
+        if let c = treeCache, c.key == key { return c.tree }
+        let t = PlaylistTree(ctl.playlist.tracks, collapsed: collapsed)
+        treeCache = (key, t)
+        return t
+    }
+
+    private var rowCount: Int { tree?.rows.count ?? ctl.playlist.tracks.count }
+
+    /// Playlist index shown on a display row (nil for headers and past the end).
+    private func trackAt(_ row: Int) -> Int? {
+        if let tree {
+            guard row >= 0, row < tree.rows.count, case .track(let i, _) = tree.rows[row] else { return nil }
+            return i
+        }
+        return row >= 0 && row < ctl.playlist.tracks.count ? row : nil
+    }
+
+    private func displayRow(ofTrack i: Int) -> Int {
+        guard let tree else { return i }
+        return i < tree.rowOfTrack.count ? tree.rowOfTrack[i] : tree.rows.count
+    }
+
+    private func toggle(_ key: String) {
+        if collapsed.contains(key) { collapsed.remove(key) } else { collapsed.insert(key) }
+        clampScroll()
+        needsDisplay = true
+    }
     private var rowH: CGFloat { CGFloat(max(10, ctl.plFontSize + 4)) }
     private var pressed: String?
     private var pressInside = false
@@ -31,7 +81,6 @@ final class PlaylistView: SkinView {
     private var openMenu: (id: String, button: CGRect)?
     private var menuHover: Int?
     private var menuSticky = false
-    private var scrollAccum: CGFloat = 0
     /// Row boundary where dragged files would be inserted.
     private var dropIndex: Int?
 
@@ -42,7 +91,13 @@ final class PlaylistView: SkinView {
         let p = CGPoint(x: p0.x / scale, y: p0.y / scale)
         guard !ctl.plShade else { return ctl.playlist.tracks.count }
         guard listRect.insetBy(dx: 0, dy: -4).contains(p) else { return ctl.playlist.tracks.count }
-        return max(0, min(ctl.playlist.tracks.count, scrollRow + Int(((p.y - 20) / rowH).rounded())))
+        let b = max(0, Int((scrollPos + (p.y - 20) / rowH).rounded()))
+        guard let tree else { return min(ctl.playlist.tracks.count, b) }
+        guard b < tree.rows.count else { return ctl.playlist.tracks.count }
+        switch tree.rows[b] {
+        case .track(let i, _): return i
+        case .header(let n): return tree.nodes[n].tracks.min() ?? ctl.playlist.tracks.count
+        }
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { draggingUpdated(sender) }
@@ -76,7 +131,7 @@ final class PlaylistView: SkinView {
     private var W: CGFloat { logicalSize.width }
     private var H: CGFloat { logicalSize.height }
     var visibleRows: Int { max(1, Int((H - 58) / rowH)) }
-    private var maxScroll: Int { max(0, ctl.playlist.tracks.count - visibleRows) }
+    private var maxScroll: Int { max(0, rowCount - visibleRows) }
     private var listRect: CGRect { R(12, 20, W - 32, H - 58) }
 
     private func buttonRects() -> [(String, CGRect)] {
@@ -94,10 +149,13 @@ final class PlaylistView: SkinView {
         return (0..<n).map { R(b.minX, b.maxY - CGFloat(n - $0) * 18, 22, 18) }
     }
 
-    func clampScroll() { scrollRow = max(0, min(scrollRow, maxScroll)) }
+    func clampScroll() { scrollPos = max(0, min(scrollPos, CGFloat(maxScroll))) }
 
     func ensureVisible(_ i: Int) {
-        if i < scrollRow { scrollRow = i } else if i >= scrollRow + visibleRows { scrollRow = i - visibleRows + 1 }
+        if let tree { collapsed.subtract(tree.hiding(i)) }
+        let f = CGFloat(displayRow(ofTrack: i))
+        if f < scrollPos { scrollPos = f } else if f + 1 > scrollPos + CGFloat(visibleRows) { scrollPos = f + 1 - CGFloat(visibleRows) }
+        scrollTarget = nil
         clampScroll()
     }
 
@@ -153,11 +211,29 @@ final class PlaylistView: SkinView {
         let baseline = ((rowH + fs * 0.7) / 2).rounded()
         let cur = pl.current
         r.clip(list) {
-            for row in 0..<visibleRows {
-                let i = scrollRow + row
-                guard i < pl.tracks.count else { break }
+            let frac = scrollPos - floor(scrollPos)
+            let tree = self.tree
+            let bold = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
+            for row in 0...visibleRows {
+                let ri = scrollRow + row
+                guard ri < rowCount else { break }
+                let y = ((20 + (CGFloat(row) - frac) * rowH) * 2).rounded() / 2   // half-pixel steps: 1 device pixel on Retina
+                if let tree, case .header(let n) = tree.rows[ri] {
+                    // Artist / album header: disclosure triangle, name, track count and total length.
+                    let node = tree.nodes[n]
+                    if !node.tracks.isEmpty, node.tracks.allSatisfy(pl.selection.contains) { r.fill(st.selectedBG, R(12, y, W - 32, rowH)) }
+                    let indent: CGFloat = node.kind == .artist ? 0 : 10
+                    let col = node.tracks.contains(cur ?? -1) ? st.current : st.normal
+                    let total = node.tracks.compactMap { pl.tracks[$0].duration }.reduce(0, +)
+                    let rw = r.ttf("\(node.tracks.count) · \(Ctl.hmmss(total))", font: font, color: col, x: W - 22, baseline: y + baseline, maxWidth: 90, alignRight: true)
+                    let open = !collapsed.contains(node.key)
+                    r.ttf((open ? "▾ " : "▸ ") + node.title, font: bold, color: col, x: 14 + indent, baseline: y + baseline, maxWidth: W - 40 - indent - rw - 6)
+                    continue
+                }
+                guard let i = trackAt(ri) else { continue }
+                var depth = 0
+                if let tree, case .track(_, let d) = tree.rows[ri] { depth = d }
                 let t = pl.tracks[i]
-                let y = 20 + CGFloat(row) * rowH
                 if pl.selection.contains(i) { r.fill(st.selectedBG, R(12, y, W - 32, rowH)) }
                 let col = i == cur ? st.current : st.normal
                 var durW: CGFloat = 0
@@ -168,20 +244,25 @@ final class PlaylistView: SkinView {
                 if let q = pl.queuePosition(t) {
                     durW += 4 + r.ttf("[\(q)]", font: font, color: col, x: W - 22 - durW - 4, baseline: y + baseline, maxWidth: 40, alignRight: true)
                 }
-                let label = ctl.plShowNumbers ? "\(i + 1). \(t.title)" : t.title
-                r.ttf(label, font: font, color: col, x: 14, baseline: y + baseline, maxWidth: W - 40 - durW - 6)
+                // Under an artist the title alone is enough (the full "Artist - Title" for compilations).
+                var name = t.title
+                if depth > 0, let tree, let pn = tree.parent(of: i), !tree.nodes[pn].variousArtists, let s = t.songTitle, !s.isEmpty { name = s }
+                let label = ctl.plShowNumbers ? "\(i + 1). \(name)" : name
+                let indent = CGFloat(depth) * 10 + (depth > 0 ? 8 : 0)
+                r.ttf(label, font: font, color: col, x: 14 + indent, baseline: y + baseline, maxWidth: W - 40 - indent - durW - 6)
             }
         }
 
         // Insertion line while files are dragged over the list
-        if let d = dropIndex, d >= scrollRow, d <= scrollRow + visibleRows {
-            let y = min(H - 39, 20 + CGFloat(d - scrollRow) * rowH)
+        if let d0 = dropIndex, case let d = d0 >= pl.tracks.count ? rowCount : displayRow(ofTrack: d0),
+           CGFloat(d) >= scrollPos, CGFloat(d) <= scrollPos + CGFloat(visibleRows) {
+            let y = min(H - 39, (20 + (CGFloat(d) - scrollPos) * rowH).rounded())
             r.fill(st.current, R(12, y - 1, W - 32, 2))
         }
 
         // Scrollbar thumb
         let track = H - 58 - 18
-        let f = maxScroll > 0 ? CGFloat(scrollRow) / CGFloat(maxScroll) : 0
+        let f = maxScroll > 0 ? min(1, scrollPos / CGFloat(maxScroll)) : 0
         r.blit("pledit", scrolling ? R(61, 53, 8, 18) : R(52, 53, 8, 18), W - 15, 20 + (f * track).rounded())
 
         // Running time "selected/total" and mini time
@@ -213,10 +294,10 @@ final class PlaylistView: SkinView {
         var h = Hasher()
         h.combine(isActive); h.combine(ObjectIdentifier(skin)); h.combine(ctl.playlist.version)
         h.combine("\(a.state)"); h.combine(a.state == .stopped ? 0 : Int(a.currentTime)); h.combine(ctl.timeRemaining)
-        h.combine(scrollRow); h.combine(ctl.plShade); h.combine(ctl.plW); h.combine(ctl.plH)
+        h.combine(scrollPos); h.combine(ctl.plShade); h.combine(ctl.plW); h.combine(ctl.plH)
         h.combine(ctl.plFontSize); h.combine(ctl.plShowNumbers); h.combine(ctl.plUseSkinFont)
         h.combine(pressed); h.combine(pressInside); h.combine(openMenu?.id); h.combine(menuHover); h.combine(scrolling)
-        h.combine(dropIndex)
+        h.combine(dropIndex); h.combine(ctl.plTree); h.combine(collapsed)
         return h.finalize()
     }
 
@@ -269,8 +350,23 @@ final class PlaylistView: SkinView {
             return true
         }
         if listRect.contains(p) {
-            let i = scrollRow + Int((p.y - 20) / rowH)
-            guard i < pl.tracks.count else {
+            let ri = rowAt(p.y)
+            if let tree, ri >= 0, ri < tree.rows.count, case .header(let n) = tree.rows[ri] {
+                let node = tree.nodes[n]
+                let indent: CGFloat = node.kind == .artist ? 0 : 10
+                if p.x < 14 + indent + 9 {
+                    toggle(node.key)   // the triangle opens/closes
+                } else if e.clickCount == 2 {
+                    if let f = node.tracks.first { ctl.playIndex(f) }
+                } else if e.modifierFlags.contains(.command) || e.modifierFlags.contains(.shift) {
+                    pl.selection.formUnion(node.tracks)
+                } else {
+                    pl.selection = Set(node.tracks)
+                    anchor = node.tracks.first
+                }
+                return true
+            }
+            guard let i = trackAt(ri) else {
                 pl.selection = []
                 return true
             }
@@ -286,7 +382,7 @@ final class PlaylistView: SkinView {
             } else {
                 if !pl.selection.contains(i) { pl.selection = [i] }
                 anchor = i
-                dragRow = i
+                if tree == nil { dragRow = i }   // reordering by drag only in the flat list
             }
             return true
         }
@@ -308,7 +404,7 @@ final class PlaylistView: SkinView {
         }
         if scrolling { scrollTo(p); return }
         if let d = dragRow {
-            let i = max(0, min(ctl.playlist.tracks.count - 1, scrollRow + Int(floor((p.y - 20) / rowH))))
+            let i = max(0, min(ctl.playlist.tracks.count - 1, trackAt(rowAt(p.y)) ?? d))
             if i != d {
                 ctl.playlist.moveSelection(by: i - d)
                 dragRow = i
@@ -327,7 +423,7 @@ final class PlaylistView: SkinView {
             dragRow = nil
             // A plain click on an already-selected row (no move) collapses the selection to it.
             if !e.modifierFlags.contains(.shift), !e.modifierFlags.contains(.command),
-               scrollRow + Int((p.y - 20) / rowH) == d, listRect.contains(p) {
+               trackAt(rowAt(p.y)) == d, listRect.contains(p) {
                 ctl.playlist.selection = [d]
             }
         }
@@ -366,7 +462,8 @@ final class PlaylistView: SkinView {
     private func scrollTo(_ p: CGPoint) {
         let track = H - 58 - 18
         let f = max(0, min(1, (p.y - 20 - 9) / track))
-        scrollRow = Int((f * CGFloat(maxScroll)).rounded())
+        scrollTarget = nil
+        scrollPos = f * CGFloat(maxScroll)
     }
 
     private func menuAction(_ a: String) {
@@ -409,6 +506,17 @@ final class PlaylistView: SkinView {
         case 36, 76:
             if let i = pl.selection.min() { ctl.playIndex(i) }
             return
+        case 123, 124 where tree != nil:   // ←/→ close/open the album (then the artist) of the selection
+            guard let tree, let i = pl.selection.min() else { return }
+            let owners = tree.nodes.filter { $0.tracks.contains(i) }   // artist first, then album
+            if e.keyCode == 123 {
+                if let open = owners.last(where: { !collapsed.contains($0.key) }) { collapsed.insert(open.key) }
+            } else {
+                collapsed.subtract(owners.map(\.key))
+            }
+            clampScroll()
+            needsDisplay = true
+            return
         case 12 where e.modifierFlags.intersection([.command, .control, .option]).isEmpty:   // Q
             ctl.queueSelected()
             return
@@ -417,6 +525,12 @@ final class PlaylistView: SkinView {
             let d = e.keyCode == 126 ? -1 : 1
             if e.modifierFlags.contains(.option) {
                 pl.moveSelection(by: d)
+            } else if let tree {
+                // Next/previous visible track in tree order.
+                let base = d < 0 ? (pl.selection.min() ?? 0) : (pl.selection.max() ?? 0)
+                var r = pl.selection.isEmpty ? (d > 0 ? -1 : tree.rows.count) : displayRow(ofTrack: base)
+                repeat { r += d } while r >= 0 && r < tree.rows.count && trackAt(r) == nil
+                if let i = trackAt(r) { pl.selection = [i]; anchor = i }
             } else {
                 let base = d < 0 ? (pl.selection.min() ?? 1) : (pl.selection.max() ?? -1)
                 let i = max(0, min(pl.tracks.count - 1, base + d))
@@ -432,13 +546,30 @@ final class PlaylistView: SkinView {
     }
 
     override func scrollWheel(with e: NSEvent) {
-        scrollAccum -= e.hasPreciseScrollingDeltas ? e.scrollingDeltaY / (rowH * scale) : e.scrollingDeltaY * 3
-        let steps = Int(scrollAccum)
-        if steps != 0 {
-            scrollAccum -= CGFloat(steps)
-            scrollRow += steps
+        if e.hasPreciseScrollingDeltas {
+            // Trackpad / Magic Mouse: follow the fingers (and the momentum) pixel by pixel.
+            scrollTarget = nil
+            scrollPos -= e.scrollingDeltaY / (rowH * scale)
             clampScroll()
+            needsDisplay = true
+            return
         }
+        // Mouse wheel: 3 rows per notch, eased over a few frames instead of jumping.
+        let target = max(0, min(CGFloat(maxScroll), (scrollTarget ?? scrollPos.rounded()) - e.scrollingDeltaY * 3))
+        scrollTarget = target
+        guard scrollTimer == nil else { return }
+        scrollTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] t in
+            guard let self, let target = self.scrollTarget else { t.invalidate(); self?.scrollTimer = nil; return }
+            let d = target - self.scrollPos
+            if abs(d) < 0.02 {
+                self.scrollPos = target
+                self.scrollTarget = nil
+            } else {
+                self.scrollPos += d * 0.3
+            }
+            self.needsDisplay = true
+        }
+        RunLoop.main.add(scrollTimer!, forMode: .common)
     }
 
     // MARK: VoiceOver
@@ -483,9 +614,19 @@ final class PlaylistView: SkinView {
             }
         } else {
             let cur = pl.current
+            let tree = self.tree
             for row in 0..<visibleRows {
-                let i = scrollRow + row
-                guard i < pl.tracks.count else { break }
+                let ri = scrollRow + row
+                guard ri < rowCount else { break }
+                if let tree, case .header(let n) = tree.rows[ri] {
+                    let node = tree.nodes[n], open = !collapsed.contains(node.key)
+                    items.append(AXItem(id: "hdr-\(node.key)", kind: .row,
+                                        label: "\(node.kind == .artist ? "Artista" : "Album") \(node.title), \(node.tracks.count) brani",
+                                        rect: R(12, 20 + CGFloat(row) * rowH, W - 32, rowH), value: open ? "aperto" : "chiuso",
+                                        press: { [weak self] in self?.toggle(node.key) }))
+                    continue
+                }
+                guard let i = trackAt(ri) else { continue }
                 let t = pl.tracks[i]
                 var state: [String] = []
                 if i == cur { state.append("in riproduzione") }

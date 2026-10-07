@@ -24,6 +24,19 @@ final class AudioEngine {
 
     let engine = AVAudioEngine()
     let eq = AVAudioUnitEQ(numberOfBands: 10)
+    /// Speed (time-stretch, pitch preserved) and independent pitch shift; bypassed at 1× / 0 cents.
+    let timePitch = AVAudioUnitTimePitch()
+
+    /// Playback speed, 0.5…3.0 (pitch preserved).
+    var rate: Double = 1 { didSet { applyRate() } }
+    /// Pitch shift in cents, -1200…+1200 (speed unchanged).
+    var pitchCents: Double = 0 { didSet { applyRate() } }
+
+    // Remote file (podcast episode not downloaded): AVPlayer streams it with seek and speed.
+    private var remote: AVPlayer?
+    private var remoteEnd: NSObjectProtocol?
+    /// Remote seekable file is the source (not a live stream).
+    var isRemote: Bool { remote != nil }
     private let deckMixer = AVAudioMixerNode()
     private let decks = [Deck(), Deck()]
     private var cur = 0
@@ -102,6 +115,11 @@ final class AudioEngine {
     private let lock = NSLock()
     private var spectrum = [Float](repeating: 0, count: 75)
     private var wave = [Float](repeating: 0, count: 76)
+    /// Milkdrop input: 576 stereo samples, a 512-bin spectrum and raw bass/mid/treble energy.
+    var milkdropEnabled = false
+    private var mdLeft = [Float](repeating: 0, count: 576), mdRight = [Float](repeating: 0, count: 576)
+    private var mdSpectrum = [Float](repeating: 0, count: 512)
+    private var mdBands: (Float, Float, Float) = (0, 0, 0)
     private let fftSize = 1024
     private let fftSetup: FFTSetup
     private let window: [Float]
@@ -113,6 +131,7 @@ final class AudioEngine {
         window = w
 
         engine.attach(deckMixer)
+        engine.attach(timePitch)
         engine.attach(eq)
         for (i, b) in eq.bands.enumerated() {
             b.filterType = .parametric
@@ -132,7 +151,9 @@ final class AudioEngine {
             engine.connect(d.converter, to: d.gain, format: bus)
             engine.connect(d.gain, to: deckMixer, fromBus: 0, toBus: i, format: bus)
         }
-        engine.connect(deckMixer, to: eq, format: bus)
+        engine.connect(deckMixer, to: timePitch, format: bus)
+        engine.connect(timePitch, to: eq, format: bus)
+        timePitch.bypass = true
         engine.connect(eq, to: engine.mainMixerNode, format: bus)
         engine.mainMixerNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buf, _ in
             self?.analyze(buf)
@@ -151,6 +172,10 @@ final class AudioEngine {
     }
 
     var duration: Double {
+        if let r = remote {
+            let d = r.currentItem?.duration.seconds ?? 0
+            return d.isFinite ? d : 0
+        }
         if let p = ffProbe { return p.duration }
         guard let f = file else { return 0 }
         return Double(f.length) / f.processingFormat.sampleRate
@@ -158,9 +183,13 @@ final class AudioEngine {
     var sampleRate: Double { isStream ? stream.sampleRate : ffProbe?.sampleRate ?? file?.fileFormat.sampleRate ?? 0 }
     var channels: Int { isStream ? stream.channels : ffProbe?.channels ?? Int(file?.fileFormat.channelCount ?? 0) }
     /// Something is loaded: a file (native or through ffmpeg) or a radio stream.
-    var hasSource: Bool { file != nil || isStream || ffProbe != nil }
+    var hasSource: Bool { file != nil || isStream || ffProbe != nil || remote != nil }
 
     var currentTime: Double {
+        if let r = remote {
+            let t = r.currentTime().seconds
+            return t.isFinite ? max(0, t) : 0
+        }
         if isStream {
             // Elapsed listening time, as Winamp shows for streams.
             if let h = hls {
@@ -200,6 +229,7 @@ final class AudioEngine {
     func use(_ f: AVAudioFile, url: URL, index: Int? = nil) {
         stop()
         endStream()
+        endRemote()
         ffProbe = nil
         let d = deck
         d.file = f
@@ -216,6 +246,7 @@ final class AudioEngine {
     func unload() {
         stop()
         endStream()
+        endRemote()
         ffProbe = nil
         deck.file = nil
         deck.url = nil
@@ -224,6 +255,13 @@ final class AudioEngine {
     }
 
     func play() {
+        if let r = remote {
+            if state == .playing { r.seek(to: .zero) }
+            r.playImmediately(atRate: Float(rate))
+            state = .playing
+            onChange?()
+            return
+        }
         if let u = streamURL {
             // Live radio: Play (or resume after pause) reconnects to the live point.
             if state != .playing || hls == nil { playStream(u) }
@@ -265,6 +303,17 @@ final class AudioEngine {
     }
 
     func pause() {
+        if let r = remote {
+            if state == .playing {
+                pausedTime = currentTime
+                r.pause()
+                state = .paused
+                onChange?()
+            } else if state == .paused {
+                play()
+            }
+            return
+        }
         if isStream {
             if state == .playing {
                 stopStreamTransport()
@@ -292,6 +341,14 @@ final class AudioEngine {
     }
 
     func stop() {
+        if let r = remote {
+            r.pause()
+            r.seek(to: .zero)
+            state = .stopped
+            pausedTime = 0
+            onChange?()
+            return
+        }
         stopStreamTransport()
         stopFF()
         cancelTransition(force: true)
@@ -307,6 +364,13 @@ final class AudioEngine {
     }
 
     func seek(to time: Double) {
+        if let r = remote {
+            let t = max(0, duration > 0 ? min(duration, time) : time)
+            r.seek(to: CMTime(seconds: t, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+            if state != .playing { pausedTime = t }
+            onChange?()
+            return
+        }
         if ffProbe != nil, state != .stopped {
             let t = max(0, min(duration > 0 ? duration : 0, time))
             let playing = state == .playing
@@ -333,6 +397,7 @@ final class AudioEngine {
         let x = Float(max(0, min(100, v)) / 100)
         engine.mainMixerNode.outputVolume = x * x
         hls?.volume = x * x
+        remote?.volume = x * x
     }
 
     func setBalance(_ b: Double) {
@@ -344,6 +409,11 @@ final class AudioEngine {
         eq.bypass = !on
         eq.globalGain = Float(preamp)
         for (i, g) in bands.prefix(10).enumerated() { eq.bands[i].gain = Float(g) }
+    }
+
+    func milkdropData() -> (left: [Float], right: [Float], spectrum: [Float], bands: (Float, Float, Float)) {
+        lock.lock(); defer { lock.unlock() }
+        return (mdLeft, mdRight, mdSpectrum, mdBands)
     }
 
     func visData() -> ([Float], [Float]) {
@@ -461,8 +531,10 @@ final class AudioEngine {
         guard let nt = player.lastRenderTime, let pt = player.playerTime(forNodeTime: nt), let cf = file else { return }
         let played = deck.startFrame + pt.sampleTime
         let remaining = max(0, Double(cf.length - played) / pt.sampleRate)
-        let fade = min(crossfadeSeconds, remaining, dur / 2)
-        let startIn = max(0, remaining - fade)
+        // At speed `rate` the remaining source seconds pass `rate` times faster on the clock.
+        let wallRemaining = remaining / max(0.25, rate)
+        let fade = min(crossfadeSeconds, wallRemaining, dur / 2)
+        let startIn = max(0, wallRemaining - fade)
         let startHost = nt.hostTime + AVAudioTime.hostTime(forSeconds: startIn)
         o.player.volume = fade > 0 ? 0 : 1
         o.player.prepare(withFrameCount: 8192)
@@ -570,12 +642,58 @@ final class AudioEngine {
         }
     }
 
+    // MARK: Speed and pitch
+
+    private func applyRate() {
+        let r = max(0.5, min(3, rate)), p = max(-1200, min(1200, pitchCents))
+        timePitch.rate = Float(r)
+        timePitch.pitch = Float(p)
+        timePitch.bypass = abs(r - 1) < 0.001 && abs(p) < 0.5
+        if let rp = remote, state == .playing { rp.rate = Float(r) }
+    }
+
+    // MARK: Remote files (podcast episodes streamed before download)
+
+    /// Streams a remote audio file with AVPlayer: seekable, speed-adjustable (EQ and visualizer need a download).
+    func playRemote(_ url: URL, at start: Double = 0, index: Int? = nil) {
+        stop()
+        endStream()
+        endRemote()
+        ffProbe = nil
+        deck.file = nil
+        deck.url = url
+        deck.index = index
+        let item = AVPlayerItem(url: url)
+        item.audioTimePitchAlgorithm = .timeDomain   // clear speech when sped up
+        let p = AVPlayer(playerItem: item)
+        p.volume = engine.mainMixerNode.outputVolume
+        remoteEnd = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
+            guard let self, self.remote === p, self.state == .playing else { return }
+            self.state = .stopped
+            self.onChange?()
+            self.onFinish?()
+        }
+        remote = p
+        if start > 0 { p.seek(to: CMTime(seconds: start, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) }
+        p.playImmediately(atRate: Float(max(0.5, min(3, rate))))
+        state = .playing
+        onChange?()
+    }
+
+    private func endRemote() {
+        if let o = remoteEnd { NotificationCenter.default.removeObserver(o) }
+        remoteEnd = nil
+        remote?.pause()
+        remote = nil
+    }
+
     // MARK: FFmpeg
 
     /// Loads a file that only ffmpeg can decode (Ogg, Opus, APE, WavPack…). Same transport as a native file.
     func useFFmpeg(url: URL, probe: FFmpeg.Probe, index: Int? = nil) {
         stop()
         endStream()
+        endRemote()
         let d = deck
         d.file = nil
         d.url = url
@@ -699,6 +817,7 @@ final class AudioEngine {
 
     /// Starts a radio stream: ICY/HTTP MP3 or AAC through our engine (EQ + visualizer), HLS through AVPlayer.
     func playStream(_ url: URL, name: String? = nil) {
+        endRemote()
         stop()
         ffProbe = nil
         deck.file = nil
@@ -935,9 +1054,25 @@ final class AudioEngine {
             spec[i] = max(0, min(1, (db + 70) / 52))
         }
 
+        var md: ([Float], [Float], [Float], (Float, Float, Float))?
+        if milkdropEnabled {
+            let m = min(576, n)
+            let l = (0..<576).map { $0 < m ? ch[0][$0] : 0 }
+            let r = chans > 1 ? (0..<576).map { $0 < m ? ch[1][$0] : 0 } : l
+            let sp = (0..<512).map { mags[$0] / Float(half) * 4 }
+            func energy(_ f0: Float, _ f1: Float) -> Float {
+                let a = max(1, Int(f0 / binHz)), b = min(half - 1, max(a, Int(f1 / binHz)))
+                var e: Float = 0
+                for k in a...b { e += mags[k] * mags[k] }
+                return e / Float(half * half)
+            }
+            md = (l, r, sp, (energy(20, 250), energy(250, 2000), energy(2000, 16000)))
+        }
+
         lock.lock()
         spectrum = spec
         wave = w
+        if let md { (mdLeft, mdRight, mdSpectrum, mdBands) = md }
         lock.unlock()
     }
 }

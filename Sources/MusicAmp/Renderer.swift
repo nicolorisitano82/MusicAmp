@@ -1,16 +1,20 @@
 import AppKit
 import CoreText
 
-/// 1:1 pixel framebuffer addressed with Winamp's top-left coordinates.
+/// Framebuffer addressed with Winamp's top-left 1x coordinates. With `pixelScale` 2 it has twice the
+/// pixels and draws the skin's @2x sheets where present (Retina skins); everything else is upscaled 1x art.
 final class Renderer {
     let ctx: CGContext
     let width: Int
     let height: Int
     let skin: Skin
+    let pixelScale: Int
+    /// Take sprites from the skin's @2x sheets when present (Retina skins); otherwise 1x art upscaled.
+    let hiRes: Bool
 
-    init?(width: Int, height: Int, skin: Skin) {
+    init?(width: Int, height: Int, skin: Skin, pixelScale: Int = 1, hiRes: Bool? = nil) {
         guard width > 0, height > 0,
-              let c = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+              let c = CGContext(data: nil, width: width * pixelScale, height: height * pixelScale, bitsPerComponent: 8, bytesPerRow: 0,
                                 space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
         else { return nil }
@@ -18,6 +22,9 @@ final class Renderer {
         self.width = width
         self.height = height
         self.skin = skin
+        self.pixelScale = pixelScale
+        self.hiRes = hiRes ?? (pixelScale >= 2)
+        c.scaleBy(x: CGFloat(pixelScale), y: CGFloat(pixelScale))
         c.interpolationQuality = .none
         c.setShouldAntialias(false)
     }
@@ -32,7 +39,10 @@ final class Renderer {
     func blit(_ sheet: String, _ src: CGRect, _ x: CGFloat, _ y: CGFloat, w: CGFloat? = nil, h: CGFloat? = nil) {
         guard let img = skin.image(sheet) else { return }
         let s = src.intersection(CGRect(x: 0, y: 0, width: img.width, height: img.height))
-        guard !s.isNull, !s.isEmpty, let sub = img.cropping(to: s) else { return }
+        guard !s.isNull, !s.isEmpty else { return }
+        let hi = hiRes && pixelScale >= 2 ? skin.image2x(sheet) : nil
+        guard let sub = hi.flatMap({ $0.cropping(to: CGRect(x: s.minX * 2, y: s.minY * 2, width: s.width * 2, height: s.height * 2)) })
+                ?? img.cropping(to: s) else { return }
         let sx = (w ?? src.width) / src.width
         let sy = (h ?? src.height) / src.height
         let dst = CGRect(x: x + (s.minX - src.minX) * sx, y: y + (s.minY - src.minY) * sy,

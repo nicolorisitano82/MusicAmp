@@ -10,8 +10,11 @@ final class Track {
     /// Live "StreamTitle" of a radio track.
     var streamTitle: String?
 
-    /// http(s) URLs are internet radio streams (or remote playlists that resolve to one).
-    var isStream: Bool { !url.isFileURL }
+    /// http(s) URLs are internet radio streams (or remote playlists that resolve to one),
+    /// except podcast episodes, which are seekable remote files.
+    var isStream: Bool { !url.isFileURL && !PodcastStore.shared.isEpisodeURL(url) }
+    /// Podcast episode (remote or downloaded).
+    var isEpisode: Bool { PodcastStore.shared.isEpisodeURL(url) }
 
     init(url: URL, title: String? = nil) {
         self.url = url

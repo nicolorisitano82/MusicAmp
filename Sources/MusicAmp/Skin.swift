@@ -32,6 +32,9 @@ enum SkinError: LocalizedError {
 final class Skin {
     let name: String
     var images: [String: CGImage] = [:]
+    /// Optional hi-res sheets (`main@2x.png`…), exactly twice the 1x size; see RetinaSkin.swift.
+    var images2x: [String: CGImage] = [:]
+    var retinaIssues: [String] = []
     var visColors: [CGColor] = Skin.defaultVisColors
     var playlist = PlaylistStyle()
     var regions: [String: [[CGPoint]]] = [:]
@@ -106,15 +109,16 @@ final class Skin {
                 }
             }
         }
+        for c in cursorNames {
+            if let f = files["\(c).ani"] ?? files["\(c).cur"], let cur = SkinCursor.load(f) { skin.cursors[c] = cur }
+        }
+        skin.loadRetina(files)
         guard skin.images["main"] != nil else { throw SkinError.invalid }
         // Winamp uses volume.bmp when balance.bmp is missing.
         if skin.images["balance"] == nil, let v = skin.images["volume"] { skin.images["balance"] = v }
         if let f = files["viscolor.txt"], let s = readText(f) { skin.parseVisColors(s) }
         if let f = files["pledit.txt"], let s = readText(f) { skin.parsePledit(s) }
         if let f = files["region.txt"], let s = readText(f) { skin.parseRegions(s) }
-        for c in cursorNames {
-            if let f = files["\(c).ani"] ?? files["\(c).cur"], let cur = SkinCursor.load(f) { skin.cursors[c] = cur }
-        }
         // Some skins ship the playlist font next to the bitmaps.
         let fonts = files.filter { ["ttf", "otf"].contains(($0.key as NSString).pathExtension) }.values.compactMap { try? Data(contentsOf: $0) }
         if !fonts.isEmpty { FontResolver.shared.registerBundled(fonts) }

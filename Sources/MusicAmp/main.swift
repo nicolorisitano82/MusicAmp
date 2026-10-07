@@ -1,4 +1,5 @@
 import AppKit
+import Metal
 import AVFoundation
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -78,6 +79,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.item(play, "Accoda / togli dalla coda (Q)", #selector(Ctl.queueSelected))
         c.item(play, "Svuota coda", #selector(Ctl.clearQueue))
         play.addItem(.separator())
+        let speed = NSMenuItem(title: "Velocità e intonazione", action: nil, keyEquivalent: "")
+        speed.submenu = c.speedMenu()
+        play.addItem(speed)
+        c.item(play, "Indietro 15 secondi", #selector(Ctl.skipBack15), String(Character(UnicodeScalar(NSLeftArrowFunctionKey)!)), [.command, .option])
+        c.item(play, "Avanti 30 secondi", #selector(Ctl.skipForward30), String(Character(UnicodeScalar(NSRightArrowFunctionKey)!)), [.command, .option])
+        play.addItem(.separator())
         c.item(play, "Shuffle (S)", #selector(Ctl.toggleShuffle))
         c.item(play, "Ripeti (R)", #selector(Ctl.toggleRepeat))
         c.item(play, "Tempo rimanente", #selector(Ctl.toggleTimeRemaining))
@@ -90,11 +97,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.item(view, "Playlist", #selector(Ctl.togglePL), "e", [.option])
         c.item(view, "Libreria", #selector(Ctl.showLibrary), "l", [.option])
         c.item(view, "Radio", #selector(Ctl.showRadio), "r", [.option])
+        c.item(view, "Podcast", #selector(Ctl.showPodcasts), "p", [.option])
+        c.item(view, "Testi", #selector(Ctl.showLyrics), "t", [.command, .option])
+        c.item(view, "Karaoke a schermo intero", #selector(Ctl.showKaraoke), "k", [.command, .option])
+        c.item(view, "Milkdrop", #selector(Ctl.showMilkdrop), "m", [.command, .option])
         view.addItem(.separator())
         c.item(view, "Modalità ridotta", #selector(Ctl.toggleMainShade), "w", [.option])
         c.item(view, "Equalizzatore ridotto", #selector(Ctl.toggleEQShade), "w", [.option, .shift])
         c.item(view, "Playlist ridotta", #selector(Ctl.togglePLShade), "w", [.control, .option])
         c.item(view, "Doppia dimensione", #selector(Ctl.toggleDoubleSize), "d")
+        c.item(view, "Playlist per artista e album", #selector(Ctl.togglePlTree), "g", [.command, .option])
         c.item(view, "Sempre in primo piano", #selector(Ctl.toggleAlwaysOnTop), "a", [.option])
         let vis = NSMenuItem(title: "Visualizzazione", action: nil, keyEquivalent: "")
         vis.submenu = c.visMenu()
@@ -118,11 +130,18 @@ func snapshot(_ args: [String]) -> Never {
         return t
     }
     c.playlist.selection = [1]
+    if ProcessInfo.processInfo.environment["MUSICAMP_TREE"] != nil {
+        // Grouped view sample: two albums of one artist.
+        for (i, t) in c.playlist.tracks.enumerated() { t.artist = "Artist"; t.album = i == 0 ? "First Album" : "Second Album"; t.songTitle = ["First Song", "Second Song"][i] }
+        c.plTree = true
+    }
     let views: [SkinView] = [c.mainView, c.eqView, c.plView]
+    // MUSICAMP_RETINA=1: render at 2x with the skin's @2x sheets.
+    let k = ProcessInfo.processInfo.environment["MUSICAMP_RETINA"] != nil ? 2 : 1
     func renderAll() -> [CGImage] {
         views.compactMap { v -> CGImage? in
             let s = v.logicalSize
-            guard let r = Renderer(width: Int(s.width), height: Int(s.height), skin: c.skin) else { return nil }
+            guard let r = Renderer(width: Int(s.width), height: Int(s.height), skin: c.skin, pixelScale: k) else { return nil }
             v.render(r)
             return r.image()
         }
@@ -135,27 +154,143 @@ func snapshot(_ args: [String]) -> Never {
     images += renderAll()
     c.plShade = true
     images += [c.plView].compactMap { v -> CGImage? in
-        guard let r = Renderer(width: Int(v.logicalSize.width), height: 14, skin: c.skin) else { return nil }
+        guard let r = Renderer(width: Int(v.logicalSize.width), height: 14, skin: c.skin, pixelScale: k) else { return nil }
         v.render(r)
         return r.image()
     }
     let info = c.makeInfoView(1)
-    if let r = Renderer(width: Int(info.size.width), height: Int(info.size.height), skin: c.skin) {
+    if let r = Renderer(width: Int(info.size.width), height: Int(info.size.height), skin: c.skin, pixelScale: k) {
         info.render(r)
         if let img = r.image() { images.append(img) }
     }
-    let w = images.map(\.width).max() ?? 1, h = images.reduce(0) { $0 + $1.height }
+    let w = (images.map(\.width).max() ?? 1) / k, h = images.reduce(0) { $0 + $1.height } / k
     let ctx = CGContext(data: nil, width: w * 2, height: h * 2, bitsPerComponent: 8, bytesPerRow: 0,
                         space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
     ctx.interpolationQuality = .none
     var y = h
     for img in images {
-        y -= img.height
-        ctx.draw(img, in: CGRect(x: 0, y: y * 2, width: img.width * 2, height: img.height * 2))
+        y -= img.height / k
+        ctx.draw(img, in: CGRect(x: 0, y: y * 2, width: img.width * 2 / k, height: img.height * 2 / k))
     }
     let rep = NSBitmapImageRep(cgImage: ctx.makeImage()!)
     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: args[1]))
     exit(0)
+}
+
+/// `MusicAmp --retina-check skin.wsz` / `--make-retina in.wsz out.wsz` (Scale2x @2x sheets as a starting point).
+if let i = CommandLine.arguments.firstIndex(of: "--retina-check"), CommandLine.arguments.count > i + 1 {
+    exit(RetinaTools.check(CommandLine.arguments[i + 1]))
+}
+if let i = CommandLine.arguments.firstIndex(of: "--make-retina"), CommandLine.arguments.count > i + 2 {
+    exit(RetinaTools.make(CommandLine.arguments[i + 1], CommandLine.arguments[i + 2]))
+}
+
+/// Debug: `MusicAmp --test-milkdrop [out-dir]` checks the equation language, the presets and renders every built-in
+/// preset offscreen with synthetic audio (optionally saving a PNG of each).
+if let i = CommandLine.arguments.firstIndex(of: "--test-milkdrop") {
+    var failures = 0
+    func check(_ ok: Bool, _ what: String) { print((ok ? "PASS " : "FAIL ") + what); if !ok { failures += 1 } }
+    func eval(_ src: String, _ setup: [String: Double] = [:], read: String? = nil) -> Double {
+        let c = EELContext()
+        for (k, v) in setup { c[k] = v }
+        let v = EEL.compile(src, c).run()
+        return read.map { c[$0] } ?? v
+    }
+    // 1. Equations.
+    check(eval("1 + 2*3 - 4/2") == 5, "eel: precedenza")
+    check(eval("x = 3; y = x*x; y + 1") == 10, "eel: assegnazioni e sequenza")
+    check(eval("a = 2; a += 3; a *= 2; a -= 1; a /= 3", read: "a") == 3, "eel: += *= -= /=")
+    check(eval("2^10") == 1024 && eval("-2^2") == -4, "eel: potenza")
+    check(eval("if(above(bass, 1), 10, 20)", ["bass": 1.5]) == 10 && eval("if(below(1, 0), 1, 2)") == 2, "eel: if/above/below")
+    check(eval("equal(0.1+0.2, 0.3) + band(1, 0) + bor(0, 3) + bnot(0)") == 3, "eel: equal/band/bor/bnot")
+    check(eval("5 % 3") == 2 && eval("7 / 0") == 0 && eval("sqrt(-16)") == 4, "eel: modulo, divisione per zero, sqrt(|x|)")
+    check(abs(eval("sin($PI/2) + cos(0) + atan2(1, 1)*4") - (2 + .pi)) < 1e-9, "eel: trigonometria e $PI")
+    check(eval("min(3, max(1, 2)) + sign(-4) + abs(-2) + int(3.7) + sqr(3)") == 2 - 1 + 2 + 3 + 9, "eel: min/max/sign/abs/int/sqr")
+    check(eval("x > 2 ? 7 : 9", ["x": 3]) == 7 && eval("x == 3 && y != 1", ["x": 3, "y": 2]) == 1, "eel: ?: && == !=")
+    check(eval("megabuf(10) = 4; megabuf(10) * 2") == 8, "eel: megabuf")
+    check(eval("n = 0; loop(5, n += 2); n") == 10, "eel: loop")
+    check(eval("// commento\nX = 2; /* blocco */ x * 3") == 6, "eel: commenti e nomi senza maiuscole")
+    check(eval("q1 = 1;;; bogus ) + ; q2 = 5", read: "q2") == 5, "eel: un errore non blocca le istruzioni dopo")
+    let r = (0..<200).map { _ in eval("rand(10)") }
+    check(r.allSatisfy { $0 >= 0 && $0 < 10 && $0 == $0.rounded() } && Set(r).count > 5, "eel: rand(n) intero in 0…n-1")
+
+    // 2. Preset parsing.
+    let milk = "[preset00]\nfDecay=0.9\nzoom=1.05\nper_frame_2=b=2;\nper_frame_1=a=1;\nper_pixel_1=rot=0.1*rad;\n" +
+        "wavecode_0_enabled=1\nwavecode_0_samples=100\nwave_0_per_point1=y=0.5;\nshapecode_1_enabled=1\nshapecode_1_sides=5\n" +
+        "shape_1_per_frame1=x=0.3;\nwarp_1=`shader_body {\n"
+    let mp = MilkPreset.parse(milk, name: "t")
+    check(mp.values["decay"] == 0.9 && mp.values["zoom"] == 1.05, "milk: valori base e nomi Milkdrop (fDecay → decay)")
+    check(mp.frameCode == "a=1;\nb=2;" && mp.pixelCode == "rot=0.1*rad;", "milk: righe di codice ordinate per numero")
+    check(mp.waves[0].enabled && mp.waves[0].values["samples"] == 100 && mp.waves[0].pointCode == "y=0.5;", "milk: onda custom")
+    check(mp.shapes[1].enabled && mp.shapes[1].values["sides"] == 5 && mp.shapes[1].frameCode == "x=0.3;" && mp.usesShaders, "milk: forma custom e shader riconosciuti")
+    let rt = MilkRuntime(mp)
+    rt.runFrame(time: 1, frameNo: 1, fps: 60, audio: MilkAudio(), aspect: (1, 1), size: (100, 100))
+    check(rt["a"] == 1 && rt["b"] == 2 && rt["decay"] == 0.9 && rt["warp"] == 1, "milk: per-frame eseguito, default per i valori mancanti")
+    let builtins = MilkdropBuiltins.presets
+    check(builtins.count == 6 && builtins.allSatisfy { !$0.frameCode.isEmpty }, "preset inclusi: \(builtins.count), tutti con codice per-frame")
+
+    // 3. Offscreen rendering with synthetic audio.
+    let out = CommandLine.arguments.count > i + 1 ? URL(fileURLWithPath: CommandLine.arguments[i + 1]) : nil
+    if let rd = MilkdropRenderer() {
+        let w = 640, h = 360
+        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: MilkdropRenderer.format, width: w, height: h, mipmapped: false)
+        d.usage = [.renderTarget, .shaderRead]
+        d.storageMode = .managed
+        let tex = rd.device.makeTexture(descriptor: d)!
+        func pixels() -> [UInt8] {
+            let q = rd.device.makeCommandQueue()!, cb = q.makeCommandBuffer()!
+            let b = cb.makeBlitCommandEncoder()!; b.synchronize(resource: tex); b.endEncoding()
+            cb.commit(); cb.waitUntilCompleted()
+            var px = [UInt8](repeating: 0, count: w * h * 4)
+            tex.getBytes(&px, bytesPerRow: w * 4, from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
+            return px
+        }
+        for p in builtins {
+            rd.load(p, blend: false)
+            var lit = 0.0, diff = 0.0, ms = 0.0
+            var prev: [UInt8] = []
+            for f in 0..<150 {
+                let t = Double(f) / 60
+                rd.fixedTime = t
+                let beat: Float = f % 30 < 4 ? 1 : 0.2
+                let l = (0..<576).map { Float(sin(Double($0) * 0.11 + t * 7)) * 0.5 * beat }
+                let rr = (0..<576).map { Float(cos(Double($0) * 0.07 + t * 5)) * 0.5 * beat }
+                let sp = (0..<512).map { Float(max(0, 1 - Double($0) / 300)) * beat }
+                rd.updateAudio(left: l, right: rr, spectrum: sp, bands: (beat * 0.02, beat * 0.01, 0.005), dt: 1 / 60)
+                let t0 = Date()
+                let cb = rd.render(into: tex)!
+                cb.commit(); cb.waitUntilCompleted()
+                ms += Date().timeIntervalSince(t0) * 1000
+                if f == 149 || f == 120 {
+                    let px = pixels()
+                    if f == 149 {
+                        lit = Double(stride(from: 0, to: px.count, by: 4).filter { Int(px[$0]) + Int(px[$0 + 1]) + Int(px[$0 + 2]) > 30 }.count) / Double(w * h)
+                        diff = Double(zip(px, prev).filter { abs(Int($0) - Int($1)) > 8 }.count) / Double(px.count)
+                        if let out {
+                            try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+                            let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                                bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)!
+                            px.withUnsafeBytes { memcpy(ctx.data!, $0.baseAddress!, px.count) }
+                            try? NSBitmapImageRep(cgImage: ctx.makeImage()!).representation(using: .png, properties: [:])?
+                                .write(to: out.appendingPathComponent(p.name + ".png"))
+                        }
+                    }
+                    prev = px
+                }
+            }
+            check(lit > 0.02 && diff > 0.005, String(format: "render %@: %.0f%% pixel accesi, %.1f%% cambiati in 0,5 s, %.2f ms/frame", p.name, lit * 100, diff * 100, ms / 150))
+        }
+        // Blend between two presets does not crash and keeps drawing.
+        rd.load(builtins[0], blend: false)
+        rd.fixedTime = 10; _ = rd.render(into: tex).map { $0.commit(); $0.waitUntilCompleted() }
+        rd.load(builtins[1], blend: true)
+        for k in 1...20 { rd.fixedTime = 10 + Double(k) * 0.2; rd.render(into: tex).map { $0.commit(); $0.waitUntilCompleted() } }
+        check(true, "dissolvenza tra due preset")
+    } else {
+        check(false, "Metal disponibile")
+    }
+    print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
+    exit(failures == 0 ? 0 : 1)
 }
 
 /// Debug: `MusicAmp --resolve-fonts "Name" ...` runs the font lookup and prints where each font came from.
@@ -214,6 +349,80 @@ if let i = CommandLine.arguments.firstIndex(of: "--self-test") {
     pl.insert([tmp], at: 2)
     check(pl.tracks.count == before + 1 && pl.tracks[2].url == tmp && pl.selection == [2], "insert: lands at index 2 and is selected")
     try? FileManager.default.removeItem(at: tmp)
+
+    // Retina skins: @2x sheets are validated, drawn at 2x, and 1x art is still used elsewhere.
+    func solid(_ w: Int, _ h: Int, _ c: UInt32) -> CGImage { var b = RGBA(width: w, height: h); b.px = Array(repeating: c, count: w * h); return b.image()! }
+    let red: UInt32 = 0xFF0000FF, blue: UInt32 = 0xFFFF0000, green: UInt32 = 0xFF00FF00   // RGBA bytes, little-endian
+    let rdir = FileManager.default.temporaryDirectory.appendingPathComponent("musicamp-retina-test-\(UUID().uuidString)", isDirectory: true)
+    try? FileManager.default.createDirectory(at: rdir, withIntermediateDirectories: true)
+    func png(_ img: CGImage, _ name: String) { try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: rdir.appendingPathComponent(name)) }
+    png(solid(275, 116, red), "main.png"); png(solid(550, 232, blue), "main@2x.png")
+    png(solid(136, 36, red), "cbuttons.png"); png(solid(100, 10, blue), "cbuttons@2x.png")   // wrong size
+    png(solid(84, 18, green), "playpaus@2x.png")                                              // @2x only
+    // Cursors: CUR with a PNG payload, ANI = RIFF ACON with 'anih' + LIST 'fram' of icons.
+    func le16(_ v: Int) -> Data { Data([UInt8(v & 255), UInt8(v >> 8 & 255)]) }
+    func le32(_ v: Int) -> Data { le16(v & 0xFFFF) + le16(v >> 16) }
+    func cur(_ side: Int, _ c: UInt32, hot: Int) -> Data {
+        let body = NSBitmapImageRep(cgImage: solid(side, side, c)).representation(using: .png, properties: [:])!
+        return le16(0) + le16(2) + le16(1) + Data([UInt8(side & 255), UInt8(side & 255), 0, 0]) + le16(hot) + le16(hot) + le32(body.count) + le32(22) + body
+    }
+    func ani(_ icons: [Data]) -> Data {
+        let anih = le32(36) + le32(icons.count) + le32(icons.count) + le32(0) + le32(0) + le32(0) + le32(0) + le32(6) + le32(1)
+        var fram = Data("fram".utf8)
+        for ic in icons { fram += Data("icon".utf8) + le32(ic.count) + ic + (ic.count & 1 == 1 ? Data([0]) : Data()) }
+        let body = Data("ACON".utf8) + Data("anih".utf8) + le32(anih.count) + anih + Data("LIST".utf8) + le32(fram.count) + fram
+        return Data("RIFF".utf8) + le32(body.count) + body
+    }
+    try? ani([cur(32, red, hot: 4), cur(32, green, hot: 4), cur(32, blue, hot: 4)]).write(to: rdir.appendingPathComponent("normal.ani"))
+    try? ani([cur(64, red, hot: 8), cur(64, green, hot: 8), cur(64, blue, hot: 8)]).write(to: rdir.appendingPathComponent("normal@2x.ani"))
+    try? ani([cur(32, red, hot: 0), cur(32, blue, hot: 0)]).write(to: rdir.appendingPathComponent("close.ani"))
+    try? ani([cur(64, red, hot: 0)]).write(to: rdir.appendingPathComponent("close@2x.ani"))               // wrong frame count
+    try? cur(32, red, hot: 2).write(to: rdir.appendingPathComponent("min.cur"))
+    try? cur(64, blue, hot: 4).write(to: rdir.appendingPathComponent("min@2x.cur"))
+    if let rs = try? Skin.load(from: rdir) {
+        check(rs.isRetina && rs.image2x("main") != nil && rs.image2x("cbuttons") == nil, "retina: main@2x accettato, cbuttons@2x di misura sbagliata scartato")
+        check(rs.image("playpaus").map { ($0.width, $0.height) } ?? (0, 0) == (42, 9), "retina: solo @2x → 1x ricavato 42×9")
+        let r1 = Renderer(width: 4, height: 4, skin: rs)!, r2 = Renderer(width: 4, height: 4, skin: rs, pixelScale: 2)!
+        r1.blit("main", R(0, 0, 4, 4), 0, 0); r2.blit("main", R(0, 0, 4, 4), 0, 0)
+        let p1 = RGBA(r1.image()!)!, p2 = RGBA(r2.image()!)!
+        check(p2.width == 8 && p2.height == 8, "retina: framebuffer 2× (8×8 per 4×4 logici)")
+        check(p1[1, 1] == red && p2[7, 7] == blue && p2[0, 0] == blue, "retina: 1x usa main.png, 2x usa main@2x.png")
+        let r3 = Renderer(width: 4, height: 4, skin: rs, pixelScale: 2)!
+        r3.blit("cbuttons", R(0, 0, 4, 4), 0, 0)
+        check(RGBA(r3.image()!)![5, 5] == red, "retina: senza @2x valido usa la 1x ingrandita")
+        let reps = { (c: String) in rs.cursors[c]?.frames.map { $0.image.representations.map(\.pixelsWide) } ?? [] }
+        check(reps("normal").count == 3 && reps("normal").allSatisfy { $0.contains(32) && $0.contains(64) }
+              && rs.cursors["normal"]?.frames.allSatisfy { $0.image.size.width == 32 && $0.hotSpot == NSPoint(x: 4, y: 4) } == true,
+              "retina: .ani @2x, 3 fotogrammi con 32 e 64 px, stessa misura in punti e hotspot 1x")
+        check(reps("close").allSatisfy { $0 == [32] } && rs.retinaIssues.contains { $0.hasPrefix("close@2x.ani") },
+              "retina: .ani @2x con fotogrammi diversi scartato")
+        check(reps("min") == [[32, 64]], "retina: .cur @2x")
+        let gen = RetinaTools.cursor2x(ani([cur(32, red, hot: 5), cur(32, blue, hot: 5)])).flatMap { SkinCursor.parseANI($0) }
+        check(gen?.frames.count == 2 && gen?.frames.allSatisfy { $0.image.representations.first?.pixelsWide == 64 && $0.hotSpot == NSPoint(x: 10, y: 10) } == true
+              && gen?.delays == [0.1, 0.1], "make-retina: .ani raddoppiato, 2 fotogrammi 64 px, hotspot ×2, tempi invariati")
+    } else { check(false, "retina: skin di prova caricata") }
+    // Playlist tree: artist → album → track.
+    func tr(_ artist: String?, _ album: String?, _ title: String) -> Track {
+        let t = Track(url: URL(fileURLWithPath: "/tmp/\(title).mp3"), title: title)
+        t.artist = artist; t.album = album; t.songTitle = title
+        return t
+    }
+    let tt = [tr("A", "X", "a1"), tr("B", "Y", "b1"), tr("A", "X", "a2"), tr("A", nil, "a3"), tr(nil, nil, "radio"),
+              tr("C", "Mix", "c1"), tr("D", "Mix", "d1"), tr("A", "Z", "a4")]
+    let tree = PlaylistTree(tt, collapsed: [])
+    let shape = tree.rows.map { r -> String in
+        if case .header(let n) = r { return (tree.nodes[n].kind == .artist ? "A:" : "B:") + tree.nodes[n].title }
+        if case .track(let i, let d) = r { return "\(d)\(tt[i].songTitle!)" }
+        return "?"
+    }
+    check(shape == ["A:A", "B:X", "2a1", "2a2", "1a3", "B:Z", "2a4", "A:B", "B:Y", "2b1", "0radio", "A:Artisti vari", "B:Mix", "2c1", "2d1"],
+          "albero: artista → album → brano, ordine di prima comparsa, senza album sotto l'artista, compilation in Artisti vari")
+    let closed = PlaylistTree(tt, collapsed: ["b:a|x", "a:b"])
+    check(closed.rows.count == tree.rows.count - 4 && closed.rowOfTrack[2] == 1 && closed.rowOfTrack[1] == 5,
+          "albero: album e artista chiusi nascondono i brani, che puntano all'intestazione")
+    let small = RGBA(width: 2, height: 2)
+    check(Skin.scale2x(small.image()!).map { ($0.width, $0.height) } ?? (0, 0) == (4, 4), "scale2x: raddoppia")
+    try? FileManager.default.removeItem(at: rdir)
     print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
     exit(failures == 0 ? 0 : 1)
 }
@@ -405,6 +614,163 @@ if CommandLine.arguments.contains("--test-ffmpeg") {
         check(finished, "\(ext): end of track reported")
         e.stop()
     }
+    print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
+    exit(failures == 0 ? 0 : 1)
+}
+
+/// Debug: `MusicAmp --test-podcast [term]` checks search, feed parsing, OPML, speed and remote episode playback
+/// (muted). Does not touch your subscriptions.
+if let i = CommandLine.arguments.firstIndex(of: "--test-podcast") {
+    var failures = 0
+    func check(_ ok: Bool, _ what: String) { print((ok ? "PASS " : "FAIL ") + what); if !ok { failures += 1 } }
+    func wait(_ s: Double) { let t = Date(); while Date().timeIntervalSince(t) < s { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) } }
+    func await_<T>(_ f: @escaping () async throws -> T) -> T? {
+        var out: T?, done = false
+        Task { out = try? await f(); done = true }
+        let t = Date()
+        while !done, Date().timeIntervalSince(t) < 30 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        return out
+    }
+    let term = CommandLine.arguments.count > i + 1 ? CommandLine.arguments[i + 1] : "il post"
+
+    // 1-2. Apple catalogue search, then a real feed.
+    let results = await_ { try await PodcastStore.search(term) } ?? []
+    check(!results.isEmpty, "search \"\(term)\": \(results.count) podcast (\(results.first?.collectionName ?? "-"))")
+    var episodeURL: URL?
+    if let feedURL = results.first?.feedUrl, let u = URL(string: feedURL), let feed = await_({ try await PodcastStore.fetch(u) }) {
+        let e = feed.episodes.first
+        check(!feed.episodes.isEmpty, "feed: \(feed.title) — \(feed.episodes.count) episodi, ultimo \(e?.pubDate.map { $0.formatted(date: .abbreviated, time: .omitted) } ?? "?")")
+        check(e?.duration != nil && feed.artworkURL != nil, "feed: durata (\(e?.duration.map { Ctl.hmmss($0) } ?? "-")) e copertina")
+        episodeURL = e.flatMap { URL(string: $0.enclosure) }
+    } else { check(false, "feed: fetch/parse") }
+
+    // 3. Parser on edge cases.
+    let xml = """
+    <rss xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel><title>Prova &amp; test</title>
+    <image><url>https://e.x/img.jpg</url><title>ignore me</title></image><itunes:author>Autore</itunes:author>
+    <item><title><![CDATA[Episodio <b>uno</b>]]></title><guid>g1</guid><pubDate>Tue, 07 Oct 2026 08:00:00 +0200</pubDate>
+    <enclosure url="https://e.x/1.mp3" length="123" type="audio/mpeg"/><itunes:duration>1:02:03</itunes:duration></item>
+    <item><title>Due</title><enclosure url="https://e.x/2.m4a"/><itunes:duration>754</itunes:duration>
+    <pubDate>Mon, 6 Oct 2026 08:00:00 GMT</pubDate></item></channel></rss>
+    """
+    let pf = RSSParser.parse(Data(xml.utf8))
+    check(pf?.title == "Prova & test" && pf?.author == "Autore" && pf?.artworkURL == "https://e.x/img.jpg", "rss: titolo, autore, copertina")
+    check(pf?.episodes.map(\.duration) == [3723, 754] && pf?.episodes.first?.id == "g1" && pf?.episodes.last?.id == "https://e.x/2.m4a",
+          "rss: durate 1:02:03 e 754 s, guid o enclosure come id, ordine per data")
+
+    // 4. OPML from another app.
+    let opml = #"<opml><body><outline text="A" type="rss" xmlUrl="https://a.x/feed"/><outline text="cat"><outline xmlUrl="https://b.x/rss"/></outline></body></opml>"#
+    check(PodcastStore.opmlFeeds(Data(opml.utf8)) == ["https://a.x/feed", "https://b.x/rss"], "opml: feed anche annidati")
+
+    // 5. Speed on a local tone: 1 s of clock at 2x plays ~2 s of audio.
+    let dir = FileManager.default.temporaryDirectory
+    let tone = dir.appendingPathComponent("musicamp-speed.caf")
+    let fmt = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)!
+    if let f = try? AVAudioFile(forWriting: tone, settings: fmt.settings), let b = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: 44100 * 6) {
+        b.frameLength = 44100 * 6
+        for k in 0..<Int(b.frameLength) { let v = Float(sin(Double(k) * 0.0627)) * 0.3; b.floatChannelData![0][k] = v; b.floatChannelData![1][k] = v }
+        try? f.write(from: b)
+    }
+    let e = AudioEngine()
+    e.setVolume(0)
+    e.rate = 2
+    e.use(try! AVAudioFile(forReading: tone), url: tone)
+    e.play()
+    wait(0.3)
+    let a0 = e.currentTime
+    wait(1.0)
+    let a1 = e.currentTime
+    e.stop()
+    check(abs((a1 - a0) - 2.0) < 0.35, "velocità 2×: 1 s di orologio = \(String(format: "%.2f", a1 - a0)) s di audio")
+
+    // 6. Remote episode streaming with seek and speed.
+    if let u = episodeURL {
+        let r = AudioEngine()
+        r.setVolume(0)
+        r.playRemote(u, at: 60)
+        wait(4)
+        let p0 = r.currentTime
+        check(p0 >= 60 && p0 < 66, "streaming episodio: parte dal punto salvato (60 s → \(String(format: "%.1f", p0)))")
+        r.rate = 1.5
+        let t0 = r.currentTime
+        wait(2)
+        let adv = r.currentTime - t0
+        check(adv > 2.4, "streaming a 1,5×: 2 s di orologio = \(String(format: "%.1f", adv)) s")
+        r.seek(to: 300)
+        wait(2.5)
+        check(abs(r.currentTime - 300) < 6, "streaming: seek a 300 s → \(String(format: "%.1f", r.currentTime))")
+        r.unload()
+    }
+
+    // 7. Audiobook positions.
+    let book = URL(fileURLWithPath: "/tmp/test-book.m4b")
+    check(PlaybackPositions.remembers(book, duration: 60) && !PlaybackPositions.remembers(tone, duration: 200) &&
+          PlaybackPositions.remembers(tone, duration: 25 * 60), "posizioni: .m4b sempre, altri file oltre 20 minuti")
+    PlaybackPositions.shared.set(book, 1234)
+    check(PlaybackPositions.shared.position(book) == 1234, "posizioni: salvata e riletta")
+    PlaybackPositions.shared.set(book, nil)
+    wait(2.2)
+    print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
+    exit(failures == 0 ? 0 : 1)
+}
+
+/// Debug: `MusicAmp --test-lyrics` checks the LRC parser, sources and LRCLIB lookups. Prints counts only, never lyrics.
+if CommandLine.arguments.contains("--test-lyrics") {
+    var failures = 0
+    func check(_ ok: Bool, _ what: String) { print((ok ? "PASS " : "FAIL ") + what); if !ok { failures += 1 } }
+    func await_<T>(_ f: @escaping () async -> T) -> T? {
+        var out: T?, done = false
+        Task { out = await f(); done = true }
+        let t = Date()
+        while !done, Date().timeIntervalSince(t) < 30 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        return out
+    }
+    // 1. LRC parser (made-up lines).
+    let lrc = "[ar:Test]\n[offset:+500]\n[00:01.50]prima\n[00:03.25][00:10.00]ritornello\n[00:05.1]seconda\nriga senza tempo\n"
+    let parsed = LRC.parse(lrc) ?? []
+    check(parsed.map(\.text) == ["prima", "ritornello", "seconda", "ritornello"], "lrc: 4 righe, timestamp multipli, tag ignorati")
+    check(abs(parsed[0].time - 1.0) < 0.001 && abs(parsed[2].time - 4.6) < 0.001, "lrc: offset +500 ms e centesimi/decimi")
+    let ly = Lyrics(plain: nil, synced: parsed, source: "test")
+    check(ly.lineIndex(at: 0.5) == nil && ly.lineIndex(at: 3.0) == 1 && ly.lineIndex(at: 99) == 3, "lrc: riga corrente per tempo")
+
+    // 1b. Enhanced LRC (word times) and estimated word timing (made-up words).
+    let enh = LRC.parse("[00:02.00]<00:02.00>uno <00:02.50>due <00:03.20>tre\n[00:06.00]quattro cinque sei\n[00:30.00]sette\n") ?? []
+    check(enh.first?.text == "uno due tre" && enh.first?.words?.count == 3, "enhanced lrc: 3 parole con tempo, tag rimossi dal testo")
+    let el = Lyrics(plain: nil, synced: enh, source: "test")
+    let w0 = el.timedWords(0)
+    check(w0.count == 3 && abs(w0[1].start - 2.5) < 0.001 && abs(w0[1].end - 3.2) < 0.001, "enhanced lrc: inizio/fine parola dai tag")
+    check(w0[1].progress(2.4) == 0 && abs(w0[1].progress(2.85) - 0.5) < 0.01 && w0[1].progress(4) == 1, "parola: avanzamento 0 → 1")
+    let w1 = el.timedWords(1)
+    check(w1.count == 3 && w1[0].start == 6 && zip(w1, w1.dropFirst()).allSatisfy { $0.end <= $1.start + 0.001 } && w1.last!.end < 30,
+          "stima parole: in ordine, dentro la riga, prima della successiva")
+    check(el.gap(after: 1) > 20, "pausa strumentale lunga rilevata")
+
+    // 2. Sidecar .lrc next to the file.
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("musicamp-lyrics", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let song = dir.appendingPathComponent("song.mp3")
+    FileManager.default.createFile(atPath: song.path, contents: Data())
+    try? lrc.write(to: dir.appendingPathComponent("song.lrc"), atomically: true, encoding: .utf8)
+    check(LyricsService.sidecar(song)?.synced?.count == 4, "sidecar: song.lrc accanto a song.mp3")
+
+    // 3. Queries from tags, "Artist - Title" names and radio titles.
+    let t1 = Track(url: URL(fileURLWithPath: "/x/03. Anti-Hero.mp3"), title: "Taylor Swift - Anti-Hero")
+    let q1 = LyricsService.query(for: t1, duration: 200.7)
+    check(q1?.artist == "Taylor Swift" && q1?.title == "Anti-Hero", "query: da \"Artista - Titolo\"")
+    let radio = Track(url: URL(string: "http://radio.example/stream")!, title: "Radio")
+    radio.streamTitle = "Coldplay - Yellow"
+    check(LyricsService.query(for: radio, duration: 0)?.artist == "Coldplay", "query: dal titolo in onda della radio")
+
+    // 4. LRCLIB, real lookups (counts only).
+    for (artist, title, dur) in [("Taylor Swift", "Anti-Hero", 200.7), ("Taylor Swift", "Sweet Nothing", 188.0)] {
+        let q = LyricsService.Query(artist: artist, title: title, album: nil, duration: dur, file: nil)
+        let r = await_ { try? await LyricsService.lrclib(q) } ?? nil
+        check(r != nil && (r?.synced?.count ?? 0) > 10, "lrclib: \(title) — trovato, \(r?.synced?.count ?? 0) righe sincronizzate, \(r?.plain?.split(separator: "\n").count ?? 0) righe di testo")
+    }
+    let none = await_ { try? await LyricsService.lrclib(LyricsService.Query(artist: "Zzqx Nonexistent Band", title: "Qwxz Song", duration: 100)) } ?? nil
+    check(none == nil, "lrclib: brano inesistente → nessun risultato")
+    let wrongLength = await_ { try? await LyricsService.lrclib(LyricsService.Query(artist: "Taylor Swift", title: "Anti-Hero", duration: 600)) } ?? nil
+    check(wrongLength == nil, "lrclib: durata troppo diversa (600 s) → scartato, probabilmente un altro brano")
     print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
     exit(failures == 0 ? 0 : 1)
 }
