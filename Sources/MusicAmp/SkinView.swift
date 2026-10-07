@@ -10,6 +10,10 @@ final class SkinWindow: NSWindow {
         isReleasedWhenClosed = false
         animationBehavior = .none
         acceptsMouseMovedEvents = true
+        // MusicAmp moves these windows itself (docking, snapping, groups): a system drag on top of ours
+        // moved them twice and made them jump.
+        isMovable = false
+        isMovableByWindowBackground = false
         contentView = view
         initialFirstResponder = view
     }
@@ -65,6 +69,7 @@ class SkinView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override var isFlipped: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -119,6 +124,7 @@ class SkinView: NSView {
     }
 
     override func mouseDown(with e: NSEvent) {
+        if ProcessInfo.processInfo.environment["MUSICAMP_DEBUG_DRAG"] != nil { NSLog("mouseDown %@ at %@", window?.title ?? "-", NSStringFromPoint(point(e))) }
         window?.makeFirstResponder(self)
         if hitDown(point(e), e) {
             windowDrag = false

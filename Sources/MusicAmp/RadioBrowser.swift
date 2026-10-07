@@ -190,14 +190,14 @@ struct RadioView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: $source) {
-                Section("Stazioni") {
-                    Label("In evidenza", systemImage: "star.circle").tag(RadioDirectory.Source.top)
+                Section("Stations") {
+                    Label("Popular", systemImage: "star.circle").tag(RadioDirectory.Source.top)
                     Label(homeName, systemImage: "flag").tag(RadioDirectory.Source.country(home))
-                    Label("Più votate", systemImage: "hand.thumbsup").tag(RadioDirectory.Source.votes)
-                    Label("Preferiti (\(dir.favorites.count))", systemImage: "heart").tag(RadioDirectory.Source.favorites)
-                    if source == .search { Label("Risultati ricerca", systemImage: "magnifyingglass").tag(RadioDirectory.Source.search) }
+                    Label("Top Voted", systemImage: "hand.thumbsup").tag(RadioDirectory.Source.votes)
+                    Label("Favorites (\(dir.favorites.count))", systemImage: "heart").tag(RadioDirectory.Source.favorites)
+                    if source == .search { Label("Search Results", systemImage: "magnifyingglass").tag(RadioDirectory.Source.search) }
                 }
-                Section("Generi") {
+                Section("Genres") {
                     ForEach(RadioDirectory.genres, id: \.self) { g in
                         Label(g.prefix(1).uppercased() + g.dropFirst(), systemImage: "music.note").tag(RadioDirectory.Source.tag(g))
                     }
@@ -211,22 +211,22 @@ struct RadioView: View {
                 Table(dir.stations, selection: $selection) {
                     TableColumn("") { s in Image(systemName: dir.isFavorite(s) ? "heart.fill" : "heart").foregroundStyle(dir.isFavorite(s) ? .pink : .secondary) }
                         .width(18)
-                    TableColumn("Stazione") { s in Text(s.cleanName) }
-                    TableColumn("Paese") { s in Text(s.country ?? "") }.width(min: 60, ideal: 110)
-                    TableColumn("Formato") { s in Text(s.format) }.width(min: 70, ideal: 100)
-                    TableColumn("Generi") { s in Text((s.tags ?? "").split(separator: ",").prefix(3).joined(separator: ", ")).foregroundStyle(.secondary) }
+                    TableColumn("Station") { s in Text(s.cleanName) }
+                    TableColumn("Country") { s in Text(s.country ?? "") }.width(min: 60, ideal: 110)
+                    TableColumn("Format") { s in Text(s.format) }.width(min: 70, ideal: 100)
+                    TableColumn("Genres") { s in Text((s.tags ?? "").split(separator: ",").prefix(3).joined(separator: ", ")).foregroundStyle(.secondary) }
                 }
                 .contextMenu(forSelectionType: RadioStation.ID.self) { ids in
-                    Button("Ascolta") { selected(ids).first.map { ctl.playStation($0) } }
-                    Button("Aggiungi alla playlist") { selected(ids).forEach { ctl.playStation($0, play: false) } }
-                    Button("Aggiungi o togli dai preferiti") { selected(ids).forEach(dir.toggleFavorite) }
+                    Button("Play") { selected(ids).first.map { ctl.playStation($0) } }
+                    Button("Add to Playlist") { selected(ids).forEach { ctl.playStation($0, play: false) } }
+                    Button("Add to or Remove from Favorites") { selected(ids).forEach(dir.toggleFavorite) }
                     Divider()
-                    Button("Copia indirizzo dello stream") {
+                    Button("Copy Stream URL") {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(selected(ids).compactMap { $0.streamURL?.absoluteString }.joined(separator: "\n"), forType: .string)
                     }
                     if let home = selected(ids).first?.homepage, let u = URL(string: home), !home.isEmpty {
-                        Button("Apri il sito della radio") { NSWorkspace.shared.open(u) }
+                        Button("Open Station Website") { NSWorkspace.shared.open(u) }
                     }
                 } primaryAction: { ids in
                     selected(ids).first.map { ctl.playStation($0) }
@@ -235,14 +235,14 @@ struct RadioView: View {
             }
         }
         .onAppear { dir.load(source ?? .top) }
-        .onChange(of: source) { s in if let s, s != .search { selection = []; dir.load(s) } }
+        .onChange(of: source) { _, s in if let s, s != .search { selection = []; dir.load(s) } }
     }
 
     private var header: some View {
         HStack(spacing: 8) {
             HStack(spacing: 4) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Cerca una radio per nome", text: $query)
+                TextField("Search stations by name", text: $query)
                     .textFieldStyle(.plain)
                     .onSubmit {
                         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return }
@@ -254,11 +254,11 @@ struct RadioView: View {
             .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary))
             .frame(maxWidth: 320)
             Spacer()
-            Button { selected(selection).first.map { ctl.playStation($0) } } label: { Label("Ascolta", systemImage: "play.fill") }
+            Button { selected(selection).first.map { ctl.playStation($0) } } label: { Label("Play", systemImage: "play.fill") }
                 .disabled(selection.isEmpty)
-            Button { selected(selection).forEach(dir.toggleFavorite) } label: { Label("Preferito", systemImage: "heart") }
+            Button { selected(selection).forEach(dir.toggleFavorite) } label: { Label("Favorite", systemImage: "heart") }
                 .disabled(selection.isEmpty)
-            Button { ctl.openURL() } label: { Label("Apri URL…", systemImage: "link") }
+            Button { ctl.openURL() } label: { Label("Open URL…", systemImage: "link") }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
     }
@@ -266,10 +266,10 @@ struct RadioView: View {
     private var footer: some View {
         HStack(spacing: 8) {
             if dir.loading { ProgressView().controlSize(.small) }
-            Text("\(dir.stations.count) stazioni").monospacedDigit()
+            Text("\(dir.stations.count) stations").monospacedDigit()
             if let e = dir.error { Text("· \(e)").foregroundStyle(.secondary).lineLimit(1) }
             Spacer()
-            Text("Catalogo: radio-browser.info").foregroundStyle(.secondary)
+            Text("Directory: radio-browser.info").foregroundStyle(.secondary)
         }
         .font(.caption)
         .padding(.horizontal, 12).padding(.vertical, 6)

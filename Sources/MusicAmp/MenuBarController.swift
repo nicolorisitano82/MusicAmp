@@ -81,7 +81,7 @@ struct MiniPlayerView: View {
                     }
                     .frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 6))
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(track.map { $0.songTitle ?? $0.title } ?? "Nessun brano").font(.headline).lineLimit(2)
+                        Text(track.map { $0.songTitle ?? $0.title } ?? "Not Playing").font(.headline).lineLimit(2)
                         Text([track?.artist, track?.album].compactMap { $0 }.joined(separator: " · "))
                             .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     }
@@ -116,16 +116,16 @@ struct MiniPlayerView: View {
                     Image(systemName: "speaker.fill").foregroundStyle(.secondary)
                     Slider(value: Binding(get: { ctl.volume }, set: { ctl.volume = $0 }), in: 0...100)
                     Image(systemName: "speaker.wave.3.fill").foregroundStyle(.secondary)
-                    RoutePicker().frame(width: 24, height: 20).help("AirPlay e uscite audio")
+                    RoutePicker().frame(width: 24, height: 20).help("AirPlay and audio outputs")
                 }
                 Divider()
                 HStack {
-                    Button("Mostra MusicAmp") {
+                    Button("Show MusicAmp") {
                         NSApp.activate(ignoringOtherApps: true)
                         ctl.mainWindow?.makeKeyAndOrderFront(nil)
                     }
                     Spacer()
-                    Button("Libreria") { ctl.showLibrary() }
+                    Button("Library") { ctl.showLibrary() }
                 }
                 .buttonStyle(.link).font(.callout)
             }

@@ -22,7 +22,7 @@ struct HotKey: Codable, Equatable {
         case kVK_RightArrow: return "→"
         case kVK_UpArrow: return "↑"
         case kVK_DownArrow: return "↓"
-        case kVK_Space: return "Spazio"
+        case kVK_Space: return "Space"
         case kVK_Return: return "↩"
         case kVK_Delete: return "⌫"
         case kVK_Home: return "↖"
@@ -44,15 +44,15 @@ enum HotKeyAction: String, CaseIterable, Codable, Identifiable {
 
     var title: String {
         switch self {
-        case .playPause: return "Play / Pausa"
+        case .playPause: return "Play / Pause"
         case .stop: return "Stop"
-        case .next: return "Brano successivo"
-        case .previous: return "Brano precedente"
-        case .volumeUp: return "Volume su"
-        case .volumeDown: return "Volume giù"
-        case .seekForward: return "Avanti 5 secondi"
-        case .seekBack: return "Indietro 5 secondi"
-        case .showHide: return "Mostra / nascondi MusicAmp"
+        case .next: return "Next Track"
+        case .previous: return "Previous Track"
+        case .volumeUp: return "Volume Up"
+        case .volumeDown: return "Volume Down"
+        case .seekForward: return "Forward 5 Seconds"
+        case .seekBack: return "Back 5 Seconds"
+        case .showHide: return "Show / Hide MusicAmp"
         }
     }
 

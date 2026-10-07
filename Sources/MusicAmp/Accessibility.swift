@@ -114,6 +114,6 @@ enum AXText {
     }
 
     static func balance(_ b: Double) -> String {
-        b == 0 ? "centro" : "\(Int(abs(b).rounded()))% \(b < 0 ? "sinistra" : "destra")"
+        b == 0 ? "center" : "\(Int(abs(b).rounded()))% \(b < 0 ? "left" : "right")"
     }
 }

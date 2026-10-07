@@ -129,7 +129,7 @@ extension Ctl {
     @objc func showLibrary() {
         if libraryWindowRef == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: LibraryView(ctl: self, lib: .shared)))
-            w.title = "Libreria"
+            w.title = "Library"
             w.styleMask = [.titled, .closable, .resizable, .miniaturizable]
             w.setContentSize(NSSize(width: 860, height: 520))
             w.isReleasedWhenClosed = false
@@ -149,7 +149,7 @@ extension Ctl {
 
     func enqueueSongs(_ songs: [LibrarySong]) {
         playlist.add(songs.map(\.url))
-        flashMarquee("AGGIUNTI \(songs.count) BRANI")
+        flashMarquee("ADDED \(songs.count) TRACKS")
     }
 }
 
@@ -178,12 +178,12 @@ struct LibraryView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: $source) {
-                Section("Libreria") {
-                    Label("Musica (\(lib.musicSongs.count))", systemImage: "music.note.house").tag(MusicLibrary.Source.music)
-                    Label("Cartella Musica (\(lib.folderSongs.count))", systemImage: "folder").tag(MusicLibrary.Source.folder)
+                Section("Library") {
+                    Label("Music (\(lib.musicSongs.count))", systemImage: "music.note.house").tag(MusicLibrary.Source.music)
+                    Label("Music Folder (\(lib.folderSongs.count))", systemImage: "folder").tag(MusicLibrary.Source.folder)
                 }
                 if !lib.playlists.isEmpty {
-                    Section("Playlist di Musica") {
+                    Section("Music Playlists") {
                         ForEach(lib.playlists) { p in
                             Label(p.name, systemImage: "music.note.list").tag(MusicLibrary.Source.playlist(p.id))
                         }
@@ -197,16 +197,16 @@ struct LibraryView: View {
                 Divider()
                 Table(rows, selection: $selection, sortOrder: $sort) {
                     TableColumn("#", value: \.trackNumber) { s in Text(s.trackNumber > 0 ? "\(s.trackNumber)" : "") }.width(28)
-                    TableColumn("Titolo", value: \.title)
-                    TableColumn("Artista", value: \.artist)
+                    TableColumn("Title", value: \.title)
+                    TableColumn("Artist", value: \.artist)
                     TableColumn("Album", value: \.album)
-                    TableColumn("Durata") { s in Text(s.duration.map(Ctl.mmss) ?? "") }.width(56)
+                    TableColumn("Duration") { s in Text(s.duration.map(Ctl.mmss) ?? "") }.width(56)
                 }
                 .contextMenu(forSelectionType: LibrarySong.ID.self) { ids in
-                    Button("Riproduci") { ctl.playSongs(selected(ids)) }
-                    Button("Aggiungi alla playlist") { ctl.enqueueSongs(selected(ids)) }
+                    Button("Play") { ctl.playSongs(selected(ids)) }
+                    Button("Add to Playlist") { ctl.enqueueSongs(selected(ids)) }
                     Divider()
-                    Button("Mostra nel Finder") { NSWorkspace.shared.activateFileViewerSelecting(selected(ids).map(\.url)) }
+                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(selected(ids).map(\.url)) }
                 } primaryAction: { ids in
                     // Double click: play the visible list from the clicked song, like Music.
                     let list = rows
@@ -223,7 +223,7 @@ struct LibraryView: View {
         HStack(spacing: 8) {
             HStack(spacing: 4) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Titolo, artista, album", text: $query).textFieldStyle(.plain)
+                TextField("Title, artist, album", text: $query).textFieldStyle(.plain)
                 if !query.isEmpty {
                     Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.borderless)
                 }
@@ -233,13 +233,13 @@ struct LibraryView: View {
             .frame(maxWidth: 320)
             Spacer()
             Button { ctl.playSongs(selection.isEmpty ? rows : selected(selection)) } label: {
-                Label("Riproduci", systemImage: "play.fill")
+                Label("Play", systemImage: "play.fill")
             }
-            .help("Riproduci la selezione, o tutto l'elenco se non c'è selezione")
+            .help("Play the selection, or the whole list if nothing is selected")
             Button { ctl.enqueueSongs(selection.isEmpty ? rows : selected(selection)) } label: {
-                Label("Aggiungi", systemImage: "text.badge.plus")
+                Label("Add", systemImage: "text.badge.plus")
             }
-            .help("Aggiungi alla playlist")
+            .help("Add to Playlist")
             Button { lib.reload() } label: { Image(systemName: "arrow.clockwise") }.help("Aggiorna")
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
@@ -248,12 +248,12 @@ struct LibraryView: View {
     private var footer: some View {
         HStack(spacing: 8) {
             if lib.loading { ProgressView().controlSize(.small) }
-            Text("\(rows.count) brani").monospacedDigit()
+            Text("\(rows.count) tracks").monospacedDigit()
             if source == .music, lib.cloudOnly > 0 {
-                Text("· \(lib.cloudOnly) solo in iCloud o Apple Music, non riproducibili").foregroundStyle(.secondary)
+                Text("· \(lib.cloudOnly) only in iCloud or Apple Music, not playable").foregroundStyle(.secondary)
             }
             if source == .music, let e = lib.musicError {
-                Text("· Libreria di Musica non disponibile: \(e)").foregroundStyle(.secondary).lineLimit(1)
+                Text("· Music library unavailable: \(e)").foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
         }

@@ -15,8 +15,8 @@ final class HLSFetcher {
         case unsupported(String), badPlaylist
         var errorDescription: String? {
             switch self {
-            case .unsupported(let s): return "HLS: \(s) non gestito"
-            case .badPlaylist: return "HLS: playlist non valida"
+            case .unsupported(let s): return "HLS: unsupported \(s)"
+            case .badPlaylist: return "HLS: invalid playlist"
             }
         }
     }
@@ -117,7 +117,7 @@ final class HLSFetcher {
                 let m = attribute(line, "METHOD") ?? "NONE"
                 if m == "NONE" { key = nil; iv = nil; continue }
                 guard m == "AES-128", let k = attribute(line, "URI").flatMap({ URL(string: $0, relativeTo: base)?.absoluteURL }) else {
-                    throw HLSError.unsupported("cifratura \(m)")
+                    throw HLSError.unsupported("\(m) encryption")
                 }
                 key = k
                 iv = attribute(line, "IV").flatMap(HLSFetcher.hexBytes)
@@ -198,7 +198,7 @@ final class HLSFetcher {
     }
 
     static func decrypt(_ data: Data, key: Data, iv: [UInt8]) throws -> Data {
-        guard key.count == 16 else { throw HLSError.unsupported("chiave AES di \(key.count) byte") }
+        guard key.count == 16 else { throw HLSError.unsupported("\(key.count)-byte AES key") }
         var out = Data(count: data.count + kCCBlockSizeAES128)
         var moved = 0
         let outCount = out.count
@@ -210,7 +210,7 @@ final class HLSFetcher {
                 }
             }
         }
-        guard status == kCCSuccess else { throw HLSError.unsupported("decifratura (\(status))") }
+        guard status == kCCSuccess else { throw HLSError.unsupported("decryption (\(status))") }
         out.count = moved
         return out
     }
@@ -278,7 +278,7 @@ final class HLSFetcher {
                     case 0x03, 0x04: if audioPID == nil { audioPID = epid; audioType = kAudioFileMP3Type }
                     case 0x11 where audioPID == nil: throw HLSError.unsupported("AAC LATM")
                     case 0x15: id3PID = epid
-                    case 0xDB, 0xCF: throw HLSError.unsupported("audio cifrato")
+                    case 0xDB, 0xCF: throw HLSError.unsupported("encrypted audio")
                     default: break
                     }
                     e += 5 + esInfo

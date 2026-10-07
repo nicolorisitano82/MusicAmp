@@ -29,9 +29,105 @@ final class PlaylistView: SkinView {
     private var scrollTarget: CGFloat?
     private var scrollTimer: Timer?
     /// Display row under a y coordinate of the list.
-    private func rowAt(_ y: CGFloat) -> Int { Int(floor(scrollPos + (y - 20) / rowH)) }
+    private func rowAt(_ y: CGFloat) -> Int { Int(floor(scrollPos + (y - listTop) / rowH)) }
 
     // MARK: Artist → album → track view
+
+    // MARK: Search (⌘F)
+
+    /// Text typed in the search bar; nil = no search. While searching the list shows only the matches, flat.
+    private(set) var searchQuery: String?
+    private var matchCache: (key: Int, rows: [Int])?
+    private var searchBarH: CGFloat { rowH + 6 }
+    private var listTop: CGFloat { searchQuery == nil ? 20 : 20 + searchBarH }
+    private var listHeight: CGFloat { H - 58 - (listTop - 20) }
+
+    /// Playlist indices whose title, artist, album or file name contain every word typed (case and accents ignored).
+    var searchMatches: [Int] {
+        guard let q = searchQuery else { return [] }
+        var h = Hasher()
+        h.combine(ctl.playlist.version)
+        h.combine(q)
+        let key = h.finalize()
+        if let c = matchCache, c.key == key { return c.rows }
+        let words = PlaylistView.fold(q).split(separator: " ").map(String.init)
+        let rows = ctl.playlist.tracks.indices.filter { i in
+            guard !words.isEmpty else { return true }
+            let t = ctl.playlist.tracks[i]
+            let hay = PlaylistView.fold([t.title, t.artist ?? "", t.album ?? "", t.songTitle ?? "", t.url.lastPathComponent].joined(separator: " "))
+            return words.allSatisfy { hay.contains($0) }
+        }
+        matchCache = (key, rows)
+        return rows
+    }
+
+    static func fold(_ s: String) -> String { s.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil) }
+
+    /// Debug/snapshots: opens the search with this text.
+    func setSearch(_ q: String) { searchQuery = q; searchChanged() }
+
+    func beginSearch() {
+        if searchQuery == nil { searchQuery = "" }
+        scrollPos = 0
+        needsDisplay = true
+    }
+
+    func endSearch() {
+        searchQuery = nil
+        if let i = ctl.playlist.selection.min() { ensureVisible(i) } else { clampScroll() }
+        needsDisplay = true
+    }
+
+    private func searchChanged() {
+        scrollPos = 0
+        if let first = searchMatches.first { ctl.playlist.selection = [first]; anchor = first } else { ctl.playlist.selection = [] }
+        needsDisplay = true
+    }
+
+    /// Keys while the search bar is open: typing edits it, arrows walk the matches, Return plays, Esc closes.
+    private func searchKey(_ e: NSEvent) -> Bool {
+        guard var q = searchQuery else { return false }
+        let mods = e.modifierFlags.intersection([.command, .control])
+        let m = searchMatches
+        switch e.keyCode {
+        case 53: endSearch(); return true                                     // Esc
+        case 36, 76:                                                          // Return
+            if let i = ctl.playlist.selection.min() ?? m.first { ctl.playIndex(i) }
+            return true
+        case 51:                                                              // ⌫
+            if q.isEmpty { endSearch() } else { q.removeLast(); searchQuery = q; searchChanged() }
+            return true
+        case 125, 126:                                                        // ↓ ↑
+            guard !m.isEmpty else { return true }
+            let cur = ctl.playlist.selection.min().flatMap { m.firstIndex(of: $0) } ?? -1
+            let n = max(0, min(m.count - 1, cur + (e.keyCode == 125 ? 1 : -1)))
+            ctl.playlist.selection = [m[n]]
+            anchor = m[n]
+            ensureVisible(m[n])
+            return true
+        default:
+            guard mods.isEmpty, let chars = e.characters, !chars.isEmpty,
+                  chars.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) && $0.value < 0xF700 }) else { return false }
+            searchQuery = q + chars
+            searchChanged()
+            return true
+        }
+    }
+
+    private func renderSearchBar(_ r: Renderer, _ st: PlaylistStyle, font: NSFont, baseline: CGFloat) {
+        let bar = R(12, 20, W - 32, searchBarH)
+        r.fill(st.normalBG, bar)
+        r.fill(st.normal, R(12, 20 + searchBarH - 1, W - 32, 1))
+        let q = searchQuery ?? ""
+        let count = q.isEmpty ? "" : "\(searchMatches.count)/\(ctl.playlist.tracks.count)"
+        let cw = count.isEmpty ? 0 : r.ttf(count, font: font, color: st.normal, x: W - 34, baseline: 20 + baseline + 3, maxWidth: 80, alignRight: true)
+        // Close box at the right edge of the bar.
+        r.ttf("×", font: font, color: st.normal, x: W - 22, baseline: 20 + baseline + 3, maxWidth: 10, alignRight: true)
+        let caret = Int(Date().timeIntervalSinceReferenceDate * 2) % 2 == 0 && window?.isKeyWindow == true ? "▏" : " "
+        let text = q.isEmpty ? "Search: title, artist, album…" : q
+        let w = r.ttf("⌕ " + text, font: font, color: q.isEmpty ? st.normal : st.current, x: 15, baseline: 20 + baseline + 3, maxWidth: W - 60 - cw)
+        if !q.isEmpty || caret != " " { r.ttf(caret, font: font, color: st.current, x: 15 + (q.isEmpty ? 0 : w), baseline: 20 + baseline + 3, maxWidth: 8) }
+    }
 
     /// Closed headers (PlaylistTree.Node.key).
     private var collapsed: Set<String> = []
@@ -39,7 +135,7 @@ final class PlaylistView: SkinView {
 
     /// The tree when the grouped view is on, rebuilt only when the playlist or the closed headers change.
     var tree: PlaylistTree? {
-        guard ctl.plTree else { return nil }
+        guard ctl.plTree, searchQuery == nil else { return nil }
         var h = Hasher()
         h.combine(ctl.playlist.version)
         h.combine(collapsed)
@@ -50,10 +146,14 @@ final class PlaylistView: SkinView {
         return t
     }
 
-    private var rowCount: Int { tree?.rows.count ?? ctl.playlist.tracks.count }
+    private var rowCount: Int { searchQuery != nil ? searchMatches.count : (tree?.rows.count ?? ctl.playlist.tracks.count) }
 
     /// Playlist index shown on a display row (nil for headers and past the end).
     private func trackAt(_ row: Int) -> Int? {
+        if searchQuery != nil {
+            let m = searchMatches
+            return row >= 0 && row < m.count ? m[row] : nil
+        }
         if let tree {
             guard row >= 0, row < tree.rows.count, case .track(let i, _) = tree.rows[row] else { return nil }
             return i
@@ -62,6 +162,7 @@ final class PlaylistView: SkinView {
     }
 
     private func displayRow(ofTrack i: Int) -> Int {
+        if searchQuery != nil { let m = searchMatches; return m.firstIndex(of: i) ?? m.count }
         guard let tree else { return i }
         return i < tree.rowOfTrack.count ? tree.rowOfTrack[i] : tree.rows.count
     }
@@ -91,7 +192,7 @@ final class PlaylistView: SkinView {
         let p = CGPoint(x: p0.x / scale, y: p0.y / scale)
         guard !ctl.plShade else { return ctl.playlist.tracks.count }
         guard listRect.insetBy(dx: 0, dy: -4).contains(p) else { return ctl.playlist.tracks.count }
-        let b = max(0, Int((scrollPos + (p.y - 20) / rowH).rounded()))
+        let b = max(0, Int((scrollPos + (p.y - listTop) / rowH).rounded()))
         guard let tree else { return min(ctl.playlist.tracks.count, b) }
         guard b < tree.rows.count else { return ctl.playlist.tracks.count }
         switch tree.rows[b] {
@@ -130,9 +231,9 @@ final class PlaylistView: SkinView {
 
     private var W: CGFloat { logicalSize.width }
     private var H: CGFloat { logicalSize.height }
-    var visibleRows: Int { max(1, Int((H - 58) / rowH)) }
+    var visibleRows: Int { max(1, Int(listHeight / rowH)) }
     private var maxScroll: Int { max(0, rowCount - visibleRows) }
-    private var listRect: CGRect { R(12, 20, W - 32, H - 58) }
+    private var listRect: CGRect { R(12, listTop, W - 32, listHeight) }
 
     private func buttonRects() -> [(String, CGRect)] {
         if ctl.plShade { return [("shade", R(W - 20, 3, 9, 9)), ("close", R(W - 10, 3, 9, 9))] }
@@ -210,6 +311,7 @@ final class PlaylistView: SkinView {
         let font = ctl.plUseSkinFont ? FontResolver.shared.font(st.font, size: fs) : (NSFont(name: "Arial", size: fs) ?? .systemFont(ofSize: fs))
         let baseline = ((rowH + fs * 0.7) / 2).rounded()
         let cur = pl.current
+        if searchQuery != nil { renderSearchBar(r, st, font: font, baseline: baseline) }
         r.clip(list) {
             let frac = scrollPos - floor(scrollPos)
             let tree = self.tree
@@ -217,7 +319,7 @@ final class PlaylistView: SkinView {
             for row in 0...visibleRows {
                 let ri = scrollRow + row
                 guard ri < rowCount else { break }
-                let y = ((20 + (CGFloat(row) - frac) * rowH) * 2).rounded() / 2   // half-pixel steps: 1 device pixel on Retina
+                let y = ((listTop + (CGFloat(row) - frac) * rowH) * 2).rounded() / 2   // half-pixel steps: 1 device pixel on Retina
                 if let tree, case .header(let n) = tree.rows[ri] {
                     // Artist / album header: disclosure triangle, name, track count and total length.
                     let node = tree.nodes[n]
@@ -244,6 +346,10 @@ final class PlaylistView: SkinView {
                 if let q = pl.queuePosition(t) {
                     durW += 4 + r.ttf("[\(q)]", font: font, color: col, x: W - 22 - durW - 4, baseline: y + baseline, maxWidth: 40, alignRight: true)
                 }
+                // Rating: filled stars only, in the row's colour (unrated tracks show nothing).
+                if ctl.plShowRatings, let st = PlayStats.shared.entry(t.url), st.rating > 0 {
+                    durW += 4 + r.ttf(PlayStats.stars(st.rating, empty: false), font: font, color: col, x: W - 22 - durW - 4, baseline: y + baseline, maxWidth: 60, alignRight: true)
+                }
                 // Under an artist the title alone is enough (the full "Artist - Title" for compilations).
                 var name = t.title
                 if depth > 0, let tree, let pn = tree.parent(of: i), !tree.nodes[pn].variousArtists, let s = t.songTitle, !s.isEmpty { name = s }
@@ -256,7 +362,7 @@ final class PlaylistView: SkinView {
         // Insertion line while files are dragged over the list
         if let d0 = dropIndex, case let d = d0 >= pl.tracks.count ? rowCount : displayRow(ofTrack: d0),
            CGFloat(d) >= scrollPos, CGFloat(d) <= scrollPos + CGFloat(visibleRows) {
-            let y = min(H - 39, (20 + (CGFloat(d) - scrollPos) * rowH).rounded())
+            let y = min(H - 39, (listTop + (CGFloat(d) - scrollPos) * rowH).rounded())
             r.fill(st.current, R(12, y - 1, W - 32, 2))
         }
 
@@ -296,8 +402,11 @@ final class PlaylistView: SkinView {
         h.combine("\(a.state)"); h.combine(a.state == .stopped ? 0 : Int(a.currentTime)); h.combine(ctl.timeRemaining)
         h.combine(scrollPos); h.combine(ctl.plShade); h.combine(ctl.plW); h.combine(ctl.plH)
         h.combine(ctl.plFontSize); h.combine(ctl.plShowNumbers); h.combine(ctl.plUseSkinFont)
+        h.combine(ctl.plShowRatings); h.combine(PlayStats.shared.version)
         h.combine(pressed); h.combine(pressInside); h.combine(openMenu?.id); h.combine(menuHover); h.combine(scrolling)
         h.combine(dropIndex); h.combine(ctl.plTree); h.combine(collapsed)
+        h.combine(searchQuery)
+        if searchQuery != nil { h.combine(Int(Date().timeIntervalSinceReferenceDate * 2) % 2) }   // caret blink
         return h.finalize()
     }
 
@@ -349,6 +458,10 @@ final class PlaylistView: SkinView {
             scrollTo(p)
             return true
         }
+        if searchQuery != nil, R(12, 20, W - 32, searchBarH).contains(p) {
+            if p.x > W - 32 { endSearch() }   // the × closes it
+            return true
+        }
         if listRect.contains(p) {
             let ri = rowAt(p.y)
             if let tree, ri >= 0, ri < tree.rows.count, case .header(let n) = tree.rows[ri] {
@@ -387,6 +500,16 @@ final class PlaylistView: SkinView {
             return true
         }
         return false
+    }
+
+    /// Right click on a track: Play, Queue, Rating, Info, Tags, Finder, Remove.
+    override func rightMouseDown(with e: NSEvent) {
+        let p = point(e)
+        guard !ctl.plShade, listRect.contains(p), let i = trackAt(rowAt(p.y)) else { return super.rightMouseDown(with: e) }
+        let pl = ctl.playlist
+        if !pl.selection.contains(i) { pl.selection = [i]; anchor = i }
+        needsDisplay = true
+        popUp(ctl.trackContextMenu(clicked: i), at: p)
     }
 
     override func hitDrag(_ p: CGPoint, _ e: NSEvent) {
@@ -497,6 +620,7 @@ final class PlaylistView: SkinView {
     }
 
     override func keyDown(with e: NSEvent) {
+        if searchKey(e) { return }
         let pl = ctl.playlist
         switch e.keyCode {
         case 51, 117:
@@ -577,11 +701,11 @@ final class PlaylistView: SkinView {
     override var accessibilityName: String { "Playlist" }
 
     private static let menuLabels: [String: String] = [
-        "url": "Aggiungi URL", "dir": "Aggiungi cartella", "file": "Aggiungi file",
-        "remall": "Rimuovi tutto", "crop": "Tieni solo la selezione", "remsel": "Rimuovi selezionati", "remmisc": "Altre rimozioni",
-        "invsel": "Inverti selezione", "selzero": "Deseleziona tutto", "selall": "Seleziona tutto",
-        "sort": "Ordina", "fileinfo": "Info file", "miscopts": "Altre opzioni",
-        "newlist": "Nuova playlist", "savelist": "Salva playlist", "loadlist": "Carica playlist",
+        "url": "Add URL", "dir": "Add Folder", "file": "Add Files",
+        "remall": "Remove All", "crop": "Crop Selection", "remsel": "Remove Selected", "remmisc": "More Remove Options",
+        "invsel": "Invert Selection", "selzero": "Select None", "selall": "Select All",
+        "sort": "Sort", "fileinfo": "File Info", "miscopts": "More Options",
+        "newlist": "New Playlist", "savelist": "Save Playlist", "loadlist": "Load Playlist",
     ]
 
     /// Native, VoiceOver-readable version of a sprite popup menu (ADD/REM/SEL/MISC/LIST).
@@ -609,7 +733,7 @@ final class PlaylistView: SkinView {
         var items: [AXItem] = []
         if ctl.plShade {
             if let i = pl.current ?? pl.selection.min() ?? (pl.tracks.isEmpty ? nil : 0) {
-                items.append(AXItem(id: "shadeTitle", kind: .text, label: "Brano", rect: R(5, 3, W - 40, 8),
+                items.append(AXItem(id: "shadeTitle", kind: .text, label: "Track", rect: R(5, 3, W - 40, 8),
                                     value: "\(i + 1). \(pl.tracks[i].title)"))
             }
         } else {
@@ -621,47 +745,47 @@ final class PlaylistView: SkinView {
                 if let tree, case .header(let n) = tree.rows[ri] {
                     let node = tree.nodes[n], open = !collapsed.contains(node.key)
                     items.append(AXItem(id: "hdr-\(node.key)", kind: .row,
-                                        label: "\(node.kind == .artist ? "Artista" : "Album") \(node.title), \(node.tracks.count) brani",
-                                        rect: R(12, 20 + CGFloat(row) * rowH, W - 32, rowH), value: open ? "aperto" : "chiuso",
+                                        label: "\(node.kind == .artist ? "Artist" : "Album") \(node.title), \(node.tracks.count) \(node.tracks.count == 1 ? "track" : "tracks")",
+                                        rect: R(12, listTop + CGFloat(row) * rowH, W - 32, rowH), value: open ? "expanded" : "collapsed",
                                         press: { [weak self] in self?.toggle(node.key) }))
                     continue
                 }
                 guard let i = trackAt(ri) else { continue }
                 let t = pl.tracks[i]
                 var state: [String] = []
-                if i == cur { state.append("in riproduzione") }
-                if pl.selection.contains(i) { state.append("selezionato") }
-                if let q = pl.queuePosition(t) { state.append("in coda, posizione \(q)") }
+                if i == cur { state.append("playing") }
+                if pl.selection.contains(i) { state.append("selected") }
+                if let q = pl.queuePosition(t) { state.append("queued, position \(q)") }
                 if let d = t.duration { state.append(AXText.time(d)) }
                 items.append(AXItem(id: "row-\(ObjectIdentifier(t).hashValue)", kind: .row, label: "\(i + 1). \(t.title)",
-                                    rect: R(12, 20 + CGFloat(row) * rowH, W - 32, rowH), value: state.joined(separator: ", "),
+                                    rect: R(12, listTop + CGFloat(row) * rowH, W - 32, rowH), value: state.joined(separator: ", "),
                                     selected: pl.selection.contains(i),
                                     press: { [weak self] in self?.ctl.playIndex(i) }))
             }
             if maxScroll > 0 {
-                items.append(AXItem(id: "scroll", kind: .slider, label: "Scorrimento playlist", rect: R(W - 15, 20, 8, H - 58),
-                                    value: "righe \(scrollRow + 1)–\(min(pl.tracks.count, scrollRow + visibleRows)) di \(pl.tracks.count)",
+                items.append(AXItem(id: "scroll", kind: .slider, label: "Playlist scroll", rect: R(W - 15, 20, 8, H - 58),
+                                    value: "rows \(scrollRow + 1)–\(min(pl.tracks.count, scrollRow + visibleRows)) of \(pl.tracks.count)",
                                     increment: { [weak self] in self.map { $0.scrollRow += $0.visibleRows; $0.clampScroll() } },
                                     decrement: { [weak self] in self.map { $0.scrollRow -= $0.visibleRows; $0.clampScroll() } }))
             }
-            for (id, label) in [("add", "Aggiungi"), ("rem", "Rimuovi"), ("sel", "Selezione"), ("misc", "Varie"), ("list", "Playlist")] {
+            for (id, label) in [("add", "Add"), ("rem", "Remove"), ("sel", "Select"), ("misc", "Miscellaneous"), ("list", "Playlist")] {
                 if let b = button(id, label, { [weak self] in
                     guard let self, let r = self.buttonRects().first(where: { $0.0 == id })?.1 else { return }
                     self.popUp(self.nativeMenu(id), at: CGPoint(x: r.minX, y: r.minY))
                 }) { items.append(b) }
             }
             items += [
-                button("prev", "Brano precedente") { [weak self] in self?.ctl.previous() },
-                button("play", "Riproduci") { [weak self] in self?.ctl.play() },
-                button("pause", "Pausa") { [weak self] in self?.ctl.pause() },
+                button("prev", "Previous Track") { [weak self] in self?.ctl.previous() },
+                button("play", "Play") { [weak self] in self?.ctl.play() },
+                button("pause", "Pause") { [weak self] in self?.ctl.pause() },
                 button("stop", "Stop") { [weak self] in self?.ctl.stop() },
-                button("next", "Brano successivo") { [weak self] in self?.ctl.next() },
-                button("eject", "Apri file") { [weak self] in self?.ctl.openFiles() },
+                button("next", "Next Track") { [weak self] in self?.ctl.next() },
+                button("eject", "Open Files") { [weak self] in self?.ctl.openFiles() },
             ].compactMap { $0 }
         }
         items += [
-            button("shade", ctl.plShade ? "Espandi playlist" : "Riduci playlist") { [weak self] in self?.ctl.togglePLShade() },
-            button("close", "Chiudi playlist") { [weak self] in self?.ctl.togglePL() },
+            button("shade", ctl.plShade ? "Expand Playlist" : "Shade Playlist") { [weak self] in self?.ctl.togglePLShade() },
+            button("close", "Close Playlist") { [weak self] in self?.ctl.togglePL() },
         ].compactMap { $0 }
         return items
     }

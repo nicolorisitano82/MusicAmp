@@ -127,3 +127,49 @@ extension AudioEngine {
         }
     }
 }
+
+
+// MARK: - Sample rate (bit-perfect output)
+
+extension AudioDevice {
+    static func nominalRate(_ id: AudioDeviceID) -> Double? {
+        var addr = address(kAudioDevicePropertyNominalSampleRate)
+        var rate: Float64 = 0
+        var size = UInt32(MemoryLayout<Float64>.size)
+        return AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &rate) == noErr ? rate : nil
+    }
+
+    /// Rates the device accepts, as ranges (most devices list discrete rates as min == max).
+    static func availableRates(_ id: AudioDeviceID) -> [ClosedRange<Double>] {
+        var addr = address(kAudioDevicePropertyAvailableNominalSampleRates)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr, size > 0 else { return [] }
+        var ranges = [AudioValueRange](repeating: AudioValueRange(), count: Int(size) / MemoryLayout<AudioValueRange>.size)
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &ranges) == noErr else { return [] }
+        return ranges.map { $0.mMinimum...max($0.mMinimum, $0.mMaximum) }
+    }
+
+    /// The device rate to use for `source`: the same rate, else an integer multiple (44.1 → 88.2 → 176.4),
+    /// else the lowest supported rate above it, else the highest one. nil when the device lists nothing.
+    static func bestRate(for source: Double, supported: [ClosedRange<Double>]) -> Double? {
+        guard !supported.isEmpty, source > 0 else { return nil }
+        func ok(_ r: Double) -> Bool { supported.contains { $0.contains(r) } }
+        for k in [1.0, 2, 4, 8] where ok(source * k) { return source * k }
+        let all = supported.flatMap { [$0.lowerBound, $0.upperBound] }.sorted()
+        return all.first { $0 > source } ?? all.last
+    }
+
+    /// Sets the device's nominal rate and waits (up to 1 s) until it reports it.
+    @discardableResult
+    static func setNominalRate(_ id: AudioDeviceID, _ rate: Double) -> Bool {
+        if let cur = nominalRate(id), abs(cur - rate) < 0.5 { return true }
+        var addr = address(kAudioDevicePropertyNominalSampleRate)
+        var r = Float64(rate)
+        guard AudioObjectSetPropertyData(id, &addr, 0, nil, UInt32(MemoryLayout<Float64>.size), &r) == noErr else { return false }
+        for _ in 0..<40 {
+            if let cur = nominalRate(id), abs(cur - rate) < 0.5 { return true }
+            usleep(25_000)
+        }
+        return false
+    }
+}

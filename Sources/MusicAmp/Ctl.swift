@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import AVFoundation
 import UniformTypeIdentifiers
 
@@ -27,6 +28,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var repeatOn = false { didSet { notify(); if repeatOn != oldValue { invalidateTransition() } } }
     // Transitions and loudness
     var gapless = true { didSet { applyTransitionSettings(); notify() } }
+    /// Bit-perfect: the output device follows each track's sample rate (Settings → Audio → Output).
+    var bitPerfect = false { didSet { audio.matchDeviceRate = bitPerfect; notify() } }
     var crossfadeOn = false { didSet { applyTransitionSettings(); notify() } }
     var crossfadeSeconds: Double = 5 { didSet { applyTransitionSettings(); notify() } }
     var rgMode = 1 { didSet { applyTransitionSettings(); notify() } }   // 0 off, 1 track, 2 album
@@ -35,9 +38,18 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var rgPreventClip = true { didSet { applyTransitionSettings(); notify() } }
     var timeRemaining = false { didSet { notify() } }
     var visMode = 0 { didSet { notify() } }   // 0 spectrum, 1 oscilloscope, 2 off
-    var volume: Double = 75 { didSet { audio.setVolume(volume) } }
+    var volume: Double = 75 { didSet { audio.setVolume(volume * fadeScale) } }
+    /// Sleep-timer fade-out and alarm fade-in: scales the output without touching the volume setting.
+    var fadeScale: Double = 1 { didSet { if fadeScale != oldValue { audio.setVolume(volume * fadeScale) } } }
+    /// Settings tab to show (the Timer menu item opens its tab).
+    var prefsTab: PrefsTab = .general { didSet { notify() } }
+    /// Set once `start()` has run (App Intents may arrive while the app is still launching).
+    private(set) var started = false
     var balance: Double = 0 { didSet { audio.setBalance(balance) } }
     var eqOn = true { didSet { applyEQ() } }
+    /// Parametric / headphone EQ (Settings → Headphones).
+    var peqEnabled = false { didSet { notify(); applyPEQ() } }
+    var peqProfile = PEQProfile() { didSet { notify(); applyPEQ() } }
     var eqAuto = false { didSet { if eqAuto, !oldValue { applyAutoEQ(announce: true) } } }
     var preamp: Double = 0 { didSet { applyEQ(); rememberAutoEQ() } }
     var bands = [Double](repeating: 0, count: 10) { didSet { applyEQ(); rememberAutoEQ() } }
@@ -64,6 +76,9 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var plShowNumbers = true { didSet { notify() } }
     /// Playlist grouped artist → album → track instead of the flat list.
     var plTree = false { didSet { notify(); plView.needsDisplay = true } }
+    var plShowRatings = true { didSet { notify(); plView.needsDisplay = true } }
+    /// Waveform in the position bar (off by default: classic skins look exactly as designed).
+    var waveSeekBar = false { didSet { notify(); mainView.needsDisplay = true } }
     var plUseSkinFont = true { didSet { notify() } }
     var ffmpegEnabled = true { didSet { FFmpeg.enabled = ffmpegEnabled; notify() } }
     /// Seconds of radio audio buffered before playback starts (and after an underrun).
@@ -94,6 +109,9 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var lyricsWindowRef: NSWindow?
     var karaokeWindowRef: NSWindow?
     var milkdropWindowRef: NSWindow?
+    var albumArtWindowRef: NSWindow?
+    var tagEditorWindowRef: NSWindow?
+    var smartWindowRef: NSWindow?
     var milkdropController: MilkdropController?
     private var menuBar: MenuBarController?
     private var notifier: TrackNotifier?
@@ -169,22 +187,23 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         audio.onStreamInfo = { [weak self] in self?.streamInfoChanged() }
         audio.nextProvider = { [weak self] in self?.peekNext() }
         audio.onAdvance = { [weak self] i in self?.didAdvance(to: i) }
-        audio.gainProvider = { ReplayGain.shared.gain(for: $0) }
+        audio.gainProvider = { ReplayGain.shared.gain(for: CueSheet.audioURL($0)) }   // cue tracks: the file's tags
         ReplayGain.shared.onUpdate = { [weak self] u in self?.audio.refreshGain(for: u) }
         applyTransitionSettings()
         nowPlaying = NowPlaying(ctl: self)
-        playlist.onCurrentMetadata = { [weak self] in self?.nowPlaying?.update() }
+        playlist.onCurrentMetadata = { [weak self] in self?.nowPlaying?.update(); WidgetBridge.shared.setNeedsUpdate() }
         loadAutoEQ()
         mainWindow = SkinWindow(view: mainView)
         eqWindow = SkinWindow(view: eqView)
         plWindow = SkinWindow(view: plView)
         mainWindow.title = "MusicAmp"
-        eqWindow.title = "Equalizzatore"
+        eqWindow.title = "Equalizer"
         plWindow.title = "Playlist"
         if let p = skinPath, let s = try? Skin.load(from: URL(fileURLWithPath: p)) { skin = s } else { skinPath = nil }
         layoutInitial()
         applyLevel()
         applyEQ()
+        applyPEQ()
         audio.setVolume(volume)
         audio.setBalance(balance)
         if outputDeviceUID != nil { selectOutput(outputDeviceUID) }
@@ -205,6 +224,43 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         if plVisible { plWindow.orderFront(nil) }
         updateWindowGroups()
         if ProcessInfo.processInfo.environment["MUSICAMP_TEST_GROUPS"] != nil { debugGroupSequence() }
+        if let dir = ProcessInfo.processInfo.environment["MUSICAMP_TAG_DEMO"] {
+            // Debug: opens the tag editor on the audio files of a folder (used for screenshots with test files).
+            let urls = ((try? FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: dir), includingPropertiesForKeys: nil)) ?? [])
+                .filter { ["mp3", "flac", "m4a", "ogg"].contains($0.pathExtension) }.sorted { $0.path < $1.path }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                let model = TagEditorModel(urls: urls, ctl: self)
+                let w = NSWindow(contentViewController: NSHostingController(rootView: TagEditorView(model: model)))
+                w.title = "Tags — \(urls.count) files"
+                w.setContentSize(NSSize(width: 270 + TagEditorView.formMinWidth + 40, height: 620))
+                w.isReleasedWhenClosed = false
+                self.tagEditorWindowRef = w
+                w.makeKeyAndOrderFront(nil)
+            }
+        }
+        if ProcessInfo.processInfo.environment["MUSICAMP_HEADPHONES_DEMO"] != nil {
+            // Debug: Settings → Headphones with a sample 10-band AutoEq profile (screenshots, checks).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                var sample = "Preamp: -3.1 dB\n"
+                let bands: [(String, Int, Double, Double)] = [("LSC", 105, -1.2, 0.7), ("PK", 302, -1.7, 0.51), ("PK", 2374, 3.1, 2.32), ("PK", 75, 3.3, 1.05),
+                    ("PK", 5218, 2.5, 2.96), ("PK", 3400, -2.0, 4.1), ("PK", 7900, 1.4, 3.0), ("PK", 1200, -0.8, 1.6), ("PK", 160, 0.9, 2.2), ("HSC", 10000, -0.5, 0.7)]
+                for (i, b) in bands.enumerated() { sample += "Filter \(i + 1): ON \(b.0) Fc \(b.1) Hz Gain \(b.2) dB Q \(b.3)\n" }
+                if var p = PEQProfile.parse(sample, name: "Apple AirPods Pro 2") { p.name = "Apple AirPods Pro 2 (HypetheSonics on GRAS RA0045)"; self.peqProfile = p }
+                self.peqEnabled = true
+                self.openPreferences(tab: .headphones)
+            }
+        }
+        if let tab = ProcessInfo.processInfo.environment["MUSICAMP_PREFS"] {
+            // Debug: opens Settings on a tab (screenshots).
+            let tabs: [String: PrefsTab] = ["general": .general, "audio": .audio, "headphones": .headphones, "vis": .vis,
+                                            "playlist": .playlist, "timer": .timer, "shortcuts": .shortcuts, "skins": .skins]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                if tab == "smart" { self.showSmartPlaylists() } else { self.openPreferences(tab: tabs[tab] ?? .general) }
+            }
+        }
+        if ProcessInfo.processInfo.environment["MUSICAMP_TEST_DRAG"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.debugDragSequence() }
+        }
 
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification, NSWindow.didChangeOcclusionStateNotification] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] n in
@@ -215,6 +271,14 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         }
         setTimerInterval(Self.activeInterval)
         nowPlaying?.update()
+        Scheduler.shared.start(ctl: self)
+        WaveformStore.shared.onReady = { [weak self] url in
+            guard let self, self.playlist.currentTrack?.url == url else { return }
+            self.mainView.needsDisplay = true
+            self.notify()
+        }
+        WidgetBridge.shared.start(ctl: self)
+        started = true
     }
 
     // MARK: Render pacing
@@ -270,6 +334,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             refreshLyrics()
         }
         nowPlaying?.update()
+        WidgetBridge.shared.setNeedsUpdate()
         notifier?.transportChanged()
         menuBar?.update()
         notify()
@@ -335,13 +400,13 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         if let (f, _) = currentEpisode {
             PodcastStore.shared.setSpeed(f.feedURL, v)
         } else if playlist.currentTrack?.isStream == true {
-            flashMarquee("LA RADIO VA A 1X")
+            flashMarquee("RADIO PLAYS AT 1X")
             return
         } else {
             musicSpeed = v
         }
         applySpeed()
-        flashMarquee(String(format: "VELOCITA %.2gX", v), seconds: 1.5)
+        flashMarquee(String(format: "SPEED %.2gX", v), seconds: 1.5)
         notify()
     }
 
@@ -351,7 +416,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     @objc func pitchUp() { pitchSemitones = min(12, pitchSemitones + 1); flashPitch() }
     @objc func pitchDown() { pitchSemitones = max(-12, pitchSemitones - 1); flashPitch() }
     @objc func pitchReset() { pitchSemitones = 0; flashPitch() }
-    private func flashPitch() { flashMarquee(pitchSemitones == 0 ? "INTONAZIONE ORIGINALE" : String(format: "INTONAZIONE %+.0f SEMITONI", pitchSemitones), seconds: 1.5) }
+    private func flashPitch() { flashMarquee(pitchSemitones == 0 ? "ORIGINAL PITCH" : String(format: "PITCH %+.0f SEMITONES", pitchSemitones), seconds: 1.5) }
     @objc func skipBack15() { seek(by: -15) }
     @objc func skipForward30() { seek(by: 30) }
 
@@ -413,17 +478,17 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     }
 
     func speedMenu() -> NSMenu {
-        let m = NSMenu(title: "Velocità")
+        let m = NSMenu(title: "Speed")
         for v in [50, 75, 100, 125, 150, 175, 200, 250, 300] {
             item(m, String(format: "%.2g×", Double(v) / 100), #selector(setSpeedItem(_:)), tag: v)
         }
         m.addItem(.separator())
-        item(m, "Più veloce", #selector(faster), "]")
-        item(m, "Più lenta", #selector(slower), "[")
+        item(m, "Faster", #selector(faster), "]")
+        item(m, "Slower", #selector(slower), "[")
         m.addItem(.separator())
-        item(m, "Intonazione +1 semitono", #selector(pitchUp), "]", [.command, .option])
-        item(m, "Intonazione −1 semitono", #selector(pitchDown), "[", [.command, .option])
-        item(m, "Intonazione originale", #selector(pitchReset))
+        item(m, "Pitch +1 Semitone", #selector(pitchUp), "]", [.command, .option])
+        item(m, "Pitch −1 Semitone", #selector(pitchDown), "[", [.command, .option])
+        item(m, "Original Pitch", #selector(pitchReset))
         return m
     }
 
@@ -493,8 +558,11 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         tickCount += 1
         let now = Date()
         let playing = audio.state == .playing
+        PlayStats.shared.observe(track: playlist.currentTrack, playing: playing, position: audio.hasSource ? audio.currentTime : 0,
+                                 duration: audio.hasSource ? audio.duration : 0, now: now)
         let showVis = visShown
-        let lyricsOpen = lyricsWindowRef?.isVisible == true || karaokeWindowRef?.isVisible == true   // karaoke follows the music
+        let lyricsOpen = lyricsWindowRef?.isVisible == true || karaokeWindowRef?.isVisible == true
+            || albumArtWindowRef?.isVisible == true   // these views follow the music
         audio.analysisEnabled = playing && (showVis || audio.milkdropEnabled || lyricsOpen)
         var animating = false
         if showVis {
@@ -627,9 +695,11 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         let token = loadToken
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             // Native first (AVAudioFile); formats macOS can't read go through ffmpeg when installed.
-            let ext = t.url.pathExtension.lowercased()
-            let native = FFmpeg.extensions.contains(ext) ? nil : try? AVAudioFile(forReading: t.url)
-            let probe = native == nil && FFmpeg.available ? FFmpeg.probe(t.url) : nil
+            // Cue tracks open the audio file they index; the engine plays only their segment.
+            let file = CueSheet.audioURL(t.url)
+            let ext = file.pathExtension.lowercased()
+            let native = FFmpeg.extensions.contains(ext) ? nil : try? AVAudioFile(forReading: file)
+            let probe = native == nil && FFmpeg.available ? FFmpeg.probe(file) : nil
             DispatchQueue.main.async {
                 guard let self, self.loadToken == token else { return }   // another track was chosen meanwhile
                 if let f = native {
@@ -639,7 +709,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
                 } else {
                     self.audio.unload()
                     let needsFFmpeg = FFmpeg.extensions.contains(ext) && FFmpeg.ffmpegPath == nil
-                    self.flashMarquee(needsFFmpeg ? "SERVE FFMPEG: BREW INSTALL FFMPEG" : "IMPOSSIBILE APRIRE IL FILE", seconds: 3)
+                    self.flashMarquee(needsFFmpeg ? "FFMPEG REQUIRED: BREW INSTALL FFMPEG" : "CANNOT OPEN FILE", seconds: 3)
                     NSSound.beep()
                     return
                 }
@@ -708,6 +778,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     func seek(by delta: Double) { audio.seek(to: audio.currentTime + delta) }
 
     func applyEQ() { audio.setEQ(on: eqOn, preamp: preamp, bands: bands) }
+    func applyPEQ() { audio.setParametricEQ(peqProfile, enabled: peqEnabled) }
 
     // MARK: Files
 
@@ -736,20 +807,20 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
 
     private func askURL(play: Bool) {
         let a = NSAlert()
-        a.messageText = play ? "Apri URL" : "Aggiungi URL"
-        a.informativeText = "Indirizzo di una radio (stream MP3/AAC, HLS .m3u8) o di una playlist .pls/.m3u:"
+        a.messageText = play ? "Open URL" : "Add URL"
+        a.informativeText = "Address of a radio stream (MP3/AAC, HLS .m3u8) or a .pls/.m3u playlist:"
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 24))
         field.placeholderString = "https://…"
         if let s = NSPasteboard.general.string(forType: .string), s.hasPrefix("http") { field.stringValue = s }
         a.accessoryView = field
-        a.addButton(withTitle: play ? "Riproduci" : "Aggiungi")
-        a.addButton(withTitle: "Annulla")
+        a.addButton(withTitle: play ? "Play" : "Add")
+        a.addButton(withTitle: "Cancel")
         a.window.initialFirstResponder = field
         NSApp.activate(ignoringOtherApps: true)
         guard a.runModal() == .alertFirstButtonReturn else { return }
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let u = URL(string: text), ["http", "https"].contains(u.scheme?.lowercased() ?? "") else {
-            flashMarquee("URL NON VALIDO")
+            flashMarquee("INVALID URL")
             return
         }
         addStream(u, title: nil, play: play)
@@ -771,6 +842,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     /// Radio status from the engine: station name, live title, buffering and errors.
     private func streamInfoChanged() {
         guard audio.isStream, let t = playlist.currentTrack, t.isStream else { return }
+        WidgetBridge.shared.setNeedsUpdate()
         let info = audio.stream
         if let n = info.name, t.title == (t.url.host ?? t.url.absoluteString) { t.title = n }
         if t.streamTitle != info.title {
@@ -869,7 +941,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
                 skinPath = url.path
             } catch {
                 let a = NSAlert(error: error)
-                a.messageText = "Impossibile caricare \(url.lastPathComponent)"
+                a.messageText = "Couldn't load \(url.lastPathComponent)"
                 a.runModal()
                 return
             }
@@ -894,8 +966,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
 
     private func populateSkinsMenu(_ menu: NSMenu) {
         menu.removeAllItems()
-        item(menu, "Carica skin…", #selector(chooseSkin), "k")
-        let def = item(menu, "Skin predefinita", #selector(selectSkinItem(_:)))
+        item(menu, "Load Skin…", #selector(chooseSkin), "k")
+        let def = item(menu, "Default Skin", #selector(selectSkinItem(_:)))
         def.representedObject = nil
         menu.addItem(.separator())
         let files = installedSkins()
@@ -904,8 +976,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             it.representedObject = f
         }
         if !files.isEmpty { menu.addItem(.separator()) }
-        item(menu, "Apri cartella skin", #selector(openSkinsFolder))
-        item(menu, "Scarica skin (Winamp Skin Museum)…", #selector(openSkinMuseum))
+        item(menu, "Open Skins Folder", #selector(openSkinsFolder))
+        item(menu, "Download Skins (Winamp Skin Museum)…", #selector(openSkinMuseum))
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -1013,6 +1085,32 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         }
     }
 
+    /// Debug (MUSICAMP_TEST_DRAG): drags the main window's group in steps through the real drag code and checks
+    /// that every window follows the mouse exactly, keeps its distance from the others and is regrouped after.
+    func debugDragSequence() {
+        let main = mainWindow!, group = connected(from: main)
+        let start = group.map(\.frame.origin)
+        let p0 = NSPoint(x: main.frame.midX, y: main.frame.maxY - 5)
+        beginDrag(main, mouse: p0)
+        var worst: CGFloat = 0
+        for k in 1...20 {
+            let d = NSPoint(x: CGFloat(k) * 7, y: CGFloat(k) * -3)
+            continueDrag(mouse: NSPoint(x: p0.x + d.x, y: p0.y + d.y))
+            for (i, w) in group.enumerated() {
+                worst = max(worst, abs(w.frame.minX - (start[i].x + d.x)), abs(w.frame.minY - (start[i].y + d.y)))
+            }
+        }
+        endDrag()
+        let regrouped = group.allSatisfy { $0 === main || $0.parent === main }
+        NSLog("drag test: %d windows, max offset %.1f px, group restored: %@", group.count, worst, regrouped ? "yes" : "no")
+        // Put everything back.
+        detachGroups()
+        for (i, w) in group.enumerated() { w.setFrameOrigin(start[i]) }
+        updateWindowGroups()
+        print(worst < 0.5 && regrouped ? "DRAG OK" : "DRAG FAIL")
+        exit(worst < 0.5 && regrouped ? 0 : 1)
+    }
+
     /// Debug (MUSICAMP_TEST_GROUPS): runs the drag/dock code paths on the real windows and logs the groups.
     func debugGroupSequence() {
         let pl = plWindow!, eq = eqWindow!, main = mainWindow!
@@ -1024,16 +1122,16 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
                 NSLog("step %@ -> %@ | pl at %@", name, line, NSStringFromPoint(pl.frame.origin))
             }
         }
-        step("1 stacca playlist", 0.5) { self.beginDrag(pl); pl.setFrameOrigin(NSPoint(x: pl.frame.minX + 400, y: pl.frame.minY)); self.endDrag() }
-        step("2 riaggancia playlist", 1.0) { self.beginDrag(pl); pl.setFrameOrigin(NSPoint(x: eq.frame.minX, y: eq.frame.minY - pl.frame.height)); self.endDrag() }
-        step("3 stacca EQ+playlist sotto", 1.5) {
+        step("1 detach playlist", 0.5) { self.beginDrag(pl); pl.setFrameOrigin(NSPoint(x: pl.frame.minX + 400, y: pl.frame.minY)); self.endDrag() }
+        step("2 re-dock playlist", 1.0) { self.beginDrag(pl); pl.setFrameOrigin(NSPoint(x: eq.frame.minX, y: eq.frame.minY - pl.frame.height)); self.endDrag() }
+        step("3 detach EQ+playlist below", 1.5) {
             self.beginDrag(eq); eq.setFrameOrigin(NSPoint(x: eq.frame.minX + 400, y: eq.frame.minY)); self.endDrag()
             self.beginDrag(pl); pl.setFrameOrigin(NSPoint(x: eq.frame.minX, y: eq.frame.minY - pl.frame.height)); self.endDrag()
         }
-        step("4 sposta principale (EQ+PL restano)", 2.0) {
+        step("4 move main (EQ+PL stay)", 2.0) {
             self.beginDrag(main); main.setFrameOrigin(NSPoint(x: main.frame.minX, y: main.frame.minY - 30)); self.endDrag()
         }
-        step("5 ripristina", 2.5) {
+        step("5 restore", 2.5) {
             self.detachGroups()
             main.setFrameOrigin(home.0); eq.setFrameOrigin(home.1); pl.setFrameOrigin(home.2)
             self.updateWindowGroups()
@@ -1046,21 +1144,28 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     private var dragOrigins: [NSWindow: NSPoint] = [:]
     private var dragMouse = NSPoint.zero
 
-    func beginDrag(_ w: NSWindow) {
+    func beginDrag(_ w: NSWindow, mouse: NSPoint = NSEvent.mouseLocation) {
         dragWindow = w
-        dragMouse = NSEvent.mouseLocation
+        dragMouse = mouse
         dragGroup = w === mainWindow ? connected(from: w) : [w]
+        // While dragging, every window is moved explicitly: child windows would also follow their parent on
+        // their own, and the two movements fought (jumps, windows sliding away). endDrag regroups them.
+        detachGroups()
         if w !== mainWindow {
             // EQ/playlist leave their group when dragged (Winamp): detach them and their own children.
             w.parent?.removeChildWindow(w)
             for c in w.childWindows ?? [] { w.removeChildWindow(c) }
         }
         dragOrigins = Dictionary(uniqueKeysWithValues: dragGroup.map { ($0, $0.frame.origin) })
+        if ProcessInfo.processInfo.environment["MUSICAMP_DEBUG_DRAG"] != nil {
+            NSLog("drag begin: %@ mouse %@ origin %@ group %@", w.title, NSStringFromPoint(dragMouse), NSStringFromPoint(w.frame.origin),
+                  dragGroup.map(\.title).joined(separator: ","))
+        }
     }
 
-    func continueDrag() {
+    func continueDrag(mouse: NSPoint = NSEvent.mouseLocation) {
         guard dragWindow != nil else { return }
-        let m = NSEvent.mouseLocation
+        let m = mouse
         var dx = m.x - dragMouse.x, dy = m.y - dragMouse.y
         let moved = dragGroup.compactMap { g in dragOrigins[g].map { CGRect(origin: CGPoint(x: $0.x + dx, y: $0.y + dy), size: g.frame.size) } }
         guard let first = moved.first else { return }
@@ -1070,12 +1175,20 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         let s = snapEnabled ? snapDelta(union, others, screen) : .zero
         dx += s.x
         dy += s.y
+        let before = dragWindow?.frame.origin ?? .zero
         for g in dragGroup {
             if let o = dragOrigins[g] { g.setFrameOrigin(NSPoint(x: o.x + dx, y: o.y + dy)) }
+        }
+        if ProcessInfo.processInfo.environment["MUSICAMP_DEBUG_DRAG"] != nil {
+            NSLog("drag: mouse %@ start %@ d=(%.0f,%.0f) snap=(%.0f,%.0f) group=%d before=%@ after=%@ parent=%@ children=%d",
+                  NSStringFromPoint(m), NSStringFromPoint(dragMouse), dx, dy, s.x, s.y, dragGroup.count,
+                  NSStringFromPoint(before), NSStringFromPoint(dragWindow?.frame.origin ?? .zero),
+                  dragWindow?.parent?.title ?? "-", dragWindow?.childWindows?.count ?? 0)
         }
     }
 
     func endDrag() {
+        if ProcessInfo.processInfo.environment["MUSICAMP_DEBUG_DRAG"] != nil { NSLog("drag end: %@", NSStringFromPoint(dragWindow?.frame.origin ?? .zero)) }
         dragWindow = nil
         dragGroup = []
         dragOrigins = [:]
@@ -1225,44 +1338,54 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     }
 
     func visMenu() -> NSMenu {
-        let m = NSMenu(title: "Visualizzazione")
-        item(m, "Analizzatore di spettro", #selector(setVisMode(_:)), tag: 0)
-        item(m, "Oscilloscopio", #selector(setVisMode(_:)), tag: 1)
-        item(m, "Disattivata", #selector(setVisMode(_:)), tag: 2)
+        let m = NSMenu(title: "Visualization")
+        item(m, "Spectrum Analyzer", #selector(setVisMode(_:)), tag: 0)
+        item(m, "Oscilloscope", #selector(setVisMode(_:)), tag: 1)
+        item(m, "Off", #selector(setVisMode(_:)), tag: 2)
+        m.addItem(.separator())
+        item(m, "Waveform Seek Bar", #selector(toggleWaveSeekBar))
         return m
     }
 
     func optionsMenu() -> NSMenu {
         let m = NSMenu()
-        item(m, "Apri file…", #selector(openFiles))
-        item(m, "Info file…", #selector(fileInfo))
+        item(m, "Open File…", #selector(openFiles))
+        item(m, "File Info…", #selector(fileInfo))
         m.addItem(.separator())
         m.addItem(skinsSubmenuItem())
-        let vis = NSMenuItem(title: "Visualizzazione", action: nil, keyEquivalent: "")
+        let vis = NSMenuItem(title: "Visualization", action: nil, keyEquivalent: "")
         vis.submenu = visMenu()
         m.addItem(vis)
         m.addItem(.separator())
-        item(m, "Preferenze…", #selector(showPreferences))
-        item(m, "Libreria…", #selector(showLibrary))
+        item(m, "Settings…", #selector(showPreferences))
+        item(m, "Library…", #selector(showLibrary))
         item(m, "Radio…", #selector(showRadio))
-        item(m, "Podcast…", #selector(showPodcasts))
-        item(m, "Testi…", #selector(showLyrics))
-        item(m, "Karaoke a schermo intero", #selector(showKaraoke))
+        item(m, "Podcasts…", #selector(showPodcasts))
+        item(m, "Lyrics…", #selector(showLyrics))
+        item(m, "Album Art…", #selector(showAlbumArt))
+        item(m, "Full-Screen Karaoke", #selector(showKaraoke))
         item(m, "Milkdrop", #selector(showMilkdrop))
-        item(m, "Apri URL…", #selector(openURL))
+        item(m, "Open URL…", #selector(openURL))
         m.addItem(.separator())
-        item(m, "Equalizzatore", #selector(toggleEQ))
+        item(m, "Equalizer", #selector(toggleEQ))
         item(m, "Playlist", #selector(togglePL))
-        item(m, "Modalità ridotta", #selector(toggleMainShade))
-        item(m, "Playlist ridotta", #selector(togglePLShade))
-        item(m, "Doppia dimensione", #selector(toggleDoubleSize))
-        item(m, "Sempre in primo piano", #selector(toggleAlwaysOnTop))
-        item(m, "Tempo rimanente", #selector(toggleTimeRemaining))
+        item(m, "Windowshade Mode", #selector(toggleMainShade))
+        item(m, "Playlist Windowshade Mode", #selector(togglePLShade))
+        item(m, "Double Size", #selector(toggleDoubleSize))
+        item(m, "Always on Top", #selector(toggleAlwaysOnTop))
+        item(m, "Remaining Time", #selector(toggleTimeRemaining))
         m.addItem(.separator())
         item(m, "Shuffle", #selector(toggleShuffle))
-        item(m, "Ripeti", #selector(toggleRepeat))
+        item(m, "Repeat", #selector(toggleRepeat))
+        let sleep = NSMenuItem(title: "Sleep Timer", action: nil, keyEquivalent: "")
+        sleep.submenu = Scheduler.shared.sleepMenu()
+        m.addItem(sleep)
+        let rate = NSMenuItem(title: "Rate Current Track", action: nil, keyEquivalent: "")
+        rate.submenu = ratingMenu(#selector(rateCurrent(_:)), current: playlist.currentTrack.map { PlayStats.shared.rating($0.url) }, keys: false)
+        m.addItem(rate)
+        item(m, "Smart Playlists…", #selector(showSmartPlaylists))
         m.addItem(.separator())
-        let q = NSMenuItem(title: "Esci", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+        let q = NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         m.addItem(q)
         return m
     }
@@ -1271,7 +1394,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         let m = NSMenu()
         item(m, "Flat (reset)", #selector(resetEQ))
         m.addItem(.separator())
-        item(m, "AUTO: rimuovi preset di questo brano", #selector(forgetAutoEQ))
+        item(m, "AUTO: Remove This Track's Preset", #selector(forgetAutoEQ))
         m.addItem(.separator())
         for (i, p) in Ctl.artistPresets.enumerated() { item(m, p.0, #selector(applyArtistPreset(_:)), tag: i) }
         m.addItem(.separator())
@@ -1279,16 +1402,16 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         let mine = userPresets
         if !mine.isEmpty {
             m.addItem(.separator())
-            m.addItem(withTitle: "I tuoi preset", action: nil, keyEquivalent: "").isEnabled = false
+            m.addItem(withTitle: "Your Presets", action: nil, keyEquivalent: "").isEnabled = false
             for (i, p) in mine.enumerated() { item(m, p.name, #selector(applyUserPreset(_:)), tag: i) }
         }
         m.addItem(.separator())
-        item(m, "Salva preset corrente…", #selector(saveUserPreset))
-        item(m, "Carica preset Winamp (.eqf, .q1)…", #selector(loadEQFile))
-        item(m, "Salva come file .eqf…", #selector(saveEQFile))
-        item(m, "Esporta tutti in .q1…", #selector(exportEQLibrary))
+        item(m, "Save Current Preset…", #selector(saveUserPreset))
+        item(m, "Load Winamp Preset (.eqf, .q1)…", #selector(loadEQFile))
+        item(m, "Save as .eqf File…", #selector(saveEQFile))
+        item(m, "Export All to .q1…", #selector(exportEQLibrary))
         if !mine.isEmpty {
-            let del = NSMenuItem(title: "Elimina preset", action: nil, keyEquivalent: "")
+            let del = NSMenuItem(title: "Delete Preset", action: nil, keyEquivalent: "")
             let sub = NSMenu()
             for (i, p) in mine.enumerated() { item(sub, p.name, #selector(deleteUserPreset(_:)), tag: i) }
             del.submenu = sub
@@ -1299,38 +1422,102 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
 
     func sortMenu() -> NSMenu {
         let m = NSMenu()
-        item(m, "Ordina per titolo", #selector(sortByTitle))
-        item(m, "Ordina per nome file", #selector(sortByFilename))
-        item(m, "Ordina per percorso", #selector(sortByPath))
+        item(m, "Sort by Title", #selector(sortByTitle))
+        item(m, "Sort by File Name", #selector(sortByFilename))
+        item(m, "Sort by Path", #selector(sortByPath))
         m.addItem(.separator())
-        item(m, "Inverti ordine", #selector(reverseList))
-        item(m, "Ordine casuale", #selector(randomizeList))
+        item(m, "Reverse Order", #selector(reverseList))
+        item(m, "Randomize Order", #selector(randomizeList))
         return m
     }
 
     func removeMiscMenu() -> NSMenu {
         let m = NSMenu()
-        item(m, "Rimuovi file mancanti", #selector(removeMissing))
-        item(m, "Rimuovi duplicati", #selector(removeDuplicates))
+        item(m, "Remove Missing Files", #selector(removeMissing))
+        item(m, "Remove Duplicates", #selector(removeDuplicates))
         return m
     }
 
     func miscOptionsMenu() -> NSMenu {
         let m = NSMenu()
-        item(m, "Mostra nel Finder", #selector(revealSelected))
-        item(m, "Vai al file… (J)", #selector(showJumpToFile))
-        item(m, "Accoda / togli dalla coda (Q)", #selector(queueSelected))
-        item(m, "Svuota coda", #selector(clearQueue))
-        item(m, "Vai al brano in riproduzione (J)", #selector(jumpToCurrent))
+        item(m, "Show in Finder", #selector(revealSelected))
+        item(m, "Jump to File… (J)", #selector(showJumpToFile))
+        item(m, "Queue / Dequeue (Q)", #selector(queueSelected))
+        item(m, "Clear Queue", #selector(clearQueue))
+        item(m, "Go to Playing Track (J)", #selector(jumpToCurrent))
+        item(m, "Edit Tags…", #selector(showTagEditor))
+        item(m, "Find in Playlist… (⌘F)", #selector(searchPlaylist))
         m.addItem(.separator())
-        item(m, "Raggruppa per artista e album", #selector(togglePlTree))
+        item(m, "Group by Artist and Album", #selector(togglePlTree))
         return m
     }
 
     @objc func setVisMode(_ s: NSMenuItem) { visMode = s.tag }
     @objc func toggleTimeRemaining() { timeRemaining.toggle() }
+    /// ⌘F: opens the playlist (if hidden or shaded) with its search bar.
+    @objc func searchPlaylist() {
+        if !plVisible { togglePL() }
+        if plShade { togglePLShade() }
+        plWindow.makeKeyAndOrderFront(nil)
+        plWindow.makeFirstResponder(plView)
+        plView.beginSearch()
+    }
+    @objc func toggleWaveSeekBar() { waveSeekBar.toggle() }
     @objc func togglePlTree() { plTree.toggle(); plView.clampScroll() }
     @objc func toggleShuffle() { shuffle.toggle() }
+
+    // MARK: Ratings
+
+    /// Controls → Rate Current Track (tag = stars, 0 clears).
+    @objc func rateCurrent(_ s: NSMenuItem) {
+        guard let t = playlist.currentTrack, PlayStats.key(t.url) != nil else { NSSound.beep(); return }
+        PlayStats.shared.setRating(t.url, s.tag)
+        playlist.touch()
+        flashMarquee(s.tag == 0 ? "RATING CLEARED" : "RATED \(s.tag)/5")
+    }
+
+    /// Playlist context menu → Rating (tag = stars): every selected track.
+    @objc func rateSelected(_ s: NSMenuItem) {
+        for i in playlist.selection where playlist.tracks.indices.contains(i) { PlayStats.shared.setRating(playlist.tracks[i].url, s.tag) }
+        playlist.touch()
+    }
+
+    func ratingMenu(_ action: Selector, current: Int?, keys: Bool) -> NSMenu {
+        let m = NSMenu(title: "Rating")
+        for n in stride(from: 5, through: 0, by: -1) {
+            let it = item(m, n == 0 ? "No Rating" : PlayStats.stars(n), action, keys ? "\(n)" : "", [.command, .option])
+            it.tag = n
+            it.state = current == n ? .on : .off
+        }
+        return m
+    }
+
+    func trackContextMenu(clicked i: Int) -> NSMenu {
+        let m = NSMenu()
+        let play = m.addItem(withTitle: "Play", action: #selector(playClicked(_:)), keyEquivalent: "")
+        play.target = self
+        play.tag = i
+        item(m, "Queue / Dequeue", #selector(queueSelected))
+        m.addItem(.separator())
+        let ratings = Set(playlist.selection.compactMap { playlist.tracks.indices.contains($0) ? PlayStats.shared.rating(playlist.tracks[$0].url) : nil })
+        let r = NSMenuItem(title: "Rating", action: nil, keyEquivalent: "")
+        r.submenu = ratingMenu(#selector(rateSelected(_:)), current: ratings.count == 1 ? ratings.first : nil, keys: false)
+        m.addItem(r)
+        if let st = PlayStats.shared.entry(playlist.tracks[i].url) {
+            let info = st.plays == 0 ? "Never played" : "Played \(st.plays)×" + (st.lastPlayed.map { ", last \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "")
+            m.addItem(withTitle: info + (st.skips > 0 ? " · skipped \(st.skips)×" : ""), action: nil, keyEquivalent: "")
+        }
+        m.addItem(.separator())
+        item(m, "File Info…", #selector(fileInfo))
+        item(m, "Edit Tags…", #selector(showTagEditor))
+        item(m, "Show in Finder", #selector(revealSelected))
+        m.addItem(.separator())
+        item(m, "Remove from Playlist", #selector(removeSelectedTracks))
+        return m
+    }
+
+    @objc private func playClicked(_ s: NSMenuItem) { playIndex(s.tag) }
+    @objc func removeSelectedTracks() { playlist.remove(playlist.selection); invalidateTransition() }
     @objc func toggleRepeat() { repeatOn.toggle() }
     @objc func resetEQ() { bands = Array(repeating: 0, count: 10); preamp = 0 }
     @objc func applyPreset(_ s: NSMenuItem) { bands = Ctl.presets[s.tag].1 }
@@ -1351,7 +1538,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         guard !playlist.selection.isEmpty else { NSSound.beep(); return }
         playlist.toggleQueue(playlist.selection)
         invalidateTransition()
-        flashMarquee(playlist.queue.isEmpty ? "CODA VUOTA" : "IN CODA: \(playlist.queue.count)", seconds: 1.2)
+        flashMarquee(playlist.queue.isEmpty ? "QUEUE EMPTY" : "QUEUED: \(playlist.queue.count)", seconds: 1.2)
     }
 
     @objc func clearQueue() { playlist.queue = []; invalidateTransition() }
@@ -1386,6 +1573,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         case #selector(toggleEQShade): on(eqShade)
         case #selector(toggleDoubleSize): on(doubleSize)
         case #selector(togglePlTree): on(plTree)
+        case #selector(toggleWaveSeekBar): on(waveSeekBar)
         case #selector(toggleAlwaysOnTop): on(alwaysOnTop)
         case #selector(toggleTimeRemaining): on(timeRemaining)
         case #selector(toggleShuffle): on(shuffle)
@@ -1397,6 +1585,10 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         case #selector(clearQueue): return !playlist.queue.isEmpty
         case #selector(queueSelected): return !playlist.selection.isEmpty
         case #selector(setSpeedItem(_:)): on(Int((audio.rate * 100).rounded()) == it.tag)
+        case #selector(rateCurrent(_:)):
+            guard let t = playlist.currentTrack, PlayStats.key(t.url) != nil else { it.state = .off; return false }
+            on(PlayStats.shared.rating(t.url) == it.tag)
+        case #selector(removeSelectedTracks): return !playlist.selection.isEmpty
         case #selector(forgetAutoEQ): return playlist.currentTrack.map { autoEQ[Self.autoKey($0)] != nil } ?? false
         default: break
         }
@@ -1439,14 +1631,14 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         preamp = v[10]
         applyingAutoEQ = false
         eqView.needsDisplay = true
-        if announce { flashMarquee("EQ AUTO: PRESET DEL BRANO") }
+        if announce { flashMarquee("EQ AUTO: TRACK PRESET") }
     }
 
     @objc func forgetAutoEQ() {
         guard let t = playlist.currentTrack else { return }
         autoEQ[Self.autoKey(t)] = nil
         if let d = try? JSONEncoder().encode(autoEQ) { try? d.write(to: autoEQURL, options: .atomic) }
-        flashMarquee("EQ AUTO: PRESET RIMOSSO")
+        flashMarquee("EQ AUTO: PRESET REMOVED")
     }
 
     func flashMarquee(_ text: String, seconds: Double = 2) {
@@ -1468,6 +1660,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         balance = dbl("balance", 0)
         eqOn = bool("eqOn", true)
         eqAuto = bool("eqAuto", false)
+        if let d = UserDefaults.standard.data(forKey: "peqProfile"), let p = try? JSONDecoder().decode(PEQProfile.self, from: d) { peqProfile = p }
+        peqEnabled = bool("peqEnabled", false)
         preamp = dbl("preamp", 0)
         if let b = d.array(forKey: "bands") as? [Double], b.count == 10 { bands = b }
         doubleSize = bool("doubleSize", false)
@@ -1498,12 +1692,15 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         plFontSize = int("plFontSize", 9)
         plShowNumbers = bool("plShowNumbers", true)
         plTree = bool("plTree", false)
+        plShowRatings = bool("plShowRatings", true)
+        waveSeekBar = bool("waveSeekBar", false)
         plUseSkinFont = bool("plUseSkinFont", true)
         radioBuffer = dbl("radioBuffer", 2)
         musicSpeed = dbl("musicSpeed", 1)
         podcastSpeed = dbl("podcastSpeed", 1)
         pitchSemitones = dbl("pitchSemitones", 0)
         gapless = bool("gapless", true)
+        bitPerfect = bool("bitPerfect", false)
         ffmpegEnabled = bool("ffmpegEnabled", true)
         crossfadeOn = bool("crossfadeOn", false)
         crossfadeSeconds = dbl("crossfadeSeconds", 5)
@@ -1521,20 +1718,22 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         let d = UserDefaults.standard
         let values: [String: Any] = [
             "volume": volume, "balance": balance, "eqOn": eqOn, "eqAuto": eqAuto, "preamp": preamp, "bands": bands,
+            "peqEnabled": peqEnabled, "peqProfile": (try? JSONEncoder().encode(peqProfile)) ?? Data(),
             "doubleSize": doubleSize, "retinaSkins": retinaSkins, "alwaysOnTop": alwaysOnTop, "shuffle": shuffle, "repeat": repeatOn,
             "timeRemaining": timeRemaining, "visMode": visMode, "mainShade": mainShade, "eqShade": eqShade,
             "plShade": plShade, "eqVisible": eqVisible, "plVisible": plVisible, "plW": plW, "plH": plH,
             "snapEnabled": snapEnabled, "snapDistance": snapDistance, "marqueeScroll": marqueeScroll,
             "resumeOnLaunch": resumeOnLaunch, "visThinBands": visThinBands, "visPeaksOn": visPeaksOn,
             "visFalloff": visFalloff, "peakFalloff": peakFalloff, "oscStyle": oscStyle, "plFontSize": plFontSize,
-            "plShowNumbers": plShowNumbers, "plTree": plTree, "plUseSkinFont": plUseSkinFont, "autoDownloadFonts": autoDownloadFonts,
+            "plShowNumbers": plShowNumbers, "plTree": plTree, "plShowRatings": plShowRatings, "waveSeekBar": waveSeekBar, "plUseSkinFont": plUseSkinFont, "autoDownloadFonts": autoDownloadFonts,
             "menuBarEnabled": menuBarEnabled, "notifyTrackChange": notifyTrackChange,
             "notifyOnlyInBackground": notifyOnlyInBackground,
-            "playlist": playlist.tracks.map { $0.url.isFileURL ? $0.url.path : $0.url.absoluteString },
+            // Plain files as paths; cue tracks keep their "#track=N" fragment, so they are saved as URLs.
+            "playlist": playlist.tracks.map { $0.url.isFileURL && $0.url.fragment == nil ? $0.url.path : $0.url.absoluteString },
             "streamTitles": Dictionary(playlist.tracks.filter(\.isStream).map { ($0.url.absoluteString, $0.title) },
                                        uniquingKeysWith: { a, _ in a }),
             "radioBuffer": radioBuffer, "ffmpegEnabled": ffmpegEnabled, "musicSpeed": musicSpeed,
-            "podcastSpeed": podcastSpeed, "pitchSemitones": pitchSemitones, "gapless": gapless, "crossfadeOn": crossfadeOn,
+            "podcastSpeed": podcastSpeed, "pitchSemitones": pitchSemitones, "gapless": gapless, "bitPerfect": bitPerfect, "crossfadeOn": crossfadeOn,
             "crossfadeSeconds": crossfadeSeconds, "rgMode": rgMode, "rgPreamp": rgPreamp, "rgAnalyze": rgAnalyze,
             "rgPreventClip": rgPreventClip,
             "current": playlist.current ?? -1,
@@ -1552,7 +1751,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     private func restorePlaylist() {
         let d = UserDefaults.standard
         guard let paths = d.stringArray(forKey: "playlist") else { return }
-        playlist.add(paths.compactMap { $0.hasPrefix("http") ? URL(string: $0) : URL(fileURLWithPath: $0) })
+        playlist.add(paths.compactMap { $0.hasPrefix("http") || $0.hasPrefix("file:") ? URL(string: $0) : URL(fileURLWithPath: $0) })
         let names = d.dictionary(forKey: "streamTitles") as? [String: String] ?? [:]
         for t in playlist.tracks where t.isStream { if let n = names[t.url.absoluteString] { t.title = n } }
         let c = d.integer(forKey: "current")

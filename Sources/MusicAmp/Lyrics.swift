@@ -78,7 +78,7 @@ struct Lyrics: Codable, Equatable {
     var plain: String?
     var synced: [Line]?
     var instrumental = false
-    var source: String   // "LRCLIB", "file .lrc", "tag del file"
+    var source: String   // "LRCLIB", ".lrc file", "file tags"
     var link: String?
 
     var isEmpty: Bool { (plain ?? "").isEmpty && (synced ?? []).isEmpty && !instrumental }
@@ -261,8 +261,8 @@ final class LyricsService: ObservableObject {
         for ext in ["lrc", "LRC", "txt"] {
             let u = f.deletingPathExtension().appendingPathExtension(ext)
             guard let text = Skin.readText(u), !text.isEmpty else { continue }
-            if let s = LRC.parse(text) { return Lyrics(plain: s.map(\.text).joined(separator: "\n"), synced: s, source: "file .\(ext.lowercased())") }
-            if ext == "txt" { return Lyrics(plain: text, synced: nil, source: "file .txt") }
+            if let s = LRC.parse(text) { return Lyrics(plain: s.map(\.text).joined(separator: "\n"), synced: s, source: ".\(ext.lowercased()) file") }
+            if ext == "txt" { return Lyrics(plain: text, synced: nil, source: ".txt file") }
         }
         return nil
     }
@@ -278,8 +278,8 @@ final class LyricsService: ObservableObject {
             let id = (item.identifier?.rawValue ?? "").lowercased()
             guard id.contains("lyr") || id.hasSuffix("/uslt") || id.hasSuffix("/sylt") || id.contains("unsyncedlyrics") else { continue }
             guard let text = try? await item.load(.stringValue), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            if let s = LRC.parse(text) { return Lyrics(plain: s.map(\.text).joined(separator: "\n"), synced: s, source: "tag del file") }
-            return Lyrics(plain: text, synced: nil, source: "tag del file")
+            if let s = LRC.parse(text) { return Lyrics(plain: s.map(\.text).joined(separator: "\n"), synced: s, source: "file tags") }
+            return Lyrics(plain: text, synced: nil, source: "file tags")
         }
         return nil
     }

@@ -57,3 +57,17 @@ Le coordinate degli sprite sono quelle di Winamp, in pixel della skin. `Renderer
 - `text` scrive col font `text.bmp`, `ttf` col font vettoriale.
 
 La skin di riserva (`DefaultSkin`) disegna via codice ogni foglio con le stesse coordinate, quindi ogni sprite esiste sempre.
+
+## Barra di avanzamento a forma d'onda
+
+Opzione **Impostazioni → Visualization → Waveform in the position bar** (anche nel menu Visualization), spenta di default: con l'opzione spenta ogni skin è disegnata esattamente come prima.
+
+- **Dove:** dentro la barra di `posbar.bmp`, tra le due posizioni estreme del cursore (219 px, x 30–249 della finestra principale), così il centro del cursore è sempre sull'istante in riproduzione. Sfondo e cursore restano quelli della skin; il cursore è disegnato sopra l'onda.
+- **Altezza:** la scanalatura scura della barra, trovata dalla luminosità delle righe di `posbar.bmp` (più un pixel sopra e sotto); se la barra non ha una scanalatura chiara (per esempio è trasparente) si usano 8 px. Il disegno è ritagliato su quel rettangolo e non tocca mai il resto della skin.
+- **Colori:** da `viscolor.txt`. Si preferisce un colore della metà bassa dello spettro (il verde della skin classica); se contrasta poco con una delle righe della scanalatura, si sceglie fra gli altri colori dello spettro e dell'oscilloscopio quello più leggibile. La parte già suonata è piena, quella da suonare al 60%, con un bordo di un pixel nel tono opposto che la stacca da qualsiasi sfondo (anche dalle barre senza scanalatura, come i tubi chiari di Winamp5 Classified).
+- **Risoluzione:** una colonna per pixel del dispositivo: sugli schermi Retina l'onda ha il doppio del dettaglio, mentre gli sprite restano a pixel pieni.
+- **Dati (`WaveformStore`):** 512 livelli RMS per brano (o per traccia di un `.cue`), stirati tra il fondo del brano (metà del 10° percentile) e il bucket più forte, perché anche i master molto compressi mostrino strofe e pause. Calcolo in background alla prima riproduzione (AVAudioFile con vDSP, ~0,3 s per un MP3 di 4 minuti in release; FFmpeg a 4 kHz mono per gli altri formati), poi cache in `Application Support/MusicAmp/Waveforms` (512 byte per brano, chiave = URL + dimensione + data del file). Finché non è pronta si vede la barra classica.
+- Radio ed episodi in streaming tengono la barra classica. La modalità ridotta non cambia.
+- La stessa onda sostituisce la barra della **vista copertina** quando l'opzione è attiva.
+
+Test: `--test-waveform [cartella]` (forma, segmento `.cue`, FFmpeg contro nativo, cache, e il render della barra a 1x e 2x: con l'opzione spenta i pixel devono essere identici, accesa può cambiare solo la scanalatura). `MUSICAMP_WAVE_SKIN` e `MUSICAMP_WAVE_FILE` provano una skin e un brano veri.

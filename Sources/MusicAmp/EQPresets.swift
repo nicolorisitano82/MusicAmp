@@ -84,7 +84,7 @@ extension Ctl {
 
     private static var eqTypes: [UTType] { ["eqf", "q1"].compactMap { UTType(filenameExtension: $0) } }
 
-    /// .eqf with one preset → applied; a library (.q1) → added to "I tuoi preset" and the first one applied.
+    /// .eqf with one preset → applied; a library (.q1) → added to "Your Presets" and the first one applied.
     @objc func loadEQFile() {
         let p = NSOpenPanel()
         p.allowedContentTypes = Self.eqTypes
@@ -95,7 +95,7 @@ extension Ctl {
         for u in p.urls {
             guard let data = try? Data(contentsOf: u), let list = EQF.parse(data) else {
                 let a = NSAlert()
-                a.messageText = "\(u.lastPathComponent) non è un file di preset Winamp valido."
+                a.messageText = "\(u.lastPathComponent) is not a valid Winamp preset file."
                 a.runModal()
                 continue
             }
@@ -111,7 +111,7 @@ extension Ctl {
         }
         userPresets = lib
         applyEQPreset(first)
-        if imported.count > 1 { flashMarquee("EQ: IMPORTATI \(imported.count) PRESET") }
+        if imported.count > 1 { flashMarquee("EQ: IMPORTED \(imported.count) PRESETS") }
     }
 
     @objc func saveEQFile() {
@@ -138,13 +138,13 @@ extension Ctl {
 
     @objc func saveUserPreset() {
         let a = NSAlert()
-        a.messageText = "Salva preset EQ"
-        a.informativeText = "Nome del preset:"
+        a.messageText = "Save EQ Preset"
+        a.informativeText = "Preset name:"
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        field.stringValue = "Il mio preset"
+        field.stringValue = "My Preset"
         a.accessoryView = field
-        a.addButton(withTitle: "Salva")
-        a.addButton(withTitle: "Annulla")
+        a.addButton(withTitle: "Save")
+        a.addButton(withTitle: "Cancel")
         a.window.initialFirstResponder = field
         NSApp.activate(ignoringOtherApps: true)
         guard a.runModal() == .alertFirstButtonReturn else { return }
@@ -155,6 +155,6 @@ extension Ctl {
         var lib = userPresets
         if let i = lib.firstIndex(where: { $0.name == name }) { lib[i] = preset } else { lib.append(preset) }
         userPresets = lib
-        flashMarquee("EQ: SALVATO \(name.uppercased())")
+        flashMarquee("EQ: SAVED \(name.uppercased())")
     }
 }

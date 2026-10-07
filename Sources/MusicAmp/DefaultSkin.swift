@@ -151,7 +151,7 @@ enum DefaultSkin {
     }
 
     static func make() -> Skin {
-        let s = Skin(name: "Predefinita")
+        let s = Skin(name: "Default")
         s.images = [
             "main": main(), "titlebar": titlebar(), "cbuttons": cbuttons(), "numbers": numbers(),
             "text": text(), "posbar": posbar(), "volume": volume(balance: false), "balance": volume(balance: true),

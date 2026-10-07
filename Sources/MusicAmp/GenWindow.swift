@@ -171,7 +171,7 @@ final class GenView: SkinView {
         items += buttonRects().map { id, r in
             AXItem(id: "btn-\(id)", kind: .button, label: id, rect: r, press: { [weak self] in self?.buttons.first { $0.0 == id }?.1() })
         }
-        items.append(AXItem(id: "close", kind: .button, label: "Chiudi", rect: closeRect, press: { [weak self] in self?.onClose() }))
+        items.append(AXItem(id: "close", kind: .button, label: "Close", rect: closeRect, press: { [weak self] in self?.onClose() }))
         return items
     }
 }
@@ -209,18 +209,18 @@ extension Ctl {
         view.drawContent = { [weak self, weak view] r, rect, c in
             guard let self else { return }
             var rows: [(String, String)] = [
-                ("Titolo", t.songTitle ?? t.title),
-                ("Artista", t.artist ?? "—"),
+                ("Title", t.songTitle ?? t.title),
+                ("Artist", t.artist ?? "—"),
                 ("Album", t.album ?? "—"),
-                ("Durata", t.duration.map(Ctl.hmmss) ?? "—"),
+                ("Duration", t.duration.map(Ctl.hmmss) ?? "—"),
             ]
             if isCurrent {
                 let ch = self.audio.channels == 1 ? "mono" : "stereo"
-                rows.append(("Formato", "\(self.audio.bitrate) kbps · \(Int(self.audio.sampleRate)) Hz · \(ch)"))
+                rows.append(("Format", "\(self.audio.bitrate) kbps · \(Int(self.audio.sampleRate)) Hz · \(ch)"))
             } else {
-                rows.append(("Formato", t.url.pathExtension.uppercased()))
+                rows.append(("Format", t.url.pathExtension.uppercased()))
             }
-            view?.accessibilityLines = rows.map { "\($0.0): \($0.1)" } + ["Percorso: \(t.url.path)"]
+            view?.accessibilityLines = rows.map { "\($0.0): \($0.1)" } + ["Path: \(t.url.path)"]
             let label = NSFont.systemFont(ofSize: 9, weight: .semibold), value = NSFont.systemFont(ofSize: 9)
             var y = rect.minY + 8
             for (k, v) in rows {

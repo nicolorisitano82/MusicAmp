@@ -5,10 +5,10 @@ enum StreamError: LocalizedError {
     case http(Int), unsupported(String), ended, noEntry
     var errorDescription: String? {
         switch self {
-        case .http(let c): return "Il server ha risposto \(c)"
-        case .unsupported(let f): return "Formato \(f) non supportato"
-        case .ended: return "Lo stream si è interrotto"
-        case .noEntry: return "La playlist della radio non contiene stream"
+        case .http(let c): return "The server responded with \(c)"
+        case .unsupported(let f): return "Unsupported format: \(f)"
+        case .ended: return "The stream stopped"
+        case .noEntry: return "The station’s playlist contains no streams"
         }
     }
 }

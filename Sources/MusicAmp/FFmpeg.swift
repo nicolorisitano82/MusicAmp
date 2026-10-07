@@ -42,6 +42,7 @@ enum FFmpeg {
         var title: String?
         var artist: String?
         var album: String?
+        var albumArtist: String?
     }
 
     /// ffprobe: format, first audio stream and tags (JSON).
@@ -66,6 +67,7 @@ enum FFmpeg {
         r.title = tags["title"]
         r.artist = tags["artist"] ?? tags["album_artist"]
         r.album = tags["album"]
+        r.albumArtist = tags["album_artist"] ?? tags["albumartist"] ?? tags["album artist"]
         return r
     }
 
@@ -102,7 +104,11 @@ final class FFmpegDecoder {
     private var cancelled = false
     private let lock = NSLock()
 
-    init(url: URL, start: Double = 0, sampleRate: Double, channels: Int) {
+    /// Seconds to decode from `start` (a cue track inside a long file); nil = to the end.
+    private var length: Double?
+
+    init(url: URL, start: Double = 0, length: Double? = nil, sampleRate: Double, channels: Int) {
+        self.length = length
         input = url.isFileURL ? url.path : url.absoluteString
         live = !url.isFileURL
         startOffset = start
@@ -115,12 +121,14 @@ final class FFmpegDecoder {
     private static let ignoreSIGPIPE: Void = { signal(SIGPIPE, SIG_IGN) }()   // a closed pipe must not kill the app
 
     func start() {
-        guard let exe = FFmpeg.ffmpegPath else { onEnd?(StreamError.unsupported("FFmpeg mancante")); return }
+        guard let exe = FFmpeg.ffmpegPath else { onEnd?(StreamError.unsupported("FFmpeg missing")); return }
         _ = FFmpegDecoder.ignoreSIGPIPE
         var args = ["-hide_banner", "-v", "error"]
         if !live { args.insert("-nostdin", at: 0) }
         if startOffset > 0 { args += ["-ss", String(format: "%.3f", startOffset)] }
-        args += ["-i", live ? "pipe:0" : input, "-vn", "-sn", "-map", "0:a:0", "-f", "f32le", "-acodec", "pcm_f32le",
+        args += ["-i", live ? "pipe:0" : input]
+        if let length, length > 0 { args += ["-t", String(format: "%.3f", length)] }
+        args += ["-vn", "-sn", "-map", "0:a:0", "-f", "f32le", "-acodec", "pcm_f32le",
                  "-ac", "\(format.channelCount)", "-ar", "\(Int(format.sampleRate))", "pipe:1"]
         let p = Process()
         p.executableURL = URL(fileURLWithPath: exe)

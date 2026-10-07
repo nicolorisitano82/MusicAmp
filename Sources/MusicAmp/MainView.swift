@@ -42,7 +42,17 @@ final class MainView: SkinView {
         h.combine(ctl.eqVisible); h.combine(ctl.plVisible); h.combine(ctl.alwaysOnTop); h.combine(ctl.doubleSize)
         h.combine(ctl.timeRemaining); h.combine(ctl.visMode); h.combine(ctl.easterEgg)
         h.combine(pressed); h.combine(pressInside); h.combine(dragKind); h.combine(seekPreview)
+        if let w = waveform, a.duration > 0 {
+            // The played part moves one device pixel at a time.
+            h.combine(w.peaks.count); h.combine(Int((seekPreview ?? a.currentTime / a.duration) * 219 * Double(pixelScale)))
+        }
         return h.finalize()
+    }
+
+    /// The current track's waveform when the option is on and it's ready (local files only).
+    private var waveform: Waveform? {
+        guard ctl.waveSeekBar, let t = ctl.playlist.currentTrack, !t.isStream else { return nil }
+        return WaveformStore.shared.waveform(for: t.url)
     }
     private var loaded: Bool { ctl.audio.hasSource && ctl.audio.state != .stopped }
 
@@ -128,6 +138,12 @@ final class MainView: SkinView {
         r.blit("posbar", R(0, 0, 248, 10), 16, 72)
         if loaded, a.duration > 0 {
             let pos = seekPreview ?? (a.currentTime / a.duration)
+            // Optional waveform (Settings → Visualization), drawn in the groove between the thumb's end stops,
+            // in the skin's own colours; the skin's background and thumb stay as they are.
+            if let w = waveform {
+                let c = skin.waveformColors
+                r.drawWaveform(w, in: skin.waveformRect, playX: 30.5 + CGFloat(pos) * 219, played: c.played, ahead: c.ahead)
+            }
             r.blit("posbar", dragKind == "pos" ? R(278, 0, 29, 10) : R(248, 0, 29, 10), 16 + (pos * 219).rounded(), 72)
         }
 
@@ -293,7 +309,7 @@ final class MainView: SkinView {
 
     // MARK: VoiceOver
 
-    override var accessibilityName: String { "MusicAmp, finestra principale" }
+    override var accessibilityName: String { "MusicAmp, main window" }
 
     override func accessibilityItems() -> [AXItem] {
         let a = ctl.audio
@@ -305,49 +321,49 @@ final class MainView: SkinView {
         }
         let rect = Dictionary((shade ? shadeButtons : buttons).map { ($0.0, $0.1) }, uniquingKeysWith: { a, _ in a })
         var items: [AXItem] = [
-            AXItem(id: "title", kind: .text, label: "Brano", rect: shade ? R(127, 3, 30, 8) : R(111, 24, 155, 12),
+            AXItem(id: "title", kind: .text, label: "Track", rect: shade ? R(127, 3, 30, 8) : R(111, 24, 155, 12),
                    value: ctl.marqueeText),
         ]
         if a.hasSource, a.state != .stopped {
-            items.append(AXItem(id: "timeText", kind: .text, label: "Tempo", rect: rect["time"] ?? .zero,
-                                value: "\(AXText.time(a.currentTime)) di \(AXText.time(a.duration))"))
+            items.append(AXItem(id: "timeText", kind: .text, label: "Time", rect: rect["time"] ?? .zero,
+                                value: "\(AXText.time(a.currentTime)) of \(AXText.time(a.duration))"))
         }
         items += [
-            button("prev", "Brano precedente", rect["prev"]!),
-            button("play", a.state == .playing ? "Ricomincia brano" : "Riproduci", rect["play"]!),
-            button("pause", a.state == .paused ? "Riprendi" : "Pausa", rect["pause"]!),
+            button("prev", "Previous Track", rect["prev"]!),
+            button("play", a.state == .playing ? "Restart Track" : "Play", rect["play"]!),
+            button("pause", a.state == .paused ? "Resume" : "Pause", rect["pause"]!),
             button("stop", "Stop", rect["stop"]!),
-            button("next", "Brano successivo", rect["next"]!),
-            button("eject", "Apri file", rect["eject"]!),
+            button("next", "Next Track", rect["next"]!),
+            button("eject", "Open Files", rect["eject"]!),
         ]
         if !shade {
             let seekStep = { [weak self] (d: Double) in self?.ctl.seek(by: d) }
             items += [
-                AXItem(id: "pos", kind: .slider, label: "Posizione", rect: R(16, 72, 248, 10),
-                       value: a.duration > 0 ? "\(Int(a.currentTime / a.duration * 100))%" : "nessun brano",
+                AXItem(id: "pos", kind: .slider, label: "Position", rect: R(16, 72, 248, 10),
+                       value: a.duration > 0 ? "\(Int(a.currentTime / a.duration * 100))%" : "no track",
                        increment: { seekStep(5) }, decrement: { seekStep(-5) }),
                 AXItem(id: "vol", kind: .slider, label: "Volume", rect: R(107, 57, 68, 13), value: "\(Int(ctl.volume.rounded()))%",
                        increment: { [weak self] in self.map { $0.ctl.volume = min(100, $0.ctl.volume + 5) } },
                        decrement: { [weak self] in self.map { $0.ctl.volume = max(0, $0.ctl.volume - 5) } }),
-                AXItem(id: "bal", kind: .slider, label: "Bilanciamento", rect: R(177, 57, 38, 13), value: AXText.balance(ctl.balance),
+                AXItem(id: "bal", kind: .slider, label: "Balance", rect: R(177, 57, 38, 13), value: AXText.balance(ctl.balance),
                        increment: { [weak self] in self.map { $0.ctl.balance = min(100, $0.ctl.balance + 10) } },
                        decrement: { [weak self] in self.map { $0.ctl.balance = max(-100, $0.ctl.balance - 10) } }),
                 toggle("shuffle", "Shuffle", rect["shuffle"]!, ctl.shuffle),
-                toggle("repeat", "Ripeti", rect["repeat"]!, ctl.repeatOn),
-                toggle("eq", "Mostra equalizzatore", rect["eq"]!, ctl.eqVisible),
-                toggle("pl", "Mostra playlist", rect["pl"]!, ctl.plVisible),
-                toggle("clutterA", "Sempre in primo piano", rect["clutterA"]!, ctl.alwaysOnTop),
-                toggle("clutterD", "Doppia dimensione", rect["clutterD"]!, ctl.doubleSize),
-                button("clutterI", "Info file", rect["clutterI"]!),
-                button("vis", "Cambia visualizzazione", rect["vis"]!),
-                toggle("time", "Mostra tempo rimanente", rect["time"]!, ctl.timeRemaining),
+                toggle("repeat", "Repeat", rect["repeat"]!, ctl.repeatOn),
+                toggle("eq", "Show Equalizer", rect["eq"]!, ctl.eqVisible),
+                toggle("pl", "Show Playlist", rect["pl"]!, ctl.plVisible),
+                toggle("clutterA", "Always on Top", rect["clutterA"]!, ctl.alwaysOnTop),
+                toggle("clutterD", "Double Size", rect["clutterD"]!, ctl.doubleSize),
+                button("clutterI", "File Info", rect["clutterI"]!),
+                button("vis", "Change Visualization", rect["vis"]!),
+                toggle("time", "Show Remaining Time", rect["time"]!, ctl.timeRemaining),
             ]
         }
         items += [
-            button("options", "Menu opzioni", rect["options"]!),
-            button("minimize", "Nascondi", rect["minimize"]!),
-            toggle("shade", "Modalità ridotta", rect["shade"]!, ctl.mainShade),
-            button("close", "Esci", rect["close"]!),
+            button("options", "Options Menu", rect["options"]!),
+            button("minimize", "Hide", rect["minimize"]!),
+            toggle("shade", "Shade Mode", rect["shade"]!, ctl.mainShade),
+            button("close", "Quit", rect["close"]!),
         ]
         return items
     }

@@ -20,9 +20,9 @@ enum SkinError: LocalizedError {
     case notFound, unzip, invalid
     var errorDescription: String? {
         switch self {
-        case .notFound: return "File non trovato."
-        case .unzip: return "Impossibile estrarre l'archivio."
-        case .invalid: return "Non sembra una skin Winamp classic (manca main.bmp)."
+        case .notFound: return "File not found."
+        case .unzip: return "Couldn’t extract the archive."
+        case .invalid: return "This doesn’t look like a classic Winamp skin (main.bmp is missing)."
         }
     }
 }

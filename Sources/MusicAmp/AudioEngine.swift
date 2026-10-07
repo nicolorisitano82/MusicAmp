@@ -17,6 +17,9 @@ final class AudioEngine {
         var file: AVAudioFile?
         var url: URL?
         var startFrame: AVAudioFramePosition = 0
+        /// The part of the file that is the track: all of it, or a cue sheet segment.
+        var segStart: AVAudioFramePosition = 0
+        var segEnd: AVAudioFramePosition = 0
         var token = 0
         var bitrate = 0
         var index: Int?   // playlist index, for transitions
@@ -24,6 +27,86 @@ final class AudioEngine {
 
     let engine = AVAudioEngine()
     let eq = AVAudioUnitEQ(numberOfBands: 10)
+    /// Parametric EQ after the graphic one: headphone correction (AutoEq) or the user's own bands.
+    let peq = AVAudioUnitEQ(numberOfBands: PEQProfile.maxBands)
+
+    // MARK: Bit-perfect output
+
+    /// Switch the output device (and the internal chain) to each track's sample rate.
+    var matchDeviceRate = false { didSet { if !matchDeviceRate { restoreDeviceRate() } } }
+    /// Sample rate the internal chain runs at.
+    private(set) var busRate: Double = 0
+    /// The device rate before MusicAmp changed it, restored when the option is turned off or the app quits.
+    private var originalDeviceRate: (AudioDeviceID, Double)?
+
+    var outputDeviceID: AudioDeviceID? {
+        guard let unit = engine.outputNode.audioUnit else { return nil }
+        var id = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        return AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id, &size) == noErr ? id : nil
+    }
+
+    var deviceRate: Double { outputDeviceID.flatMap(AudioDevice.nominalRate) ?? engine.outputNode.outputFormat(forBus: 0).sampleRate }
+
+    /// Before a track starts (engine stopped): device and chain to the source rate when the option is on.
+    private func prepareOutputRate(_ source: Double) {
+        guard matchDeviceRate, source > 0, let id = outputDeviceID,
+              let target = AudioDevice.bestRate(for: source, supported: AudioDevice.availableRates(id)) else { return }
+        if abs(deviceRate - target) > 0.5 {
+            if originalDeviceRate == nil, let cur = AudioDevice.nominalRate(id) { originalDeviceRate = (id, cur) }
+            AudioDevice.setNominalRate(id, target)
+            engine.reset()
+        }
+        if abs(busRate - target) > 0.5 { rebuildChain(rate: target) }
+    }
+
+    func restoreDeviceRate() {
+        guard let (id, rate) = originalDeviceRate else { return }
+        originalDeviceRate = nil
+        let wasRunning = engine.isRunning
+        engine.stop()
+        AudioDevice.setNominalRate(id, rate)
+        engine.reset()
+        rebuildChain(rate: rate)
+        if wasRunning, state == .playing { startEngine(); seek(to: lastKnownTime) }
+    }
+
+    /// Reconnects the fixed part of the graph (deck converters → mixer → speed → EQs → main mixer → output) at `rate`.
+    func rebuildChain(rate: Double) {
+        guard let bus = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2) else { return }
+        busRate = rate
+        for (i, d) in decks.enumerated() {
+            engine.disconnectNodeOutput(d.converter)
+            engine.disconnectNodeOutput(d.gain)
+            engine.connect(d.converter, to: d.gain, format: bus)
+            engine.connect(d.gain, to: deckMixer, fromBus: 0, toBus: i, format: bus)
+        }
+        for (a, b) in [(deckMixer as AVAudioNode, timePitch as AVAudioNode), (timePitch, eq), (eq, peq)] {
+            engine.disconnectNodeOutput(a)
+            engine.connect(a, to: b, format: bus)
+        }
+        engine.disconnectNodeOutput(peq)
+        engine.connect(peq, to: engine.mainMixerNode, format: bus)
+        engine.disconnectNodeOutput(engine.mainMixerNode)
+        engine.connect(engine.mainMixerNode, to: engine.outputNode, format: nil)
+    }
+
+    /// Why the current path is not bit-perfect (empty = it is).
+    var bitPerfectIssues: [String] {
+        var out: [String] = []
+        let src = ffProbe?.sampleRate ?? file?.fileFormat.sampleRate ?? 0
+        if src > 0, abs(src - deviceRate) > 0.5 { out.append("output at \(Self.khz(deviceRate)), track at \(Self.khz(src))") }
+        if src > 0, abs(busRate - src) > 0.5 { out.append("resampled inside the player") }
+        if engine.mainMixerNode.outputVolume < 0.999 { out.append("volume below 100%") }
+        if !eq.bypass, eq.globalGain != 0 || eq.bands.contains(where: { $0.gain != 0 }) { out.append("equalizer on") }
+        if !peq.bypass { out.append("parametric EQ on") }
+        if deck.gain.globalGain != 0 { out.append("ReplayGain adjusting the level") }
+        if !timePitch.bypass { out.append("speed or pitch changed") }
+        if decks.contains(where: { abs($0.player.pan) > 0.001 }) { out.append("balance not centered") }
+        return out
+    }
+
+    static func khz(_ r: Double) -> String { r.truncatingRemainder(dividingBy: 1000) == 0 ? "\(Int(r / 1000)) kHz" : String(format: "%.1f kHz", r / 1000) }
     /// Speed (time-stretch, pitch preserved) and independent pitch shift; bypassed at 1× / 0 cents.
     let timePitch = AVAudioUnitTimePitch()
 
@@ -112,6 +195,8 @@ final class AudioEngine {
     private var ff: FFmpegDecoder?
     private var ffToken = 0          // guarded by `lock` when read off the main thread
     private var ffStart: Double = 0
+    /// Cue track played through ffmpeg: its start/end inside the file.
+    private var ffSegment: (start: Double, end: Double?)?
     private var ffQueued = 0         // guarded by `lock`
     private var ffEOF = false        // guarded by `lock`
     private let ffRoom = DispatchSemaphore(value: 0)
@@ -140,6 +225,8 @@ final class AudioEngine {
         engine.attach(deckMixer)
         engine.attach(timePitch)
         engine.attach(eq)
+        engine.attach(peq)
+        peq.bypass = true
         for (i, b) in eq.bands.enumerated() {
             b.filterType = .parametric
             b.frequency = Self.frequencies[i]
@@ -149,6 +236,7 @@ final class AudioEngine {
         }
         let hw = engine.mainMixerNode.outputFormat(forBus: 0).sampleRate
         let bus = AVAudioFormat(standardFormatWithSampleRate: hw > 0 ? hw : 44100, channels: 2)
+        busRate = bus?.sampleRate ?? 44100
         for (i, d) in decks.enumerated() {
             engine.attach(d.player)
             engine.attach(d.converter)
@@ -161,9 +249,10 @@ final class AudioEngine {
         engine.connect(deckMixer, to: timePitch, format: bus)
         engine.connect(timePitch, to: eq, format: bus)
         timePitch.bypass = true
-        engine.connect(eq, to: engine.mainMixerNode, format: bus)
-        // Analysis after the EQ but before the volume, like Winamp: the visualizer moves even at volume 0.
-        eq.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buf, _ in
+        engine.connect(eq, to: peq, format: bus)
+        engine.connect(peq, to: engine.mainMixerNode, format: bus)
+        // Analysis after both EQs but before the volume, like Winamp: the visualizer moves even at volume 0.
+        peq.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buf, _ in
             self?.onTap?(buf)
             self?.analyze(buf)
         }
@@ -185,9 +274,12 @@ final class AudioEngine {
             let d = r.currentItem?.duration.seconds ?? 0
             return d.isFinite ? d : 0
         }
-        if let p = ffProbe { return p.duration }
+        if let p = ffProbe {
+            if let s = ffSegment { return max(0, (s.end ?? p.duration) - s.start) }
+            return p.duration
+        }
         guard let f = file else { return 0 }
-        return Double(f.length) / f.processingFormat.sampleRate
+        return Double(deck.segEnd - deck.segStart) / f.processingFormat.sampleRate
     }
     var sampleRate: Double { isStream ? stream.sampleRate : ffProbe?.sampleRate ?? file?.fileFormat.sampleRate ?? 0 }
     var channels: Int { isStream ? stream.channels : ffProbe?.channels ?? Int(file?.fileFormat.channelCount ?? 0) }
@@ -222,7 +314,7 @@ final class AudioEngine {
         guard file != nil else { return 0 }
         if state == .playing {
             if let nt = player.lastRenderTime, let pt = player.playerTime(forNodeTime: nt), pt.sampleTime >= 0 {
-                lastKnownTime = min(duration, Double(deck.startFrame + pt.sampleTime) / pt.sampleRate)
+                lastKnownTime = min(duration, Double(deck.startFrame - deck.segStart + pt.sampleTime) / pt.sampleRate)
             }
             return lastKnownTime
         }
@@ -244,10 +336,11 @@ final class AudioEngine {
         d.file = f
         d.url = url
         d.index = index
+        AudioEngine.setSegment(d, f, url)
         engine.stop()
+        prepareOutputRate(f.fileFormat.sampleRate)
         connect(cur, f.processingFormat)
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        d.bitrate = duration > 0 ? Int((Double(size) * 8 / duration / 1000).rounded()) : 0
+        d.bitrate = AudioEngine.bitrate(f, url)
         applyGain(d)
         onChange?()
     }
@@ -304,7 +397,7 @@ final class AudioEngine {
             seek(to: 0)
         case .stopped:
             startEngine()
-            schedule(from: 0)
+            schedule(from: deck.segStart)
             player.play()
             state = .playing
         }
@@ -369,7 +462,7 @@ final class AudioEngine {
         player.volume = 1
         if engine.isRunning { engine.pause() }
         state = .stopped
-        deck.startFrame = 0
+        deck.startFrame = deck.segStart
         pausedTime = 0
         lastKnownTime = 0
         onChange?()
@@ -399,7 +492,7 @@ final class AudioEngine {
         guard !isStream, let f = file, state != .stopped else { return }
         cancelTransition(force: true)
         let t = max(0, min(duration, time))
-        schedule(from: AVAudioFramePosition(t * f.processingFormat.sampleRate))
+        schedule(from: deck.segStart + AVAudioFramePosition(t * f.processingFormat.sampleRate))
         lastKnownTime = t
         if state == .playing {
             startEngine()
@@ -420,6 +513,30 @@ final class AudioEngine {
     func setBalance(_ b: Double) {
         let pan = Float(max(-100, min(100, b)) / 100)
         decks.forEach { $0.player.pan = pan }
+    }
+
+    /// Loads a parametric profile into the engine (nil or `enabled == false` bypasses it).
+    func setParametricEQ(_ p: PEQProfile?, enabled: Bool) {
+        guard let p, enabled else { peq.bypass = true; return }
+        let filters = Array(p.filters.prefix(PEQProfile.maxBands))
+        let nyquist = Float(engine.outputNode.outputFormat(forBus: 0).sampleRate / 2) - 100
+        for (i, band) in peq.bands.enumerated() {
+            guard i < filters.count, filters[i].enabled else { band.bypass = true; continue }
+            let f = filters[i]
+            switch f.kind {
+            case .peak: band.filterType = .parametric
+            case .lowShelf: band.filterType = .lowShelf
+            case .highShelf: band.filterType = .highShelf
+            case .lowPass: band.filterType = .resonantLowPass
+            case .highPass: band.filterType = .resonantHighPass
+            }
+            band.frequency = max(10, min(max(1000, nyquist), Float(f.frequency)))
+            band.gain = Float(max(-24, min(24, f.gain)))
+            band.bandwidth = PEQProfile.octaves(q: f.q)
+            band.bypass = false
+        }
+        peq.globalGain = Float(max(-24, min(24, p.preamp)))
+        peq.bypass = false
     }
 
     func setEQ(on: Bool, preamp: Double, bands: [Double]) {
@@ -455,19 +572,40 @@ final class AudioEngine {
         try? engine.start()
     }
 
+    /// Cue sheet segment (or the whole file) in frames of the file's processing format.
+    static func setSegment(_ d: Deck, _ f: AVAudioFile, _ url: URL) {
+        let sr = f.processingFormat.sampleRate
+        if let seg = CueSheet.segment(url) {
+            d.segStart = max(0, min(f.length, AVAudioFramePosition(seg.start * sr)))
+            d.segEnd = seg.end.map { max(d.segStart, min(f.length, AVAudioFramePosition($0 * sr))) } ?? f.length
+        } else {
+            d.segStart = 0
+            d.segEnd = f.length
+        }
+        d.startFrame = d.segStart
+    }
+
+    /// Average bitrate of the whole audio file (a cue track shares it).
+    static func bitrate(_ f: AVAudioFile, _ url: URL) -> Int {
+        let size = (try? CueSheet.audioURL(url).resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        let secs = Double(f.length) / f.processingFormat.sampleRate
+        return secs > 0 ? Int((Double(size) * 8 / secs / 1000).rounded()) : 0
+    }
+
+    /// `frame` is absolute in the file; playback stops at the end of the deck's segment.
     private func schedule(from frame: AVAudioFramePosition) {
-        guard let f = file else { return }
+        guard file != nil else { return }
         let d = deck, idx = cur
         d.token &+= 1
         let t = d.token
         d.player.stop()
-        d.startFrame = max(0, min(frame, f.length))
-        let remaining = f.length - d.startFrame
+        d.startFrame = max(d.segStart, min(frame, d.segEnd))
+        let remaining = d.segEnd - d.startFrame
         guard remaining > 0 else {
             DispatchQueue.main.async { [weak self] in self?.finished(idx, t) }
             return
         }
-        d.player.scheduleSegment(f, startingFrame: d.startFrame, frameCount: AVAudioFrameCount(remaining), at: nil,
+        d.player.scheduleSegment(d.file!, startingFrame: d.startFrame, frameCount: AVAudioFrameCount(remaining), at: nil,
                                  completionCallbackType: .dataPlayedBack) { [weak self] _ in
             DispatchQueue.main.async { self?.finished(idx, t) }
         }
@@ -515,11 +653,13 @@ final class AudioEngine {
         preparing = true
         let tokenAtStart = deck.token
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let f = try? AVAudioFile(forReading: next.url)
+            let f = try? AVAudioFile(forReading: CueSheet.audioURL(next.url))
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.preparing = false
                 guard let f, self.state == .playing, self.deck.token == tokenAtStart, !self.isStream else { return }
+                // Bit-perfect: a track at another rate needs the output restarted, so no gapless join.
+                if self.matchDeviceRate, abs(f.fileFormat.sampleRate - self.busRate) > 0.5 { return }
                 self.armOther(f, url: next.url, index: next.index)
             }
         }
@@ -533,21 +673,20 @@ final class AudioEngine {
         o.file = f
         o.url = url
         o.index = index
-        o.startFrame = 0
+        AudioEngine.setSegment(o, f, url)
         o.token &+= 1
         let t = o.token
         connect(oi, f.processingFormat)
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        let dur = Double(f.length) / f.processingFormat.sampleRate
-        o.bitrate = dur > 0 ? Int((Double(size) * 8 / dur / 1000).rounded()) : 0
+        let dur = Double(o.segEnd - o.segStart) / f.processingFormat.sampleRate
+        o.bitrate = AudioEngine.bitrate(f, url)
         applyGain(o)
-        o.player.scheduleSegment(f, startingFrame: 0, frameCount: AVAudioFrameCount(f.length), at: nil,
+        o.player.scheduleSegment(f, startingFrame: o.segStart, frameCount: AVAudioFrameCount(o.segEnd - o.segStart), at: nil,
                                  completionCallbackType: .dataPlayedBack) { [weak self] _ in
             DispatchQueue.main.async { self?.finished(oi, t) }
         }
-        guard let nt = player.lastRenderTime, let pt = player.playerTime(forNodeTime: nt), let cf = file else { return }
+        guard let nt = player.lastRenderTime, let pt = player.playerTime(forNodeTime: nt), file != nil else { return }
         let played = deck.startFrame + pt.sampleTime
-        let remaining = max(0, Double(cf.length - played) / pt.sampleRate)
+        let remaining = max(0, Double(deck.segEnd - played) / pt.sampleRate)
         // At speed `rate` the remaining source seconds pass `rate` times faster on the clock.
         let wallRemaining = remaining / max(0.25, rate)
         let fade = min(crossfadeSeconds, wallRemaining, dur / 2)
@@ -751,7 +890,9 @@ final class AudioEngine {
         d.url = url
         d.index = index
         ffProbe = probe
+        ffSegment = CueSheet.segment(url)
         engine.stop()
+        prepareOutputRate(probe.sampleRate)
         connect(cur, AVAudioFormat(standardFormatWithSampleRate: probe.sampleRate, channels: AVAudioChannelCount(probe.channels))!)
         d.bitrate = probe.bitrate
         applyGain(d)
@@ -777,7 +918,10 @@ final class AudioEngine {
         lock.lock(); let tok = ffToken; lock.unlock()
         ffStart = t
         lastKnownTime = t
-        let dec = FFmpegDecoder(url: url, start: t, sampleRate: p.sampleRate, channels: p.channels)
+        // A cue track decodes only its segment of the file.
+        let seg = ffSegment ?? (0, nil)
+        let dec = FFmpegDecoder(url: CueSheet.audioURL(url), start: seg.start + t, length: seg.end.map { $0 - seg.start - t },
+                                sampleRate: p.sampleRate, channels: p.channels)
         let maxQueued = Int(p.sampleRate * 8)
         let valid = { [weak self] () -> Bool in
             guard let self else { return false }
@@ -993,7 +1137,7 @@ final class AudioEngine {
         let delay = pow(2, Double(reconnects))
         reconnects += 1
         stream.buffering = true
-        stream.error = "Riconnessione (\(reconnects)/5)…"
+        stream.error = "Reconnecting (\(reconnects)/5)…"
         onStreamInfo?()
         let tok = radioToken
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in

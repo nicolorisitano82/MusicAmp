@@ -3,7 +3,7 @@ import AppKit
 // Retina skins: a classic .wsz plus optional "@2x" bitmaps in the same archive (main@2x.png, cbuttons@2x.bmp…).
 // Each @2x sheet is exactly twice the size of its 1x sheet and uses the same layout, so every sprite
 // coordinate stays in 1x units. Winamp ignores the extra files, so the skin keeps working there unchanged.
-// See the "Skin Retina — specifiche" doc for the full format.
+// See the "Retina skins — specification" doc for the full format.
 
 extension Skin {
     /// Hi-res sheets found in the skin (only the ones that passed validation).
@@ -18,13 +18,13 @@ extension Skin {
                   let hi = Skin.loadImage(f) else { continue }
             if let lo = images[n] {
                 guard hi.width == lo.width * 2, hi.height == lo.height * 2 else {
-                    retinaIssues.append("\(f.lastPathComponent): \(hi.width)×\(hi.height), attesi \(lo.width * 2)×\(lo.height * 2) — ignorato")
+                    retinaIssues.append("\(f.lastPathComponent): \(hi.width)×\(hi.height), expected \(lo.width * 2)×\(lo.height * 2) — ignored")
                     continue
                 }
             } else if let lo = Skin.downsample(hi) {
                 // Only the @2x sheet: derive the 1x one (pixel reads and non-retina screens use it).
                 images[n] = lo
-                retinaIssues.append("\(n): solo @2x, 1x ricavato (Winamp non lo vedrà)")
+                retinaIssues.append("\(n): @2x only, 1x derived (Winamp won’t see it)")
             }
             images2x[n] = hi
         }
@@ -33,7 +33,7 @@ extension Skin {
             guard let base = cursors[c], let f = files["\(c)@2x.ani"] ?? files["\(c)@2x.cur"],
                   let hi = SkinCursor.load(f) else { continue }
             guard hi.frames.count == base.frames.count else {
-                retinaIssues.append("\(f.lastPathComponent): \(hi.frames.count) fotogrammi, attesi \(base.frames.count) — ignorato")
+                retinaIssues.append("\(f.lastPathComponent): \(hi.frames.count) frames, expected \(base.frames.count) — ignored")
                 continue
             }
             // Each frame gets the @2x image as a second representation at the same point size; 1x timing and hotspot.
@@ -124,15 +124,15 @@ struct RGBA {
 enum RetinaTools {
     /// `--retina-check skin.wsz`: which sheets have @2x art, and any problems.
     static func check(_ path: String) -> Int32 {
-        guard let s = try? Skin.load(from: URL(fileURLWithPath: path)) else { print("skin non valida"); return 1 }
-        print("\(s.name): \(s.isRetina ? "Retina" : "solo 1x") — \(s.images2x.count)/\(Skin.sheetNames.count) bitmap @2x")
+        guard let s = try? Skin.load(from: URL(fileURLWithPath: path)) else { print("invalid skin"); return 1 }
+        print("\(s.name): \(s.isRetina ? "Retina" : "1x only") — \(s.images2x.count)/\(Skin.sheetNames.count) @2x bitmaps")
         for n in Skin.sheetNames {
             let lo = s.images[n].map { "\($0.width)×\($0.height)" } ?? "—"
             let hi = s.images2x[n].map { "\($0.width)×\($0.height)" } ?? "—"
             print("  \(n.padding(toLength: 9, withPad: " ", startingAt: 0)) 1x \(lo.padding(toLength: 9, withPad: " ", startingAt: 0)) @2x \(hi)")
         }
         let hi = s.cursors.filter { $0.value.frames.first?.image.representations.count ?? 0 > 1 }
-        print("  cursori @2x: \(hi.count) (\(hi.values.filter { $0.frames.count > 1 }.count) animati)")
+        print("  @2x cursors: \(hi.count) (\(hi.values.filter { $0.frames.count > 1 }.count) animated)")
         s.retinaIssues.forEach { print("  ! " + $0) }
         return 0
     }
@@ -194,7 +194,7 @@ enum RetinaTools {
             p.waitUntilExit()
             return p.terminationStatus
         }
-        guard run("/usr/bin/unzip", ["-qq", "-o", input, "-d", tmp.path]) <= 1 else { print("unzip fallito"); return 1 }
+        guard run("/usr/bin/unzip", ["-qq", "-o", input, "-d", tmp.path]) <= 1 else { print("unzip failed"); return 1 }
         var made = 0
         let en = fm.enumerator(at: tmp, includingPropertiesForKeys: nil)
         while let f = en?.nextObject() as? URL {
@@ -216,11 +216,11 @@ enum RetinaTools {
             try? hi.write(to: dst)
             cursorsMade += 1
         }
-        if cursorsMade > 0 { print("\(cursorsMade) cursori @2x generati") }
+        if cursorsMade > 0 { print("\(cursorsMade) @2x cursors generated") }
         let out = URL(fileURLWithPath: output).standardizedFileURL
         try? fm.removeItem(at: out)
-        guard run("/usr/bin/zip", ["-qrX", out.path, "."], in: tmp) == 0 else { print("zip fallito"); return 1 }
-        print("\(made) bitmap @2x generati (Scale2x) → \(out.path)")
+        guard run("/usr/bin/zip", ["-qrX", out.path, "."], in: tmp) == 0 else { print("zip failed"); return 1 }
+        print("\(made) @2x bitmaps generated (Scale2x) → \(out.path)")
         return 0
     }
 }

@@ -7,8 +7,8 @@ extension Ctl {
         if milkdropWindowRef == nil {
             guard let c = MilkdropController(ctl: self) else {
                 let a = NSAlert()
-                a.messageText = "Milkdrop non disponibile"
-                a.informativeText = "Questo Mac non ha una GPU Metal utilizzabile."
+                a.messageText = "Milkdrop Unavailable"
+                a.informativeText = "This Mac doesn’t have a usable Metal GPU."
                 a.runModal()
                 return
             }
@@ -156,7 +156,7 @@ final class MilkdropController: NSObject, MTKViewDelegate, NSWindowDelegate {
                 UserDefaults.standard.set(p.name, forKey: "milkdropPreset")
                 var text = p.name
                 if !prepared.notes.isEmpty {
-                    text += "  ·  shader non tradotto, uso la pipeline classica"
+                    text += "  ·  shader not translated, using the classic pipeline"
                     NSLog("Milkdrop %@: %@", p.name, prepared.notes.joined(separator: " | "))
                 }
                 self.show(text)
@@ -203,31 +203,31 @@ final class MilkdropController: NSObject, MTKViewDelegate, NSWindowDelegate {
         switch e.keyCode {
         case 49, 124: next(); return true                                   // space, →
         case 123: previous(); return true                                   // ←
-        case 37: locked.toggle(); show(locked ? "Preset bloccato" : "Cambio automatico"); return true   // L
+        case 37: locked.toggle(); show(locked ? "Preset locked" : "Auto-advance"); return true   // L
         case 3, 36: view.window?.toggleFullScreen(nil); return true         // F, Return
         case 53:                                                            // Esc
             if view.window?.styleMask.contains(.fullScreen) == true { view.window?.toggleFullScreen(nil) } else { view.window?.performClose(nil) }
             return true
-        case 4: show("Spazio/→ preset successivo · ← precedente · L blocca · F schermo intero · Esc esci"); return true   // H
+        case 4: show("Space/→ next preset · ← previous · L lock · F full screen · Esc exit"); return true   // H
         default: return ctl?.handleKey(e) ?? false   // Winamp keys (Z X C V B…) still work here
         }
     }
 
     func contextMenu() -> NSMenu {
         let m = NSMenu()
-        m.addItem(withTitle: "Preset successivo", action: #selector(menuNext), keyEquivalent: "").target = self
-        m.addItem(withTitle: "Preset precedente", action: #selector(menuPrev), keyEquivalent: "").target = self
-        let lock = m.addItem(withTitle: "Blocca il preset", action: #selector(menuLock), keyEquivalent: "")
+        m.addItem(withTitle: "Next Preset", action: #selector(menuNext), keyEquivalent: "").target = self
+        m.addItem(withTitle: "Previous Preset", action: #selector(menuPrev), keyEquivalent: "").target = self
+        let lock = m.addItem(withTitle: "Lock Preset", action: #selector(menuLock), keyEquivalent: "")
         lock.target = self
         lock.state = locked ? .on : .off
         let auto = NSMenu()
         for s in [0.0, 10, 20, 40, 90] {
-            let it = auto.addItem(withTitle: s == 0 ? "Mai" : "Ogni \(Int(s)) s", action: #selector(menuInterval(_:)), keyEquivalent: "")
+            let it = auto.addItem(withTitle: s == 0 ? "Never" : "Every \(Int(s)) s", action: #selector(menuInterval(_:)), keyEquivalent: "")
             it.target = self
             it.representedObject = s
             it.state = interval == s ? .on : .off
         }
-        m.addItem(withTitle: "Cambio automatico", action: nil, keyEquivalent: "").submenu = auto
+        m.addItem(withTitle: "Auto-Advance", action: nil, keyEquivalent: "").submenu = auto
         let list = NSMenu()
         for (i, e) in entries.enumerated() {
             let it = list.addItem(withTitle: e.name, action: #selector(menuPick(_:)), keyEquivalent: "")
@@ -235,11 +235,11 @@ final class MilkdropController: NSObject, MTKViewDelegate, NSWindowDelegate {
             it.tag = i
             it.state = history.indices.contains(historyPos) && history[historyPos] == i ? .on : .off
         }
-        m.addItem(withTitle: "Preset", action: nil, keyEquivalent: "").submenu = list
+        m.addItem(withTitle: "Presets", action: nil, keyEquivalent: "").submenu = list
         m.addItem(.separator())
-        m.addItem(withTitle: "Apri la cartella dei preset", action: #selector(menuFolder), keyEquivalent: "").target = self
-        m.addItem(withTitle: "Ricarica i preset", action: #selector(menuReload), keyEquivalent: "").target = self
-        m.addItem(withTitle: "Schermo intero", action: #selector(menuFull), keyEquivalent: "").target = self
+        m.addItem(withTitle: "Open Presets Folder", action: #selector(menuFolder), keyEquivalent: "").target = self
+        m.addItem(withTitle: "Reload Presets", action: #selector(menuReload), keyEquivalent: "").target = self
+        m.addItem(withTitle: "Full Screen", action: #selector(menuFull), keyEquivalent: "").target = self
         return m
     }
 
@@ -249,7 +249,7 @@ final class MilkdropController: NSObject, MTKViewDelegate, NSWindowDelegate {
     @objc private func menuInterval(_ s: NSMenuItem) { interval = s.representedObject as? Double ?? 20 }
     @objc private func menuPick(_ s: NSMenuItem) { select(s.tag) }
     @objc private func menuFolder() { NSWorkspace.shared.open(MilkdropLibrary.folder) }
-    @objc private func menuReload() { reloadPresets(); show("\(entries.count) preset") }
+    @objc private func menuReload() { reloadPresets(); show("\(entries.count) \(entries.count == 1 ? "preset" : "presets")") }
     @objc private func menuFull() { view.window?.toggleFullScreen(nil) }
 
     // MARK: Frame loop

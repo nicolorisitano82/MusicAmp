@@ -11,8 +11,8 @@ enum HLSLError: Error, CustomStringConvertible {
     case unsupported(String)
     var description: String {
         switch self {
-        case .parse(let s): return "sintassi: \(s)"
-        case .unsupported(let s): return "non supportato: \(s)"
+        case .parse(let s): return "syntax: \(s)"
+        case .unsupported(let s): return "unsupported: \(s)"
         }
     }
 }
@@ -241,10 +241,10 @@ struct HLSLParser {
         return false
     }
     private mutating func expect(_ o: String) throws {
-        guard accept(o) else { throw HLSLError.parse("atteso '\(o)' invece di \(peek)") }
+        guard accept(o) else { throw HLSLError.parse("expected '\(o)' instead of \(peek)") }
     }
     private mutating func ident() throws -> String {
-        guard case .ident(let s) = next() else { throw HLSLError.parse("atteso un nome") }
+        guard case .ident(let s) = next() else { throw HLSLError.parse("expected a name") }
         return s
     }
 
@@ -261,7 +261,7 @@ struct HLSLParser {
         sh.defines = defines
         while peek != .eof {
             if accept("shader_body") {
-                guard case .block(let b) = try statement() else { throw HLSLError.parse("shader_body senza blocco") }
+                guard case .block(let b) = try statement() else { throw HLSLError.parse("shader_body without a block") }
                 sh.body = b
                 break
             }
@@ -286,7 +286,7 @@ struct HLSLParser {
                     try expect(")")
                 }
                 if accept(":") { _ = try ident() }
-                guard case .block(let body) = try statement() else { throw HLSLError.parse("funzione \(name) senza corpo") }
+                guard case .block(let body) = try statement() else { throw HLSLError.parse("function \(name) without a body") }
                 sh.functions.append(HFunc(ret: ret, name: name, params: params, body: body))
                 continue
             }
@@ -297,7 +297,7 @@ struct HLSLParser {
                 continue
             }
             pos = save
-            throw HLSLError.parse("elemento globale non riconosciuto: \(peek)")
+            throw HLSLError.parse("unrecognized global item: \(peek)")
         }
         return sh
     }
@@ -311,7 +311,7 @@ struct HLSLParser {
             if q == "static" { isStatic = true }
             pos += 1
         }
-        guard isType(peek) else { throw HLSLError.parse("attesa una dichiarazione") }
+        guard isType(peek) else { throw HLSLError.parse("expected a declaration") }
         let type = try ident()
         var vars: [(String, HExpr?, HExpr?)] = []
         repeat {
@@ -343,7 +343,7 @@ struct HLSLParser {
         if accept("{") {
             var list: [HStmt] = []
             while !accept("}") {
-                if peek == .eof { throw HLSLError.parse("blocco non chiuso") }
+                if peek == .eof { throw HLSLError.parse("unclosed block") }
                 list.append(try statement())
             }
             return .block(list)
@@ -486,7 +486,7 @@ struct HLSLParser {
             try expect(")")
             return e
         case let t:
-            throw HLSLError.parse("espressione inattesa: \(t)")
+            throw HLSLError.parse("unexpected expression: \(t)")
         }
     }
 }
@@ -724,12 +724,12 @@ final class HLSLTranslator {
     }
 
     private func function(_ f: HFunc) throws -> String {
-        guard let rt = HType.parse(f.ret) else { throw HLSLError.unsupported("tipo \(f.ret)") }
+        guard let rt = HType.parse(f.ret) else { throw HLSLError.unsupported("type \(f.ret)") }
         var params: [String] = []
         var scope: [String: Var] = [:]
         for p in f.params {
-            guard let t = HType.parse(p.type) else { throw HLSLError.unsupported("tipo \(p.type)") }
-            if case .sampler = t { throw HLSLError.unsupported("sampler come parametro di \(f.name)") }
+            guard let t = HType.parse(p.type) else { throw HLSLError.unsupported("type \(p.type)") }
+            if case .sampler = t { throw HLSLError.unsupported("sampler as a parameter of \(f.name)") }
             let msl = HLSLTranslator.reserved.contains(p.name) ? p.name + "_p" : p.name
             params.append(p.qual == "out" || p.qual == "inout" ? "thread \(t.msl)& \(msl)" : "\(t.msl) \(msl)")
             scope[p.name] = Var(type: t, msl: msl)
@@ -779,7 +779,7 @@ final class HLSLTranslator {
             let step = try st.map { try expr($0).code } ?? ""
             return indent + "for (\(initCode) \(cond); \(step))\n" + (try stmt(wrap(b), indent: indent))
         case .decl(let t, let vars, let isConst, _):
-            guard let ty = HType.parse(t) else { throw HLSLError.unsupported("tipo \(t)") }
+            guard let ty = HType.parse(t) else { throw HLSLError.unsupported("type \(t)") }
             var out = ""
             for v in vars {
                 if let a = v.array {
@@ -917,7 +917,7 @@ final class HLSLTranslator {
             let x = try expr(a)
             return Out(code: "(\(x.code)\(o))", type: x.type)
         case .cast(let t, let a):
-            guard let ty = HType.parse(t) else { throw HLSLError.unsupported("cast a \(t)") }
+            guard let ty = HType.parse(t) else { throw HLSLError.unsupported("cast to \(t)") }
             return Out(code: convert(try expr(a), to: ty), type: ty)
         case .ternary(let c, let a, let b):
             let cc = try expr(c), x = try expr(a), y = try expr(b)
@@ -1005,7 +1005,7 @@ final class HLSLTranslator {
     }
 
     private func samplerArg(_ e: HExpr) throws -> MDSampler {
-        guard case .ident(let n) = e else { throw HLSLError.unsupported("sampler non diretto") }
+        guard case .ident(let n) = e else { throw HLSLError.unsupported("indirect sampler") }
         return sampler(n)
     }
 
@@ -1048,7 +1048,7 @@ final class HLSLTranslator {
         let xs = { () throws -> [Out] in try args.map { try self.expr($0) } }
         switch name {
         case "tex2D", "tex2Dlod", "tex2Dbias", "tex2Dgrad", "tex3D", "tex3Dlod":
-            guard args.count >= 2 else { throw HLSLError.parse("\(name) senza coordinate") }
+            guard args.count >= 2 else { throw HLSLError.parse("\(name) without coordinates") }
             let s = try samplerArg(args[0])
             let uv = try expr(args[1])
             let is3 = name.hasPrefix("tex3D")

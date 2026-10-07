@@ -39,7 +39,7 @@ final class JumpModel: ObservableObject {
             ctl.playlist.toggleQueue([i])
             ctl.invalidateTransition()
         }
-        ctl.flashMarquee("IN CODA: \(ctl.playlist.queue.count)", seconds: 1.2)
+        ctl.flashMarquee("QUEUED: \(ctl.playlist.queue.count)", seconds: 1.2)
         move(1)
     }
 }
@@ -51,11 +51,11 @@ struct JumpView: View {
     var body: some View {
         let m = model.matches
         VStack(alignment: .leading, spacing: 8) {
-            TextField("Cerca nella playlist", text: $model.query)
+            TextField("Search the playlist", text: $model.query)
                 .textFieldStyle(.roundedBorder)
                 .focused($focused)
                 .onSubmit { model.play() }
-                .accessibilityLabel("Cerca nella playlist")
+                .accessibilityLabel("Search the playlist")
             ScrollViewReader { proxy in
                 List {
                     ForEach(Array(m.enumerated()), id: \.element.index) { pos, item in
@@ -71,13 +71,13 @@ struct JumpView: View {
                     }
                 }
                 .listStyle(.plain)
-                .onChange(of: model.highlighted) { proxy.scrollTo($0) }
+                .onChange(of: model.highlighted) { proxy.scrollTo($1) }
             }
             HStack {
-                Text("\(m.count) di \(model.ctl.playlist.tracks.count)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                Text("\(m.count) of \(model.ctl.playlist.tracks.count)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 Spacer()
-                Button("Accoda") { model.enqueue() }.keyboardShortcut(.return, modifiers: .command)
-                Button("Riproduci") { model.play() }.keyboardShortcut(.defaultAction)
+                Button("Queue") { model.enqueue() }.keyboardShortcut(.return, modifiers: .command)
+                Button("Play") { model.play() }.keyboardShortcut(.defaultAction)
             }
         }
         .padding(12)
@@ -91,7 +91,7 @@ extension Ctl {
         if jumpPanelRef == nil {
             let model = JumpModel(ctl: self)
             let panel = NSPanel(contentViewController: NSHostingController(rootView: JumpView(model: model)))
-            panel.title = "Vai al file"
+            panel.title = "Jump to File"
             panel.styleMask = [.titled, .closable, .utilityWindow]
             panel.isFloatingPanel = true
             panel.hidesOnDeactivate = false

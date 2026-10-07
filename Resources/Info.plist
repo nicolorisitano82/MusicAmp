@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
 	<key>CFBundleDisplayName</key>
 	<string>MusicAmp</string>
 	<key>CFBundleDocumentTypes</key>
@@ -32,12 +34,27 @@
 			</array>
 		</dict>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.genomeup.musicamp.command</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>musicamp</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleExecutable</key>
 	<string>MusicAmp</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.genomeup.musicamp</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+	</array>
 	<key>CFBundleName</key>
 	<string>MusicAmp</string>
 	<key>CFBundlePackageType</key>
@@ -47,9 +64,9 @@
 	<key>CFBundleVersion</key>
 	<string>2</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>13.0</string>
+	<string>14.0</string>
 	<key>NSAppleMusicUsageDescription</key>
-	<string>MusicAmp legge la libreria di Musica per sfogliare e riprodurre i tuoi brani locali.</string>
+	<string>MusicAmp reads your Music library so you can browse and play your local tracks.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>

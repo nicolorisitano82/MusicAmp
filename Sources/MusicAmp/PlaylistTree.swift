@@ -1,8 +1,8 @@
 import Foundation
 
-/// Artist → album → track view of the playlist (Preferences → Playlist, "Raggruppa per artista e album").
+/// Artist → album → track view of the playlist (Preferences → Playlist, "Group by artist and album").
 /// Artists and albums appear in the order they first occur; tracks keep playlist order inside them.
-/// Albums with several artists go under "Artisti vari"; tracks without an album sit right under their
+/// Albums with several artists go under "Various Artists"; tracks without an album sit right under their
 /// artist; tracks with neither (radio streams) stay plain rows. Playback order is always the playlist's.
 struct PlaylistTree {
     struct Node {
@@ -24,7 +24,18 @@ struct PlaylistTree {
     /// Row of every track, or of the header that hides it.
     var rowOfTrack: [Int] = []
 
-    static let various = "Artisti vari", unknownArtist = "Artista sconosciuto"
+    static let various = "Various Artists", unknownArtist = "Unknown Artist"
+
+    /// "Taylor Swift, Lana Del Rey", "A feat. B", "A & B", "A x B" → the first (main) artist.
+    static func mainArtist(_ s: String) -> String {
+        let seps = [" feat. ", " feat ", " ft. ", " ft ", " featuring ", " with ", " x ", ", ", " & ", " and ", "; ", " / ", " vs. ", " vs "]
+        var cut = s.endIndex
+        for sep in seps {
+            if let r = s.range(of: sep, options: .caseInsensitive), r.lowerBound < cut { cut = r.lowerBound }
+        }
+        let main = s[..<cut].trimmingCharacters(in: .whitespaces)
+        return main.isEmpty ? s : main
+    }
 
     init() {}
 
@@ -33,9 +44,24 @@ struct PlaylistTree {
             guard let s = s?.trimmingCharacters(in: .whitespaces), !s.isEmpty else { return nil }
             return s
         }
-        // Albums tagged with more than one artist are compilations.
-        var albumArtists: [String: Set<String>] = [:]
-        for t in tracks { if let al = clean(t.album) { albumArtists[al.lowercased(), default: []].insert(clean(t.artist)?.lowercased() ?? "") } }
+        // Who owns each album: the album-artist tag, else the artist of most of its tracks
+        // (whole name first, so "Simon & Garfunkel" stays whole, then the main artist before feat./,/&; more than half),
+        // else it is a compilation ("Various Artists"). Featurings no longer turn albums into compilations.
+        var byAlbum: [String: [Track]] = [:]
+        for t in tracks { if let al = clean(t.album) { byAlbum[al.lowercased(), default: []].append(t) } }
+        var owner: [String: String] = [:]
+        for (key, ts) in byAlbum {
+            func majority(_ names: [String]) -> String? {
+                var count: [String: (Int, String)] = [:]
+                for n in names { count[n.lowercased(), default: (0, n)].0 += 1 }
+                guard let best = count.values.max(by: { $0.0 < $1.0 }) else { return nil }
+                return best.0 * 2 > ts.count ? best.1 : nil   // strictly more than half
+            }
+            let tagged = ts.compactMap { clean($0.albumArtist) }
+            if !tagged.isEmpty, let a = majority(tagged) ?? tagged.first { owner[key] = a; continue }
+            let names = ts.compactMap { clean($0.artist) }
+            owner[key] = majority(names) ?? majority(names.map(PlaylistTree.mainArtist)) ?? (names.isEmpty ? PlaylistTree.unknownArtist : PlaylistTree.various)
+        }
 
         struct AlbumAcc { var title: String; var tracks: [Int] }
         struct ArtistAcc { var title: String; var loose: [Int] = []; var albums: [String: AlbumAcc] = [:]; var albumOrder: [String] = []; var order: [(Bool, String)] = [] }
@@ -44,9 +70,8 @@ struct PlaylistTree {
 
         for (i, t) in tracks.enumerated() {
             let album = clean(t.album)
-            var artist = clean(t.artist)
-            if let al = album, (albumArtists[al.lowercased()]?.count ?? 0) > 1 { artist = PlaylistTree.various }
-            if artist == nil, album != nil { artist = PlaylistTree.unknownArtist }
+            let artist: String? = album.map { owner[$0.lowercased()] ?? PlaylistTree.unknownArtist }
+                ?? clean(t.albumArtist) ?? clean(t.artist).map(PlaylistTree.mainArtist)
             guard let a = artist else { top.append((false, "", i)); continue }
             let ak = a.lowercased()
             if artists[ak] == nil {

@@ -12,6 +12,14 @@ L'eseguibile (`.build/debug/MusicAmp`, `.build/release/MusicAmp` o `MusicAmp.app
 | `--test-radio URL [secondi]` | Riproduce una radio senza audio e stampa formato, titolo e livello |
 | `--test-podcast` | Parser RSS (titoli, autori, copertine, durate, id degli episodi), OPML anche annidati, scaricamento e lettura di un feed reale, velocità e riproduzione in streaming con ripresa dal punto salvato |
 | `--test-lyrics` | Parser LRC ed LRC esteso, tempi per parola, file `.lrc` affiancati, ricerca su LRCLIB (stampa solo conteggi, mai testi) |
+| `--test-tags` | Scrittura e rilettura dei tag su MP3 (ID3v2.3+v1, 2.4), FLAC e M4A, audio intatto, verifica con `ffprobe`, modello dell'editor (serve un FFmpeg completo installato per i file di prova) |
+| `--test-cue` | File con tre toni indicizzato da un `.cue`: parsing, espansione della cartella, segmenti suonati (nativo e via FFmpeg), passaggio gapless alla traccia dopo |
+| `--test-peq` | Formato Equalizer APO, risposta calcolata, EQ parametrico misurato sul motore (+12 dB a 1 kHz), indice AutoEq |
+| `--test-bitperfect` | Scelta della frequenza del dispositivo, grafo ricostruito a un'altra frequenza, diagnosi; non cambia la frequenza del dispositivo |
+| `--test-musicbrainz` | Escape delle query, associazione file/tracce, ricerche reali su MusicBrainz e Cover Art Archive |
+| `--test-schedule` | Orari della sveglia (giorni, una volta, ora legale), curve di dissolvenza, stato del widget, URL `musicamp://` |
+| `--test-waveform [cartella]` | Barra a forma d'onda: livelli di un file generato, segmento `.cue`, FFmpeg contro nativo, cache, render della barra (spenta = pixel identici, accesa = solo la scanalatura); con `MUSICAMP_WAVE_SKIN` e `MUSICAMP_WAVE_FILE` usa una skin e un brano veri e salva i PNG nella cartella |
+| `--test-stats` | Conteggio degli ascolti (soglia, salti, ricerche, pausa), voti, regole e ordinamenti delle playlist intelligenti |
 | `--test-milkdrop [cartella]` | Equazioni NS-EEL, parsing dei `.milk`, traduzione e compilazione degli shader MD2, render offscreen dei preset inclusi (con PNG nella cartella, se indicata) |
 
 ## Strumenti
@@ -36,11 +44,17 @@ L'eseguibile (`.build/debug/MusicAmp`, `.build/release/MusicAmp` o `MusicAmp.app
 | --- | --- |
 | `MUSICAMP_FFMPEG_DIR=cartella` | Usa `ffmpeg`/`ffprobe` di quella cartella (per esempio `vendor/ffmpeg`) quando non c'è quello incluso nell'app |
 | `MUSICAMP_RETINA=1` | `--snapshot` disegna a 2x usando i bitmap `@2x` |
+| `MUSICAMP_SEARCH=testo` | `--snapshot` apre la ricerca della playlist con quel testo e stampa i risultati |
 | `MUSICAMP_TREE=1` | `--snapshot` mostra la playlist ad albero |
 | `MUSICAMP_EGG=1` | `--snapshot` con l'easter egg della barra del titolo |
 | `MUSICAMP_DEBUG_GROUPS=1` | Scrive nel log i gruppi di finestre agganciate (Mission Control) |
 | `MUSICAMP_TEST_GROUPS=1` | Esegue all'avvio una sequenza di stacca/riaggancia e registra i gruppi |
+| `MUSICAMP_TEST_DRAG=1` | All'avvio trascina a passi il gruppo della finestra principale con il codice vero e verifica che ogni finestra segua il mouse e che il gruppo venga ricomposto (`DRAG OK`/`DRAG FAIL`), poi esce |
+| `MUSICAMP_DEBUG_DRAG=1` | Scrive nel log inizio, passi e fine dei trascinamenti delle finestre |
+| `MUSICAMP_TAG_DEMO=cartella` | Apre l'editor dei tag sui file audio di quella cartella (per prove e screenshot) |
 | `MUSICAMP_DEBUG_HOTKEYS=1` | Registra le scorciatoie globali ricevute |
+| `MUSICAMP_PREFS=timer` | Apre le impostazioni su una scheda (`general`, `audio`, `headphones`, `vis`, `playlist`, `timer`, `shortcuts`, `skins`); `smart` apre le playlist intelligenti |
+| `MUSICAMP_HEADPHONES_DEMO=1` | Apre la scheda Cuffie in una finestra con un profilo AutoEq di esempio |
 
 ## Esempio: verifica di una raccolta di preset
 

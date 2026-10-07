@@ -6,7 +6,7 @@ extension Ctl {
         if lyricsWindowRef == nil {
             let w = LyricsWindow(contentViewController: NSHostingController(rootView: LyricsView(ctl: self, service: .shared)))
             w.ctl = self
-            w.title = "Testi"
+            w.title = "Lyrics"
             w.styleMask = [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView]
             w.titlebarAppearsTransparent = true
             w.titleVisibility = .hidden
@@ -368,7 +368,7 @@ struct LyricsView: View {
         .frame(minWidth: 340, minHeight: 360)
         .sheet(isPresented: $editing) { editSheet }
         .onAppear { cover.update(ctl.playlist.currentTrack?.url) }
-        .onChange(of: service.query) { _ in cover.update(ctl.playlist.currentTrack?.url) }
+        .onChange(of: service.query) { cover.update(ctl.playlist.currentTrack?.url) }
     }
 
     private var header: some View {
@@ -383,7 +383,7 @@ struct LyricsView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .shadow(radius: 8)
             VStack(alignment: .leading, spacing: 2) {
-                Text(service.query?.title ?? "Nessun brano").font(.headline).foregroundStyle(.white).lineLimit(1)
+                Text(service.query?.title ?? "No track").font(.headline).foregroundStyle(.white).lineLimit(1)
                 Text(service.query?.artist ?? " ").font(.subheadline).foregroundStyle(.white.opacity(0.65)).lineLimit(1)
             }
             Spacer()
@@ -397,17 +397,17 @@ struct LyricsView: View {
     private var content: some View {
         switch service.state {
         case .idle:
-            message("music.note", "Fai partire un brano per vedere il testo.",
-                    "Le radio mostrano il testo del brano in onda quando il titolo è \"Artista - Titolo\"; i podcast non hanno testi.")
+            message("music.note", "Play a track to see its lyrics.",
+                    "Radio stations show lyrics for the current song when its title is \"Artist - Title\". Podcasts have no lyrics.")
         case .loading:
             ProgressView().controlSize(.large).tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
         case .notFound:
-            message("text.magnifyingglass", "Testo non trovato", "Correggi artista e titolo dal menu, o aggiungi un file .lrc accanto al brano.")
+            message("text.magnifyingglass", "Lyrics Not Found", "Correct the artist and title from the menu, or add an .lrc file next to the track.")
         case .error(let e):
-            message("wifi.exclamationmark", "Ricerca non riuscita", e)
+            message("wifi.exclamationmark", "Search Failed", e)
         case .found(let l):
             if l.instrumental && (l.plain ?? "").isEmpty {
-                message("pianokeys", "Brano strumentale", "")
+                message("pianokeys", "Instrumental", "")
             } else if l.synced != nil, follow, !ctl.audio.isStream {
                 synced(l)
             } else {
@@ -464,7 +464,7 @@ struct LyricsView: View {
                 .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.12),
                                              .init(color: .black, location: 0.82), .init(color: .clear, location: 1)],
                                      startPoint: .top, endPoint: .bottom))
-                .onChange(of: current) { c in
+                .onChange(of: current) { _, c in
                     guard let c else { return }
                     withAnimation(.spring(response: 0.6, dampingFraction: 0.9)) { proxy.scrollTo(c, anchor: UnitPoint(x: 0, y: 0.38)) }
                 }
@@ -494,20 +494,20 @@ struct LyricsView: View {
             Spacer()
             if case .found(let l) = service.state, l.synced != nil {
                 Button { follow.toggle() } label: { Image(systemName: follow ? "text.line.first.and.arrowtriangle.forward" : "text.alignleft") }
-                    .help(follow ? "Testo completo" : "Segui la riproduzione")
+                    .help(follow ? "Show Full Lyrics" : "Follow Playback")
             }
-            Button { fontSize = max(16, fontSize - 2) } label: { Image(systemName: "textformat.size.smaller") }.help("Testo più piccolo")
-            Button { fontSize = min(44, fontSize + 2) } label: { Image(systemName: "textformat.size.larger") }.help("Testo più grande")
-            Button { ctl.showKaraoke() } label: { Image(systemName: "music.mic") }.help("Karaoke a schermo intero")
+            Button { fontSize = max(16, fontSize - 2) } label: { Image(systemName: "textformat.size.smaller") }.help("Smaller Text")
+            Button { fontSize = min(44, fontSize + 2) } label: { Image(systemName: "textformat.size.larger") }.help("Larger Text")
+            Button { ctl.showKaraoke() } label: { Image(systemName: "music.mic") }.help("Full-Screen Karaoke")
             Menu {
-                Button("Cerca di nuovo") { ctl.refreshLyrics(force: true) }
-                Button("Correggi artista e titolo…") {
+                Button("Search Again") { ctl.refreshLyrics(force: true) }
+                Button("Correct Artist and Title…") {
                     artist = service.query?.artist ?? ""
                     title = service.query?.title ?? ""
                     editing = true
                 }
                 if case .found(let l) = service.state {
-                    Button("Copia il testo") {
+                    Button("Copy Lyrics") {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(l.plain ?? l.synced?.map(\.text).joined(separator: "\n") ?? "", forType: .string)
                     }
@@ -524,13 +524,13 @@ struct LyricsView: View {
 
     private var editSheet: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Correggi la ricerca").font(.headline)
-            TextField("Artista", text: $artist).textFieldStyle(.roundedBorder)
-            TextField("Titolo", text: $title).textFieldStyle(.roundedBorder)
+            Text("Correct Search").font(.headline)
+            TextField("Artist", text: $artist).textFieldStyle(.roundedBorder)
+            TextField("Title", text: $title).textFieldStyle(.roundedBorder)
             HStack {
                 Spacer()
-                Button("Annulla") { editing = false }.keyboardShortcut(.cancelAction)
-                Button("Cerca") {
+                Button("Cancel") { editing = false }.keyboardShortcut(.cancelAction)
+                Button("Search") {
                     editing = false
                     var q = service.query ?? LyricsService.Query(artist: "", title: "")
                     q.artist = artist
@@ -577,7 +577,7 @@ struct KaraokeView: View {
         }
         .environment(\.colorScheme, .dark)
         .onAppear { cover.update(ctl.playlist.currentTrack?.url) }
-        .onChange(of: service.query) { _ in cover.update(ctl.playlist.currentTrack?.url) }
+        .onChange(of: service.query) { cover.update(ctl.playlist.currentTrack?.url) }
     }
 
     @ViewBuilder
@@ -631,11 +631,11 @@ struct KaraokeView: View {
 
     private var status: String {
         switch service.state {
-        case .loading: return "Cerco il testo…"
-        case .found: return ctl.audio.isStream ? "Karaoke non disponibile per la radio" : "Testo senza tempi: niente karaoke"
-        case .notFound: return "Testo non trovato"
-        case .error: return "Ricerca non riuscita"
-        case .idle: return "Fai partire un brano"
+        case .loading: return "Searching for lyrics…"
+        case .found: return ctl.audio.isStream ? "Karaoke isn’t available for radio" : "Lyrics aren’t time-synced: no karaoke"
+        case .notFound: return "Lyrics not found"
+        case .error: return "Search failed"
+        case .idle: return "Play a track"
         }
     }
 
@@ -662,7 +662,7 @@ struct KaraokeView: View {
                 Image(systemName: ctl.audio.state == .playing ? "pause.fill" : "play.fill").font(.title2)
             }
             .buttonStyle(.borderless)
-            Text("Esc per uscire").font(.caption).foregroundStyle(.white.opacity(0.4))
+            Text("Press Esc to exit").font(.caption).foregroundStyle(.white.opacity(0.4))
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 28).padding(.vertical, 18)

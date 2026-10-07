@@ -8,6 +8,12 @@ enum Artwork {
 
     static func cached(_ url: URL) -> NSImage? { cache[url] }
 
+    /// Drops a cover so the next load reads the file again (its tags changed).
+    static func forget(_ url: URL) {
+        cache[url] = nil
+        misses.remove(url)
+    }
+
     @MainActor
     static func load(_ url: URL) async -> NSImage? {
         if let img = cache[url] { return img }
@@ -20,7 +26,8 @@ enum Artwork {
             return img
         }
         if !url.isFileURL { misses.insert(url); return nil }   // never pull metadata of a remote stream
-        let md = (try? await AVURLAsset(url: url).load(.commonMetadata)) ?? []
+        // Cue tracks: the cover of the audio file they index.
+        let md = (try? await AVURLAsset(url: CueSheet.audioURL(url)).load(.commonMetadata)) ?? []
         for item in md where item.commonKey == .commonKeyArtwork {
             if let data = try? await item.load(.dataValue), let img = NSImage(data: data) {
                 if cache.count > 32 { cache.removeAll() }

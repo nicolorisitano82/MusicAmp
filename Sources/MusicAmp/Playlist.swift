@@ -7,6 +7,8 @@ final class Track {
     var artist: String?
     var songTitle: String?
     var album: String?
+    /// "Album artist" tag (TPE2 / aART / ALBUMARTIST): groups the playlist tree.
+    var albumArtist: String?
     /// Live "StreamTitle" of a radio track.
     var streamTitle: String?
 
@@ -52,10 +54,26 @@ final class Playlist {
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: u.path, isDirectory: &isDir) else { continue }
             if isDir.boolValue {
-                let found = (fm.enumerator(at: u, includingPropertiesForKeys: nil)?.allObjects as? [URL] ?? [])
-                    .filter { audioExtensions.contains($0.pathExtension.lowercased()) }
+                let all = (fm.enumerator(at: u, includingPropertiesForKeys: nil)?.allObjects as? [URL] ?? [])
                     .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
-                out += found
+                // Cue sheets replace the audio files they index (one big FLAC/APE per album).
+                let cues = all.filter { $0.pathExtension.lowercased() == "cue" }
+                var covered = Set<String>()
+                var cueTracks: [String: [URL]] = [:]
+                for c in cues {
+                    let tracks = CueSheet.trackURLs(c)
+                    guard !tracks.isEmpty else { continue }
+                    CueSheet.parse(c)?.entries.forEach { covered.insert($0.file.standardizedFileURL.path) }
+                    cueTracks[c.path] = tracks
+                }
+                for f in all {
+                    if let t = cueTracks[f.path] { out += t; continue }
+                    if audioExtensions.contains(f.pathExtension.lowercased()), !covered.contains(f.standardizedFileURL.path) { out.append(f) }
+                }
+            } else if u.pathExtension.lowercased() == "cue", u.fragment == nil {
+                out += CueSheet.trackURLs(u)
+            } else if CueSheet.isCueTrack(u) {
+                out.append(u)
             } else if audioExtensions.contains(u.pathExtension.lowercased()) {
                 out.append(u)
             } else if ["m3u", "m3u8", "pls"].contains(u.pathExtension.lowercased()) {
@@ -154,8 +172,33 @@ final class Playlist {
     /// Bumps the version after in-place changes to a track (radio titles).
     func touch() { version &+= 1 }
 
+    /// Re-reads a track's tags (after the tag editor wrote them).
+    func reloadMetadata(_ t: Track) { loadMetadata(t) }
+
     private func loadMetadata(_ t: Track) {
         guard t.url.isFileURL else { return }
+        if let (sheet, e) = CueSheet.entry(t.url) {
+            // Cue track: everything comes from the sheet; the last track's length needs the file's duration.
+            t.songTitle = e.title ?? "Track \(e.number)"
+            t.artist = e.performer ?? sheet.performer
+            t.album = sheet.title
+            t.albumArtist = sheet.performer
+            t.title = t.artist.map { "\($0) - \(t.songTitle!)" } ?? t.songTitle!
+            if let end = e.end { t.duration = end - e.start }
+            version &+= 1
+            PlayStats.shared.remember(t)
+            if e.end == nil {
+                let file = e.file
+                Task {
+                    let total = (try? await AVURLAsset(url: file).load(.duration).seconds)
+                        ?? (FFmpeg.available ? FFmpeg.probe(file)?.duration : nil)
+                    await MainActor.run {
+                        if let total, total.isFinite, total > e.start { t.duration = total - e.start; self.version &+= 1 }
+                    }
+                }
+            }
+            return
+        }
         if FFmpeg.extensions.contains(t.url.pathExtension.lowercased()) {
             // AVFoundation can't read these: ask ffprobe.
             guard FFmpeg.available else { return }
@@ -169,7 +212,9 @@ final class Playlist {
                     t.artist = p.artist
                     t.songTitle = p.title
                     t.album = p.album
+                    t.albumArtist = p.albumArtist
                     self.version &+= 1
+                    PlayStats.shared.remember(t)
                     if t === self.currentTrack { self.onCurrentMetadata?() }
                 }
             }
@@ -182,23 +227,31 @@ final class Playlist {
             var artist: String?
             var title: String?
             var album: String?
+            var albumArtist: String?
             for item in md {
                 if item.commonKey == .commonKeyArtist { artist = try? await item.load(.stringValue) }
                 if item.commonKey == .commonKeyTitle { title = try? await item.load(.stringValue) }
                 if item.commonKey == .commonKeyAlbumName { album = try? await item.load(.stringValue) }
+            }
+            // Album artist isn't a common key: look for it in the format-specific metadata.
+            for item in (try? await asset.load(.metadata)) ?? [] where
+                [.iTunesMetadataAlbumArtist, .id3MetadataBand].contains(item.identifier) {
+                albumArtist = try? await item.load(.stringValue)
             }
             var display: String?
             if let title, !title.isEmpty {
                 display = (artist?.isEmpty == false) ? "\(artist!) - \(title)" : title
             }
             let seconds = dur?.seconds
-            await MainActor.run { [display, artist, title, album] in
+            await MainActor.run { [display, artist, title, album, albumArtist] in
                 if let d = seconds, d.isFinite, d > 0 { t.duration = d }
                 if let display { t.title = display }
                 t.artist = artist
                 t.songTitle = title
                 t.album = album
+                t.albumArtist = albumArtist
                 self.version &+= 1
+                PlayStats.shared.remember(t)
                 if t === self.currentTrack { self.onCurrentMetadata?() }
             }
         }
