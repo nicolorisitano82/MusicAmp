@@ -158,6 +158,22 @@ final class GenView: SkinView {
     }
 
     override func cursorAreas() -> [(String, CGRect)] { [] }
+
+    override var accessibilityName: String { title }
+
+    /// Lines shown in the content area, for VoiceOver (the content itself is drawn as pixels).
+    var accessibilityLines: [String] = []
+
+    override func accessibilityItems() -> [AXItem] {
+        var items = accessibilityLines.enumerated().map { i, line in
+            AXItem(id: "line\(i)", kind: .text, label: line, rect: R(11, 20 + CGFloat(i) * 13 + 8, W - 19, 13))
+        }
+        items += buttonRects().map { id, r in
+            AXItem(id: "btn-\(id)", kind: .button, label: id, rect: r, press: { [weak self] in self?.buttons.first { $0.0 == id }?.1() })
+        }
+        items.append(AXItem(id: "close", kind: .button, label: "Chiudi", rect: closeRect, press: { [weak self] in self?.onClose() }))
+        return items
+    }
 }
 
 extension Renderer {
@@ -171,6 +187,7 @@ extension Ctl {
     func showInfoWindow(_ i: Int) {
         let view = makeInfoView(i)
         let window = SkinWindow(view: view)
+        window.title = view.title
         view.onClose = { [weak window] in window?.orderOut(nil) }
         view.buttons = [("Finder", { [url = playlist.tracks[i].url] in NSWorkspace.shared.activateFileViewerSelecting([url]) }),
                         ("OK", { [weak window] in window?.orderOut(nil) })]
@@ -186,10 +203,10 @@ extension Ctl {
 
     func makeInfoView(_ i: Int) -> GenView {
         let t = playlist.tracks[i]
-        let isCurrent = i == playlist.current && audio.file != nil
+        let isCurrent = i == playlist.current && audio.hasSource
         let view = GenView(title: "File info", size: CGSize(width: 325, height: 174))
         view.buttons = [("Finder", {}), ("OK", {})]
-        view.drawContent = { [weak self] r, rect, c in
+        view.drawContent = { [weak self, weak view] r, rect, c in
             guard let self else { return }
             var rows: [(String, String)] = [
                 ("Titolo", t.songTitle ?? t.title),
@@ -203,6 +220,7 @@ extension Ctl {
             } else {
                 rows.append(("Formato", t.url.pathExtension.uppercased()))
             }
+            view?.accessibilityLines = rows.map { "\($0.0): \($0.1)" } + ["Percorso: \(t.url.path)"]
             let label = NSFont.systemFont(ofSize: 9, weight: .semibold), value = NSFont.systemFont(ofSize: 9)
             var y = rect.minY + 8
             for (k, v) in rows {

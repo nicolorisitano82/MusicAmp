@@ -43,10 +43,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         app.addItem(withTitle: "Nascondi MusicAmp", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         app.addItem(withTitle: "Esci da MusicAmp", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
+        // Standard Edit menu: text fields (library search, preferences, Jump to file) get ⌘A ⌘C ⌘V ⌘X ⌘Z from it.
+        let edit = sub("Composizione")
+        edit.addItem(withTitle: "Annulla", action: Selector(("undo:")), keyEquivalent: "z")
+        edit.addItem(withTitle: "Ripeti", action: Selector(("redo:")), keyEquivalent: "Z")
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "Taglia", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copia", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Incolla", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Seleziona tutto", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
         let file = sub("File")
         c.item(file, "Apri file…", #selector(Ctl.openFiles), "o")
         c.item(file, "Aggiungi file…", #selector(Ctl.addFiles), "o", [.command, .shift])
         c.item(file, "Aggiungi cartella…", #selector(Ctl.addFolder))
+        c.item(file, "Apri URL…", #selector(Ctl.openURL), "u")
         file.addItem(.separator())
         c.item(file, "Carica playlist…", #selector(Ctl.loadPlaylistFile))
         c.item(file, "Salva playlist…", #selector(Ctl.savePlaylistFile), "s")
@@ -54,14 +65,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.item(file, "Info file…", #selector(Ctl.fileInfo), "i")
 
         let play = sub("Riproduzione")
-        c.item(play, "Precedente", #selector(Ctl.previous), "z", [])
-        c.item(play, "Play", #selector(Ctl.play), "x", [])
-        c.item(play, "Pausa", #selector(Ctl.pause), "c", [])
-        c.item(play, "Stop", #selector(Ctl.stop), "v", [])
-        c.item(play, "Successivo", #selector(Ctl.next as (Ctl) -> () -> Void), "b", [])
+        // Winamp letter keys (Z X C V B, J, Q…) are handled by the skin windows, not as menu key equivalents:
+        // as menu shortcuts they would fire while typing in the library or preferences search fields.
+        c.item(play, "Precedente (Z)", #selector(Ctl.previous))
+        c.item(play, "Play (X)", #selector(Ctl.play))
+        c.item(play, "Pausa (C)", #selector(Ctl.pause))
+        c.item(play, "Stop (V)", #selector(Ctl.stop))
+        c.item(play, "Successivo (B)", #selector(Ctl.next as (Ctl) -> () -> Void))
         play.addItem(.separator())
-        c.item(play, "Shuffle", #selector(Ctl.toggleShuffle), "s", [])
-        c.item(play, "Ripeti", #selector(Ctl.toggleRepeat), "r", [])
+        c.item(play, "Vai al file… (J)", #selector(Ctl.showJumpToFile))
+        c.item(play, "Accoda / togli dalla coda (Q)", #selector(Ctl.queueSelected))
+        c.item(play, "Svuota coda", #selector(Ctl.clearQueue))
+        play.addItem(.separator())
+        c.item(play, "Shuffle (S)", #selector(Ctl.toggleShuffle))
+        c.item(play, "Ripeti (R)", #selector(Ctl.toggleRepeat))
         c.item(play, "Tempo rimanente", #selector(Ctl.toggleTimeRemaining))
 
         let skins = sub("Skin")
@@ -71,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.item(view, "Equalizzatore", #selector(Ctl.toggleEQ), "g", [.option])
         c.item(view, "Playlist", #selector(Ctl.togglePL), "e", [.option])
         c.item(view, "Libreria", #selector(Ctl.showLibrary), "l", [.option])
+        c.item(view, "Radio", #selector(Ctl.showRadio), "r", [.option])
         view.addItem(.separator())
         c.item(view, "Modalità ridotta", #selector(Ctl.toggleMainShade), "w", [.option])
         c.item(view, "Equalizzatore ridotto", #selector(Ctl.toggleEQShade), "w", [.option, .shift])
@@ -149,6 +167,84 @@ if let i = CommandLine.arguments.firstIndex(of: "--resolve-fonts") {
     }
     for n in names { print("\(n) -> \(fr.family(for: n) ?? "Arial (fallback)")  [\(fr.status(for: n).map { "\($0)" } ?? "?")]") }
     exit(0)
+}
+
+/// Debug: `MusicAmp --self-test [file.eqf ...]` checks EQ preset files, the play queue and drop insertion.
+if let i = CommandLine.arguments.firstIndex(of: "--self-test") {
+    var failures = 0
+    func check(_ ok: Bool, _ what: String) {
+        print((ok ? "PASS " : "FAIL ") + what)
+        if !ok { failures += 1 }
+    }
+    // EQF: hand-built bytes as Winamp writes them
+    var raw = EQF.header
+    var name = Array("Test".utf8); name += [UInt8](repeating: 0, count: 257 - name.count)
+    raw.append(contentsOf: name)
+    raw.append(contentsOf: [0, 63, 31, 32, 16, 47, 0, 63, 31, 32, 20] as [UInt8])
+    let parsed = EQF.parse(raw)
+    check(parsed?.count == 1 && parsed?[0].name == "Test", "eqf: one preset named Test")
+    check(parsed?[0].bands.first == 12 && parsed?[0].bands[1] == -12, "eqf: 0 = +12 dB, 63 = -12 dB")
+    check(parsed?[0].bands[2] == 0, "eqf: 0x1F (31) = 0 dB")
+    check(parsed.map { EQF.write($0) } == raw, "eqf: write(parse(x)) == x")
+    let lib = [EQPreset(name: "A", bands: Array(repeating: 3, count: 10), preamp: -2),
+               EQPreset(name: "B", bands: Array(repeating: -6, count: 10), preamp: 1)]
+    let back = EQF.parse(EQF.write(lib))
+    check(back?.map(\.name) == ["A", "B"] && back.map { zip($0, lib).allSatisfy { abs($0.bands[0] - $1.bands[0]) < 0.4 && abs($0.preamp - $1.preamp) < 0.4 } } == true,
+          "q1: two presets round-trip within 0.4 dB")
+    for path in CommandLine.arguments[(i + 1)...] {
+        let ps = (try? Data(contentsOf: URL(fileURLWithPath: path))).flatMap(EQF.parse) ?? []
+        print("file \(path): \(ps.count) preset" + ps.prefix(3).map { "\n  \($0.name): \($0.bands.map { String(format: "%+.1f", $0) }.joined(separator: " ")) pre \(String(format: "%+.1f", $0.preamp))" }.joined())
+    }
+    // Queue
+    let pl = Playlist()
+    pl.tracks = (0..<6).map { Track(url: URL(fileURLWithPath: "/tmp/t\($0).mp3")) }
+    pl.toggleQueue([4]); pl.toggleQueue([1]); pl.toggleQueue([2])
+    check(pl.queue.map { pl.tracks.firstIndex(of: $0) } == [4, 1, 2], "queue: order kept as queued")
+    pl.toggleQueue([1])
+    check(pl.queue.count == 2 && pl.queuePosition(pl.tracks[2]) == 2, "queue: Q again removes, positions shift")
+    pl.remove([4])
+    check(pl.popQueue() == 2 && pl.queue.isEmpty, "queue: removed tracks skipped, pop returns playlist index")
+    // Insert at a drop position
+    pl.insert([], at: 1)
+    let before = pl.tracks.count
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("musicamp-selftest.mp3")
+    FileManager.default.createFile(atPath: tmp.path, contents: Data())
+    pl.insert([tmp], at: 2)
+    check(pl.tracks.count == before + 1 && pl.tracks[2].url == tmp && pl.selection == [2], "insert: lands at index 2 and is selected")
+    try? FileManager.default.removeItem(at: tmp)
+    print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
+    exit(failures == 0 ? 0 : 1)
+}
+
+/// Debug: `MusicAmp --test-radio URL [seconds]` plays a stream muted and prints what the engine sees.
+if let i = CommandLine.arguments.firstIndex(of: "--test-radio"), CommandLine.arguments.count > i + 1,
+   let url = URL(string: CommandLine.arguments[i + 1]) {
+    let secs = Double(CommandLine.arguments.count > i + 2 ? CommandLine.arguments[i + 2] : "8") ?? 8
+    let a = AudioEngine()
+    a.setVolume(0)
+    a.bufferSeconds = 2
+    var lastTitle: String?
+    a.onStreamInfo = {
+        if a.stream.title != lastTitle { lastTitle = a.stream.title; print("  title: \(a.stream.title ?? "-")") }
+        if let e = a.stream.error { print("  status: \(e)") }
+    }
+    var rms: Float = 0
+    a.eq.installTap(onBus: 0, bufferSize: 4096, format: nil) { buf, _ in
+        guard let ch = buf.floatChannelData else { return }
+        var sum: Float = 0
+        for i in 0..<Int(buf.frameLength) { sum += ch[0][i] * ch[0][i] }
+        rms = max(rms, (sum / Float(max(1, buf.frameLength))).squareRoot())
+    }
+    a.playStream(url)
+    let start = Date()
+    var peak: Float = 0
+    while Date().timeIntervalSince(start) < secs {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.25))
+        peak = max(peak, a.visData().0.max() ?? 0)
+    }
+    print("  name=\(a.stream.name ?? "-") hls=\(a.stream.isHLS) rate=\(Int(a.sampleRate)) ch=\(a.channels) kbps=\(a.bitrate)")
+    print("  state=\(a.state) buffering=\(a.stream.buffering) played=\(String(format: "%.1f", a.currentTime))s vis-peak=\(String(format: "%.2f", peak)) eq-rms=\(String(format: "%.3f", rms)) error=\(a.stream.error ?? "none")")
+    exit(a.currentTime > 1 || a.stream.isHLS ? 0 : 1)
 }
 
 /// Debug: `MusicAmp --parse-cursor file.ani|file.cur` prints frame count, delays and hotspots.

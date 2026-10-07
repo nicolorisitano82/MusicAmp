@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import UniformTypeIdentifiers
 
 /// App controller: playback, settings, window docking and menus.
@@ -52,6 +53,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var plFontSize = 9 { didSet { notify() } }
     var plShowNumbers = true { didSet { notify() } }
     var plUseSkinFont = true { didSet { notify() } }
+    /// Seconds of radio audio buffered before playback starts (and after an underrun).
+    var radioBuffer: Double = 2 { didSet { audio.bufferSeconds = radioBuffer; notify() } }
     var menuBarEnabled = true { didSet { menuBar?.setEnabled(menuBarEnabled); notify() } }
     var notifyTrackChange = true { didSet { notify() } }
     var notifyOnlyInBackground = true { didSet { notify() } }
@@ -68,11 +71,15 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     private var timer: Timer?
     var prefsWindowRef: NSWindow?
     var libraryWindowRef: NSWindow?
+    var radioWindowRef: NSWindow?
     private var menuBar: MenuBarController?
     private var notifier: TrackNotifier?
     /// True once output was routed to an explicit device; from then on the default must be re-applied by hand.
     private var outputPinned = false
     var infoWindows: [SkinWindow] = []
+    var jumpPanelRef: NSPanel?
+    var jumpModelRef: JumpModel?
+    var jumpKeyMonitor: Any?
     /// Debug snapshots: draw visualizers as if playing.
     var snapshotMode = false
 
@@ -100,24 +107,25 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         ("OR", [4.0, 2.4, -2.4, -1.2, 1.2, 1.6, 0.8, 2.4, 3.2, 2.0], -4.0),
     ]
 
+    /// Winamp's built-in presets, values as stored in the original winamp.q1 (dB, preamp 0).
     static let presets: [(String, [Double])] = [
-        ("Classical", [0, 0, 0, 0, 0, 0, -7.2, -7.2, -7.2, -9.6]),
-        ("Club", [0, 0, 8, 5.6, 5.6, 5.6, 3.2, 0, 0, 0]),
-        ("Dance", [9.6, 7.2, 2.4, 0, 0, -5.6, -7.2, -7.2, 0, 0]),
-        ("Full Bass", [-8, 9.6, 9.6, 5.6, 1.6, -4, -8, -10.4, -11.2, -11.2]),
-        ("Full Bass & Treble", [7.2, 5.6, 0, -7.2, -4.8, 1.6, 8, 11.2, 12, 12]),
-        ("Full Treble", [-9.6, -9.6, -9.6, -4, 2.4, 11.2, 12, 12, 12, 12]),
-        ("Laptop Speakers/Headphones", [4.8, 11.2, 5.6, -3.2, -2.4, 1.6, 4.8, 9.6, 12, 12]),
-        ("Large Hall", [10.4, 10.4, 5.6, 5.6, 0, -4.8, -4.8, -4.8, 0, 0]),
-        ("Live", [-4.8, 0, 4, 5.6, 5.6, 5.6, 4, 2.4, 2.4, 2.4]),
-        ("Party", [7.2, 7.2, 0, 0, 0, 0, 0, 0, 7.2, 7.2]),
-        ("Pop", [-1.6, 4.8, 7.2, 8, 5.6, 0, -2.4, -2.4, -1.6, -1.6]),
-        ("Reggae", [0, 0, 0, -5.6, 0, 6.4, 6.4, 0, 0, 0]),
-        ("Rock", [8, 4.8, -5.6, -8, -3.2, 4, 8.8, 11.2, 11.2, 11.2]),
-        ("Ska", [-2.4, -4.8, -4, 0, 4, 5.6, 8.8, 9.6, 11.2, 9.6]),
-        ("Soft", [4.8, 1.6, 0, -2.4, 0, 4, 8, 9.6, 11.2, 12]),
-        ("Soft Rock", [4, 4, 2.4, 0, -4, -5.6, -3.2, 0, 2.4, 8.8]),
-        ("Techno", [8, 5.6, 0, -5.6, -4.8, 0, 8, 9.6, 9.6, 8.8]),
+        ("Classical", [0, 0, 0, 0, 0, 0, -4.9, -4.9, -4.9, -6.4]),
+        ("Club", [0, 0, 1.9, 3.5, 3.5, 3.5, 1.9, 0, 0, 0]),
+        ("Dance", [5.8, 4.3, 1.2, -0.4, -0.4, -4.1, -4.9, -4.9, -0.4, -0.4]),
+        ("Full Bass", [5.8, 5.8, 5.8, 3.5, 0.8, -3, -5.6, -6.8, -7.1, -7.1]),
+        ("Full Bass & Treble", [4.3, 3.5, 0, -4.9, -3.4, 0.8, 5, 6.6, 7.4, 7.4]),
+        ("Full Treble", [-6.4, -6.4, -6.4, -3, 1.5, 6.6, 9.7, 9.7, 9.7, 10.5]),
+        ("Laptop speakers/headphones", [2.7, 6.6, 3.1, -2.6, -1.9, 0.8, 2.7, 5.8, 7.7, 8.9]),
+        ("Large hall", [6.2, 6.2, 3.5, 3.5, 0, -3.4, -3.4, -3.4, 0, 0]),
+        ("Live", [-3.4, 0, 2.3, 3.1, 3.5, 3.5, 2.3, 1.5, 1.5, 1.2]),
+        ("Party", [4.3, 4.3, 0, 0, 0, 0, 0, 0, 4.3, 4.3]),
+        ("Pop", [-1.5, 2.7, 4.3, 4.6, 3.1, -1.1, -1.9, -1.9, -1.5, -1.5]),
+        ("Reggae", [0, 0, -0.8, -4.1, 0, 3.9, 3.9, 0, 0, 0]),
+        ("Rock", [4.6, 2.7, -3.8, -5.2, -2.6, 2.3, 5.4, 6.6, 6.6, 6.6]),
+        ("Ska", [-1.9, -3.4, -3, -0.8, 2.3, 3.5, 5.4, 5.8, 6.6, 5.8]),
+        ("Soft", [2.7, 0.8, -1.1, -1.9, -1.1, 2.3, 5, 5.8, 6.6, 7.4]),
+        ("Soft Rock", [2.3, 2.3, 1.2, -0.8, -3, -3.8, -2.6, -0.8, 1.5, 5.4]),
+        ("Techno", [4.6, 3.5, 0, -3.8, -3.4, 0, 4.6, 5.8, 5.8, 5.4]),
     ]
 
     // MARK: Startup
@@ -126,12 +134,16 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         loadSettings()
         audio.onFinish = { [weak self] in self?.next(auto: true) }
         audio.onChange = { [weak self] in self?.transportChanged() }
+        audio.onStreamInfo = { [weak self] in self?.streamInfoChanged() }
         nowPlaying = NowPlaying(ctl: self)
         playlist.onCurrentMetadata = { [weak self] in self?.nowPlaying?.update() }
         loadAutoEQ()
         mainWindow = SkinWindow(view: mainView)
         eqWindow = SkinWindow(view: eqView)
         plWindow = SkinWindow(view: plView)
+        mainWindow.title = "MusicAmp"
+        eqWindow.title = "Equalizzatore"
+        plWindow.title = "Playlist"
         if let p = skinPath, let s = try? Skin.load(from: URL(fileURLWithPath: p)) { skin = s } else { skinPath = nil }
         layoutInitial()
         applyLevel()
@@ -147,6 +159,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         menuBar = MenuBarController(ctl: self)
         menuBar?.setEnabled(menuBarEnabled)
         notifier = TrackNotifier(ctl: self)
+        HotKeys.shared.onAction = { [weak self] in self?.globalHotKey($0) }
+        HotKeys.shared.apply()
         restorePlaylist()
 
         mainWindow.makeKeyAndOrderFront(nil)
@@ -221,6 +235,32 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         mainView.needsDisplay = true
         plView.needsDisplay = true
         wake()
+    }
+
+    private func globalHotKey(_ a: HotKeyAction) {
+        switch a {
+        case .playPause: if audio.state == .playing { pause() } else { play() }
+        case .stop: stop()
+        case .next: next()
+        case .previous: previous()
+        case .volumeUp:
+            volume = min(100, volume + 5)
+            flashMarquee("VOLUME: \(Int(volume.rounded()))%", seconds: 1)
+        case .volumeDown:
+            volume = max(0, volume - 5)
+            flashMarquee("VOLUME: \(Int(volume.rounded()))%", seconds: 1)
+        case .seekForward: seek(by: 5)
+        case .seekBack: seek(by: -5)
+        case .showHide:
+            if NSApp.isActive, mainWindow.isVisible {
+                NSApp.hide(nil)
+            } else {
+                NSApp.unhide(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                mainWindow.makeKeyAndOrderFront(nil)
+            }
+        }
+        mainView.needsDisplay = true
     }
 
     func selectOutput(_ uid: String?) {
@@ -317,6 +357,12 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var marqueeText: String {
         guard let i = playlist.current else { return "MusicAmp" }
         let t = playlist.tracks[i]
+        if t.isStream {
+            if audio.isStream, audio.state == .playing, audio.stream.buffering {
+                return "\(audio.stream.error ?? "Buffering…") \(t.title)"
+            }
+            return t.streamTitle.map { "\(i + 1). \($0) — \(t.title)" } ?? "\(i + 1). \(t.title)"
+        }
         var s = "\(i + 1). \(t.title)"
         if let d = t.duration ?? (audio.duration > 0 ? audio.duration : nil) { s += " (\(Ctl.mmss(d)))" }
         return s
@@ -324,21 +370,46 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
 
     // MARK: Playback
 
-    func playIndex(_ i: Int, start: Bool = true) {
+    /// Selects track `i` and opens it off the main thread (opening may wait on a privacy prompt or a slow disk),
+    /// then starts it when `start`. `then` runs on the main thread once the file is ready.
+    func playIndex(_ i: Int, start: Bool = true, then: (() -> Void)? = nil) {
         guard playlist.tracks.indices.contains(i) else { return }
         let t = playlist.tracks[i]
         playlist.currentTrack = t
         marqueeOffset = 0
-        do {
-            try audio.load(t.url)
-            if start { audio.play() }
-        } catch {
-            audio.unload()
-            marqueeOverride = nil
-            NSSound.beep()
-        }
         plView.ensureVisible(i)
+        loadToken &+= 1
+        if t.isStream {
+            t.streamTitle = nil
+            if start {
+                audio.bufferSeconds = radioBuffer
+                audio.playStream(t.url, name: t.title == (t.url.host ?? t.url.absoluteString) ? nil : t.title)
+            } else {
+                audio.unload()
+            }
+            then?()
+            return
+        }
+        let token = loadToken
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try AVAudioFile(forReading: t.url) }
+            DispatchQueue.main.async {
+                guard let self, self.loadToken == token else { return }   // another track was chosen meanwhile
+                switch result {
+                case .success(let f):
+                    self.audio.use(f, url: t.url)
+                    if start { self.audio.play() }
+                    then?()
+                case .failure:
+                    self.audio.unload()
+                    self.flashMarquee("IMPOSSIBILE APRIRE IL FILE")
+                    NSSound.beep()
+                }
+            }
+        }
     }
+
+    private var loadToken = 0
 
     @objc func play() {
         if audio.file == nil || playlist.current == nil {
@@ -358,6 +429,10 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         let n = playlist.tracks.count
         guard n > 0 else { return }
         let wasPlaying = auto || audio.state != .stopped
+        if let q = playlist.popQueue() {
+            playIndex(q, start: wasPlaying)
+            return
+        }
         var i: Int
         if shuffle, n > 1 {
             repeat { i = Int.random(in: 0..<n) } while i == playlist.current
@@ -403,8 +478,63 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     @objc func addFiles() { chooseAudio { playlist.add($0) } }
     @objc func addFolder() { chooseAudio(directories: true) { playlist.add($0) } }
 
-    @objc func addURL() {
-        flashMarquee("SOLO FILE LOCALI")
+    /// ADD URL in the playlist: appends a stream (or remote playlist) without starting it.
+    @objc func addURL() { askURL(play: false) }
+
+    /// File > Open URL (⌘U): adds the stream and plays it.
+    @objc func openURL() { askURL(play: true) }
+
+    private func askURL(play: Bool) {
+        let a = NSAlert()
+        a.messageText = play ? "Apri URL" : "Aggiungi URL"
+        a.informativeText = "Indirizzo di una radio (stream MP3/AAC, HLS .m3u8) o di una playlist .pls/.m3u:"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 24))
+        field.placeholderString = "https://…"
+        if let s = NSPasteboard.general.string(forType: .string), s.hasPrefix("http") { field.stringValue = s }
+        a.accessoryView = field
+        a.addButton(withTitle: play ? "Riproduci" : "Aggiungi")
+        a.addButton(withTitle: "Annulla")
+        a.window.initialFirstResponder = field
+        NSApp.activate(ignoringOtherApps: true)
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let u = URL(string: text), ["http", "https"].contains(u.scheme?.lowercased() ?? "") else {
+            flashMarquee("URL NON VALIDO")
+            return
+        }
+        addStream(u, title: nil, play: play)
+    }
+
+    /// Appends a radio stream to the playlist (reusing an existing entry for the same URL) and optionally plays it.
+    func addStream(_ url: URL, title: String?, play: Bool) {
+        let i: Int
+        if let existing = playlist.tracks.firstIndex(where: { $0.url == url }) {
+            i = existing
+            if let title { playlist.tracks[i].title = title; playlist.touch() }
+        } else {
+            playlist.tracks.append(Track(url: url, title: title))
+            i = playlist.tracks.count - 1
+        }
+        if play { playIndex(i) } else { plView.ensureVisible(i) }
+    }
+
+    /// Radio status from the engine: station name, live title, buffering and errors.
+    private func streamInfoChanged() {
+        guard audio.isStream, let t = playlist.currentTrack, t.isStream else { return }
+        let info = audio.stream
+        if let n = info.name, t.title == (t.url.host ?? t.url.absoluteString) { t.title = n }
+        if t.streamTitle != info.title {
+            t.streamTitle = info.title
+            marqueeOffset = 0
+        }
+        playlist.touch()
+        if let e = info.error, audio.state == .stopped { flashMarquee(e.uppercased(), seconds: 3) }
+        nowPlaying?.update()
+        menuBar?.update()
+        notify()
+        mainView.needsDisplay = true
+        plView.needsDisplay = true
+        wake()
     }
 
     func replacePlaylist(_ urls: [URL], play: Bool) {
@@ -737,7 +867,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         case "l": if e.modifierFlags.contains(.shift) { addFolder() } else { openFiles() }
         case "s": shuffle.toggle()
         case "r": repeatOn.toggle()
-        case "j": if let i = playlist.current { plView.ensureVisible(i); playlist.selection = [i] }
+        case "j": showJumpToFile()
+        case "q": queueSelected()
         default: return false
         }
         return true
@@ -784,6 +915,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         m.addItem(.separator())
         item(m, "Preferenze…", #selector(showPreferences))
         item(m, "Libreria…", #selector(showLibrary))
+        item(m, "Radio…", #selector(showRadio))
+        item(m, "Apri URL…", #selector(openURL))
         m.addItem(.separator())
         item(m, "Equalizzatore", #selector(toggleEQ))
         item(m, "Playlist", #selector(togglePL))
@@ -810,6 +943,24 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         for (i, p) in Ctl.artistPresets.enumerated() { item(m, p.0, #selector(applyArtistPreset(_:)), tag: i) }
         m.addItem(.separator())
         for (i, p) in Ctl.presets.enumerated() { item(m, p.0, #selector(applyPreset(_:)), tag: i) }
+        let mine = userPresets
+        if !mine.isEmpty {
+            m.addItem(.separator())
+            m.addItem(withTitle: "I tuoi preset", action: nil, keyEquivalent: "").isEnabled = false
+            for (i, p) in mine.enumerated() { item(m, p.name, #selector(applyUserPreset(_:)), tag: i) }
+        }
+        m.addItem(.separator())
+        item(m, "Salva preset corrente…", #selector(saveUserPreset))
+        item(m, "Carica preset Winamp (.eqf, .q1)…", #selector(loadEQFile))
+        item(m, "Salva come file .eqf…", #selector(saveEQFile))
+        item(m, "Esporta tutti in .q1…", #selector(exportEQLibrary))
+        if !mine.isEmpty {
+            let del = NSMenuItem(title: "Elimina preset", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            for (i, p) in mine.enumerated() { item(sub, p.name, #selector(deleteUserPreset(_:)), tag: i) }
+            del.submenu = sub
+            m.addItem(del)
+        }
         return m
     }
 
@@ -834,6 +985,9 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     func miscOptionsMenu() -> NSMenu {
         let m = NSMenu()
         item(m, "Mostra nel Finder", #selector(revealSelected))
+        item(m, "Vai al file… (J)", #selector(showJumpToFile))
+        item(m, "Accoda / togli dalla coda (Q)", #selector(queueSelected))
+        item(m, "Svuota coda", #selector(clearQueue))
         item(m, "Vai al brano in riproduzione (J)", #selector(jumpToCurrent))
         return m
     }
@@ -856,6 +1010,15 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     @objc func sortByPath() { playlist.sort { $0.url.path } }
     @objc func reverseList() { playlist.reverse() }
     @objc func randomizeList() { playlist.shuffle() }
+    /// Q: toggles the selected playlist rows in the play queue.
+    @objc func queueSelected() {
+        guard !playlist.selection.isEmpty else { NSSound.beep(); return }
+        playlist.toggleQueue(playlist.selection)
+        flashMarquee(playlist.queue.isEmpty ? "CODA VUOTA" : "IN CODA: \(playlist.queue.count)", seconds: 1.2)
+    }
+
+    @objc func clearQueue() { playlist.queue = [] }
+
     @objc func jumpToCurrent() { if let i = playlist.current { plView.ensureVisible(i); playlist.selection = [i] } }
 
     @objc func removeMissing() {
@@ -893,6 +1056,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         case #selector(selectSkinItem(_:)): on((it.representedObject as? URL)?.path == skinPath)
         case #selector(savePlaylistFile): return !playlist.tracks.isEmpty
         case #selector(fileInfo): return playlist.current != nil
+        case #selector(clearQueue): return !playlist.queue.isEmpty
+        case #selector(queueSelected): return !playlist.selection.isEmpty
         case #selector(forgetAutoEQ): return playlist.currentTrack.map { autoEQ[Self.autoKey($0)] != nil } ?? false
         default: break
         }
@@ -993,6 +1158,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         plFontSize = int("plFontSize", 9)
         plShowNumbers = bool("plShowNumbers", true)
         plUseSkinFont = bool("plUseSkinFont", true)
+        radioBuffer = dbl("radioBuffer", 2)
         autoDownloadFonts = bool("autoDownloadFonts", true)
         menuBarEnabled = bool("menuBarEnabled", true)
         notifyTrackChange = bool("notifyTrackChange", true)
@@ -1012,7 +1178,11 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             "plShowNumbers": plShowNumbers, "plUseSkinFont": plUseSkinFont, "autoDownloadFonts": autoDownloadFonts,
             "menuBarEnabled": menuBarEnabled, "notifyTrackChange": notifyTrackChange,
             "notifyOnlyInBackground": notifyOnlyInBackground,
-            "playlist": playlist.tracks.map(\.url.path), "current": playlist.current ?? -1,
+            "playlist": playlist.tracks.map { $0.url.isFileURL ? $0.url.path : $0.url.absoluteString },
+            "streamTitles": Dictionary(playlist.tracks.filter(\.isStream).map { ($0.url.absoluteString, $0.title) },
+                                       uniquingKeysWith: { a, _ in a }),
+            "radioBuffer": radioBuffer,
+            "current": playlist.current ?? -1,
             "resumeTime": audio.currentTime, "resumePlaying": audio.state == .playing,
         ]
         for (k, v) in values { d.set(v, forKey: k) }
@@ -1027,13 +1197,17 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     private func restorePlaylist() {
         let d = UserDefaults.standard
         guard let paths = d.stringArray(forKey: "playlist") else { return }
-        playlist.add(paths.map { URL(fileURLWithPath: $0) })
+        playlist.add(paths.compactMap { $0.hasPrefix("http") ? URL(string: $0) : URL(fileURLWithPath: $0) })
+        let names = d.dictionary(forKey: "streamTitles") as? [String: String] ?? [:]
+        for t in playlist.tracks where t.isStream { if let n = names[t.url.absoluteString] { t.title = n } }
         let c = d.integer(forKey: "current")
         guard playlist.tracks.indices.contains(c) else { return }
-        playIndex(c, start: false)
+        // Only select the track: the file opens on the first Play (or now, to resume), never blocking launch.
         if resumeOnLaunch, d.bool(forKey: "resumePlaying") {
-            audio.play()
-            audio.seek(to: d.double(forKey: "resumeTime"))
+            let t = d.double(forKey: "resumeTime")
+            playIndex(c, start: true) { [weak self] in self?.audio.seek(to: t) }
+        } else {
+            playlist.currentTrack = playlist.tracks[c]
         }
     }
 }

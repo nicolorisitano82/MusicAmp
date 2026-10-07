@@ -32,6 +32,46 @@ final class PlaylistView: SkinView {
     private var menuHover: Int?
     private var menuSticky = false
     private var scrollAccum: CGFloat = 0
+    /// Row boundary where dragged files would be inserted.
+    private var dropIndex: Int?
+
+    // MARK: Drop at the exact position
+
+    private func dropRow(_ sender: NSDraggingInfo) -> Int? {
+        let p0 = convert(sender.draggingLocation, from: nil)
+        let p = CGPoint(x: p0.x / scale, y: p0.y / scale)
+        guard !ctl.plShade else { return ctl.playlist.tracks.count }
+        guard listRect.insetBy(dx: 0, dy: -4).contains(p) else { return ctl.playlist.tracks.count }
+        return max(0, min(ctl.playlist.tracks.count, scrollRow + Int(((p.y - 20) / rowH).rounded())))
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { draggingUpdated(sender) }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let d = dropRow(sender)
+        if d != dropIndex { dropIndex = d; needsDisplay = true }
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        dropIndex = nil
+        needsDisplay = true
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        defer { dropIndex = nil; needsDisplay = true }
+        guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self],
+                                                               options: [.urlReadingFileURLsOnly: true]) as? [URL],
+              !urls.isEmpty else { return false }
+        if urls.contains(where: { ["wsz", "zip"].contains($0.pathExtension.lowercased()) }) {
+            ctl.handleDrop(urls, toPlaylist: true)
+            return true
+        }
+        let at = dropRow(sender) ?? ctl.playlist.tracks.count
+        ctl.playlist.insert(urls, at: at)
+        if let first = ctl.playlist.selection.min() { ensureVisible(first) }
+        return true
+    }
 
     private var W: CGFloat { logicalSize.width }
     private var H: CGFloat { logicalSize.height }
@@ -124,9 +164,19 @@ final class PlaylistView: SkinView {
                 if let d = t.duration {
                     durW = r.ttf(Ctl.mmss(d), font: font, color: col, x: W - 22, baseline: y + baseline, maxWidth: 60, alignRight: true)
                 }
+                // Queue position, like Winamp's "[1]" before the length
+                if let q = pl.queuePosition(t) {
+                    durW += 4 + r.ttf("[\(q)]", font: font, color: col, x: W - 22 - durW - 4, baseline: y + baseline, maxWidth: 40, alignRight: true)
+                }
                 let label = ctl.plShowNumbers ? "\(i + 1). \(t.title)" : t.title
                 r.ttf(label, font: font, color: col, x: 14, baseline: y + baseline, maxWidth: W - 40 - durW - 6)
             }
+        }
+
+        // Insertion line while files are dragged over the list
+        if let d = dropIndex, d >= scrollRow, d <= scrollRow + visibleRows {
+            let y = min(H - 39, 20 + CGFloat(d - scrollRow) * rowH)
+            r.fill(st.current, R(12, y - 1, W - 32, 2))
         }
 
         // Scrollbar thumb
@@ -138,7 +188,7 @@ final class PlaylistView: SkinView {
         let sel = pl.selection.isEmpty ? "" : Ctl.hmmss(pl.selectedDuration)
         r.clip(R(W - 143, H - 28, 60, 6)) { r.text("\(sel.isEmpty ? "0:00" : sel)/\(Ctl.hmmss(pl.totalDuration))", W - 143, H - 28) }
         let a = ctl.audio
-        if a.file != nil, a.state != .stopped {
+        if a.hasSource, a.state != .stopped {
             let t = ctl.timeRemaining ? max(0, a.duration - a.currentTime) : a.currentTime
             let s = (ctl.timeRemaining ? "-" : "") + Ctl.mmss(t)
             r.text(String(repeating: " ", count: max(0, 5 - s.count)) + s, W - 84, H - 15)
@@ -166,6 +216,7 @@ final class PlaylistView: SkinView {
         h.combine(scrollRow); h.combine(ctl.plShade); h.combine(ctl.plW); h.combine(ctl.plH)
         h.combine(ctl.plFontSize); h.combine(ctl.plShowNumbers); h.combine(ctl.plUseSkinFont)
         h.combine(pressed); h.combine(pressInside); h.combine(openMenu?.id); h.combine(menuHover); h.combine(scrolling)
+        h.combine(dropIndex)
         return h.finalize()
     }
 
@@ -343,6 +394,11 @@ final class PlaylistView: SkinView {
 
     // MARK: Keyboard / wheel
 
+    /// ⌘A from the Edit menu selects every row.
+    override func selectAll(_ sender: Any?) {
+        ctl.playlist.selection = Set(ctl.playlist.tracks.indices)
+    }
+
     override func keyDown(with e: NSEvent) {
         let pl = ctl.playlist
         switch e.keyCode {
@@ -352,6 +408,9 @@ final class PlaylistView: SkinView {
             return
         case 36, 76:
             if let i = pl.selection.min() { ctl.playIndex(i) }
+            return
+        case 12 where e.modifierFlags.intersection([.command, .control, .option]).isEmpty:   // Q
+            ctl.queueSelected()
             return
         case 126, 125:
             guard !pl.tracks.isEmpty else { return }
@@ -368,10 +427,7 @@ final class PlaylistView: SkinView {
             return
         default: break
         }
-        if e.modifierFlags.contains(.command), e.charactersIgnoringModifiers == "a" {
-            pl.selection = Set(pl.tracks.indices)
-            return
-        }
+
         super.keyDown(with: e)
     }
 
@@ -383,6 +439,90 @@ final class PlaylistView: SkinView {
             scrollRow += steps
             clampScroll()
         }
+    }
+
+    // MARK: VoiceOver
+
+    override var accessibilityName: String { "Playlist" }
+
+    private static let menuLabels: [String: String] = [
+        "url": "Aggiungi URL", "dir": "Aggiungi cartella", "file": "Aggiungi file",
+        "remall": "Rimuovi tutto", "crop": "Tieni solo la selezione", "remsel": "Rimuovi selezionati", "remmisc": "Altre rimozioni",
+        "invsel": "Inverti selezione", "selzero": "Deseleziona tutto", "selall": "Seleziona tutto",
+        "sort": "Ordina", "fileinfo": "Info file", "miscopts": "Altre opzioni",
+        "newlist": "Nuova playlist", "savelist": "Salva playlist", "loadlist": "Carica playlist",
+    ]
+
+    /// Native, VoiceOver-readable version of a sprite popup menu (ADD/REM/SEL/MISC/LIST).
+    private func nativeMenu(_ id: String) -> NSMenu {
+        let m = NSMenu()
+        for (_, action) in menus[id]?.items ?? [] {
+            let it = NSMenuItem(title: Self.menuLabels[action] ?? action, action: #selector(nativeMenuAction(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = action
+            m.addItem(it)
+        }
+        return m
+    }
+
+    @objc private func nativeMenuAction(_ sender: NSMenuItem) {
+        if let a = sender.representedObject as? String { menuAction(a) }
+    }
+
+    override func accessibilityItems() -> [AXItem] {
+        let pl = ctl.playlist
+        func button(_ id: String, _ label: String, _ action: @escaping () -> Void) -> AXItem? {
+            guard let r = buttonRects().first(where: { $0.0 == id })?.1 else { return nil }
+            return AXItem(id: id, kind: .button, label: label, rect: r, press: action)
+        }
+        var items: [AXItem] = []
+        if ctl.plShade {
+            if let i = pl.current ?? pl.selection.min() ?? (pl.tracks.isEmpty ? nil : 0) {
+                items.append(AXItem(id: "shadeTitle", kind: .text, label: "Brano", rect: R(5, 3, W - 40, 8),
+                                    value: "\(i + 1). \(pl.tracks[i].title)"))
+            }
+        } else {
+            let cur = pl.current
+            for row in 0..<visibleRows {
+                let i = scrollRow + row
+                guard i < pl.tracks.count else { break }
+                let t = pl.tracks[i]
+                var state: [String] = []
+                if i == cur { state.append("in riproduzione") }
+                if pl.selection.contains(i) { state.append("selezionato") }
+                if let q = pl.queuePosition(t) { state.append("in coda, posizione \(q)") }
+                if let d = t.duration { state.append(AXText.time(d)) }
+                items.append(AXItem(id: "row-\(ObjectIdentifier(t).hashValue)", kind: .row, label: "\(i + 1). \(t.title)",
+                                    rect: R(12, 20 + CGFloat(row) * rowH, W - 32, rowH), value: state.joined(separator: ", "),
+                                    selected: pl.selection.contains(i),
+                                    press: { [weak self] in self?.ctl.playIndex(i) }))
+            }
+            if maxScroll > 0 {
+                items.append(AXItem(id: "scroll", kind: .slider, label: "Scorrimento playlist", rect: R(W - 15, 20, 8, H - 58),
+                                    value: "righe \(scrollRow + 1)–\(min(pl.tracks.count, scrollRow + visibleRows)) di \(pl.tracks.count)",
+                                    increment: { [weak self] in self.map { $0.scrollRow += $0.visibleRows; $0.clampScroll() } },
+                                    decrement: { [weak self] in self.map { $0.scrollRow -= $0.visibleRows; $0.clampScroll() } }))
+            }
+            for (id, label) in [("add", "Aggiungi"), ("rem", "Rimuovi"), ("sel", "Selezione"), ("misc", "Varie"), ("list", "Playlist")] {
+                if let b = button(id, label, { [weak self] in
+                    guard let self, let r = self.buttonRects().first(where: { $0.0 == id })?.1 else { return }
+                    self.popUp(self.nativeMenu(id), at: CGPoint(x: r.minX, y: r.minY))
+                }) { items.append(b) }
+            }
+            items += [
+                button("prev", "Brano precedente") { [weak self] in self?.ctl.previous() },
+                button("play", "Riproduci") { [weak self] in self?.ctl.play() },
+                button("pause", "Pausa") { [weak self] in self?.ctl.pause() },
+                button("stop", "Stop") { [weak self] in self?.ctl.stop() },
+                button("next", "Brano successivo") { [weak self] in self?.ctl.next() },
+                button("eject", "Apri file") { [weak self] in self?.ctl.openFiles() },
+            ].compactMap { $0 }
+        }
+        items += [
+            button("shade", ctl.plShade ? "Espandi playlist" : "Riduci playlist") { [weak self] in self?.ctl.togglePLShade() },
+            button("close", "Chiudi playlist") { [weak self] in self?.ctl.togglePL() },
+        ].compactMap { $0 }
+        return items
     }
 
     override func cursorAreas() -> [(String, CGRect)] {

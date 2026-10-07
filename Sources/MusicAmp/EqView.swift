@@ -172,6 +172,50 @@ final class EqView: SkinView {
         ctl.marqueeOverride = "EQ: \(label) \(String(format: "%+.1f", db)) DB"
     }
 
+    // MARK: VoiceOver
+
+    override var accessibilityName: String { "Equalizzatore" }
+
+    override func accessibilityItems() -> [AXItem] {
+        func db(_ v: Double) -> String { String(format: "%+.1f dB", v) }
+        var items: [AXItem] = []
+        if ctl.eqShade {
+            items += [
+                AXItem(id: "vol", kind: .slider, label: "Volume", rect: Self.shadeVol, value: "\(Int(ctl.volume.rounded()))%",
+                       increment: { [weak self] in self.map { $0.ctl.volume = min(100, $0.ctl.volume + 5) } },
+                       decrement: { [weak self] in self.map { $0.ctl.volume = max(0, $0.ctl.volume - 5) } }),
+                AXItem(id: "bal", kind: .slider, label: "Bilanciamento", rect: Self.shadeBal, value: AXText.balance(ctl.balance),
+                       increment: { [weak self] in self.map { $0.ctl.balance = min(100, $0.ctl.balance + 10) } },
+                       decrement: { [weak self] in self.map { $0.ctl.balance = max(-100, $0.ctl.balance - 10) } }),
+            ]
+        } else {
+            items += [
+                AXItem(id: "on", kind: .toggle, label: "Equalizzatore attivo", rect: R(14, 18, 26, 12), on: ctl.eqOn,
+                       press: { [weak self] in self?.ctl.eqOn.toggle() }),
+                AXItem(id: "auto", kind: .toggle, label: "Preset automatico per brano", rect: R(40, 18, 32, 12), on: ctl.eqAuto,
+                       press: { [weak self] in self?.ctl.eqAuto.toggle() }),
+                AXItem(id: "presets", kind: .button, label: "Preset", rect: R(217, 18, 44, 12),
+                       press: { [weak self] in self.map { $0.popUp($0.ctl.presetsMenu(), at: CGPoint(x: 217, y: 30)) } }),
+                AXItem(id: "preamp", kind: .slider, label: "Preamplificazione", rect: sliderRect(-1), value: db(ctl.preamp),
+                       increment: { [weak self] in self.map { $0.ctl.preamp = min(12, $0.ctl.preamp + 1) } },
+                       decrement: { [weak self] in self.map { $0.ctl.preamp = max(-12, $0.ctl.preamp - 1) } }),
+            ]
+            for i in 0..<10 {
+                let name = labels[i].replacingOccurrences(of: "KHZ", with: " kHz").replacingOccurrences(of: "HZ", with: " Hz")
+                items.append(AXItem(id: "band\(i)", kind: .slider, label: "Banda \(name)", rect: sliderRect(i), value: db(ctl.bands[i]),
+                                    increment: { [weak self] in self.map { $0.ctl.bands[i] = min(12, $0.ctl.bands[i] + 1) } },
+                                    decrement: { [weak self] in self.map { $0.ctl.bands[i] = max(-12, $0.ctl.bands[i] - 1) } }))
+            }
+        }
+        items += [
+            AXItem(id: "shade", kind: .toggle, label: "Modalità ridotta", rect: R(254, 3, 9, 9), on: ctl.eqShade,
+                   press: { [weak self] in self?.ctl.toggleEQShade() }),
+            AXItem(id: "close", kind: .button, label: "Chiudi equalizzatore", rect: R(264, 3, 9, 9),
+                   press: { [weak self] in self?.ctl.toggleEQ() }),
+        ]
+        return items
+    }
+
     override func cursorAreas() -> [(String, CGRect)] {
         if ctl.eqShade {
             return [("eqnormal", R(0, 0, 275, 14)), ("volbal", Self.shadeVol), ("volbal", Self.shadeBal), ("eqclose", R(264, 3, 9, 9))]

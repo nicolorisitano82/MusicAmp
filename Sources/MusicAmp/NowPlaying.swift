@@ -53,12 +53,28 @@ final class NowPlaying {
     func update() {
         let center = MPNowPlayingInfoCenter.default()
         let a = ctl.audio
-        guard let i = ctl.playlist.current, a.file != nil else {
+        guard let i = ctl.playlist.current, a.hasSource else {
             center.nowPlayingInfo = nil
             center.playbackState = .stopped
             return
         }
         let t = ctl.playlist.tracks[i]
+        if t.isStream {
+            // Live radio: "Artist - Title" from ICY metadata, the station as album.
+            let parts = (t.streamTitle ?? "").components(separatedBy: " - ")
+            var live: [String: Any] = [
+                MPMediaItemPropertyTitle: parts.count > 1 ? parts.dropFirst().joined(separator: " - ") : (t.streamTitle ?? t.title),
+                MPMediaItemPropertyAlbumTitle: t.title,
+                MPNowPlayingInfoPropertyIsLiveStream: true,
+                MPNowPlayingInfoPropertyElapsedPlaybackTime: a.currentTime,
+                MPNowPlayingInfoPropertyPlaybackRate: a.state == .playing ? 1.0 : 0.0,
+                MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
+            ]
+            if parts.count > 1 { live[MPMediaItemPropertyArtist] = parts[0] }
+            center.nowPlayingInfo = live
+            center.playbackState = a.state == .playing ? .playing : (a.state == .paused ? .paused : .stopped)
+            return
+        }
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: t.songTitle ?? t.title,
             MPMediaItemPropertyPlaybackDuration: a.duration,

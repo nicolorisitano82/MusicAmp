@@ -45,6 +45,7 @@ struct PreferencesView: View {
             AudioTab(ctl: ctl).tabItem { Label("Audio", systemImage: "hifispeaker") }
             VisTab(ctl: ctl).tabItem { Label("Visualizzazione", systemImage: "waveform") }
             PlaylistTab(ctl: ctl).tabItem { Label("Playlist", systemImage: "list.bullet") }
+            ShortcutsTab(keys: .shared).tabItem { Label("Scorciatoie", systemImage: "keyboard") }
             SkinTab(ctl: ctl).tabItem { Label("Skin", systemImage: "paintpalette") }
         }
         .padding(20)
@@ -104,6 +105,11 @@ private struct AudioTab: View {
                     RoutePicker().frame(width: 28, height: 22)
                 }
                 Text("Con \"Predefinito di sistema\" MusicAmp segue l'uscita scelta qui, nel Centro di controllo o nelle Impostazioni Suono, anche se è un altoparlante AirPlay.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Radio") {
+                Stepper("Buffer prima dell'ascolto: \(Int(ctl.radioBuffer)) s", value: ctl.binding(\.radioBuffer), in: 1...10, step: 1)
+                Text("Più buffer evita interruzioni su reti lente, ma la radio parte un po' dopo. Gli stream HLS (.m3u8) usano il buffer di sistema e non passano da equalizzatore e visualizzatore.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Riproduzione") {
@@ -331,5 +337,70 @@ private struct SkinFontSection: View {
             cached = fonts.cachedFontCount
         }
         .onChange(of: fonts.statuses) { _ in cached = fonts.cachedFontCount }
+    }
+}
+
+private struct ShortcutsTab: View {
+    @ObservedObject var keys: HotKeys
+    @State private var recording: HotKeyAction?
+    @State private var monitor: Any?
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Scorciatoie globali attive (funzionano anche con MusicAmp in secondo piano)", isOn: $keys.enabled)
+            }
+            Section("Globali") {
+                ForEach(HotKeyAction.allCases) { a in
+                    LabeledContent(a.title) {
+                        HStack(spacing: 6) {
+                            if keys.failed.contains(a) {
+                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                                    .help("Combinazione già usata da un'altra app")
+                            }
+                            Button(recording == a ? "Premi i tasti…" : (keys.bindings[a]?.display ?? "Nessuna")) { record(a) }
+                                .frame(minWidth: 110)
+                                .accessibilityLabel("\(a.title): \(keys.bindings[a]?.display ?? "nessuna scorciatoia"). Premi per registrarne una nuova")
+                            Button { keys.set(a, nil) } label: { Image(systemName: "xmark.circle.fill") }
+                                .buttonStyle(.borderless).disabled(keys.bindings[a] == nil)
+                                .accessibilityLabel("Rimuovi scorciatoia \(a.title)")
+                        }
+                    }
+                }
+                HStack {
+                    Text("Serve almeno uno tra ⌘ ⌃ ⌥. Esc annulla la registrazione.").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Ripristina predefinite") { keys.resetDefaults() }
+                }
+            }
+            .disabled(!keys.enabled)
+            Section("Nelle finestre di MusicAmp (come Winamp)") {
+                Text("Z precedente · X play · C pausa · V stop · B successivo · L apri file · ⇧L aggiungi cartella · S shuffle · R ripeti · J vai al brano · ← → avanti/indietro 5 s · ↑ ↓ volume")
+                    .font(.callout)
+            }
+        }
+        .formStyle(.grouped)
+        .onDisappear { stopRecording() }
+    }
+
+    private func record(_ a: HotKeyAction) {
+        stopRecording()
+        recording = a
+        keys.suspend()
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+            if e.keyCode == 53 { stopRecording(); return nil }   // Esc
+            let f = e.modifierFlags.intersection([.command, .control, .option, .shift])
+            guard !f.intersection([.command, .control, .option]).isEmpty else { NSSound.beep(); return nil }
+            keys.set(a, HotKey(keyCode: UInt32(e.keyCode), modifiers: f.rawValue, display: HotKey.symbols(f) + HotKey.keyName(e)))
+            stopRecording()
+            return nil
+        }
+    }
+
+    private func stopRecording() {
+        if let m = monitor { NSEvent.removeMonitor(m) }
+        monitor = nil
+        if recording != nil { keys.resume() }
+        recording = nil
     }
 }

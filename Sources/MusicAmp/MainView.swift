@@ -35,7 +35,7 @@ final class MainView: SkinView {
         var h = Hasher()
         h.combine(isActive); h.combine(ObjectIdentifier(skin)); h.combine(shade)
         h.combine("\(a.state)"); h.combine(Int(a.currentTime)); h.combine(a.state == .paused && ctl.blinkOn)
-        h.combine(a.file != nil); h.combine(a.bitrate); h.combine(a.channels); h.combine(a.sampleRate)
+        h.combine(a.hasSource); h.combine(a.stream.buffering); h.combine(a.bitrate); h.combine(a.channels); h.combine(a.sampleRate)
         h.combine(ctl.marqueeOffset); h.combine(ctl.marqueeOverride); h.combine(ctl.marqueeText)
         h.combine(ctl.volume); h.combine(ctl.balance); h.combine(ctl.shuffle); h.combine(ctl.repeatOn)
         h.combine(ctl.eqVisible); h.combine(ctl.plVisible); h.combine(ctl.alwaysOnTop); h.combine(ctl.doubleSize)
@@ -43,7 +43,7 @@ final class MainView: SkinView {
         h.combine(pressed); h.combine(pressInside); h.combine(dragKind); h.combine(seekPreview)
         return h.finalize()
     }
-    private var loaded: Bool { ctl.audio.file != nil && ctl.audio.state != .stopped }
+    private var loaded: Bool { ctl.audio.hasSource && ctl.audio.state != .stopped }
 
     // MARK: Render
 
@@ -74,7 +74,7 @@ final class MainView: SkinView {
         }
 
         // Time (blinks while paused)
-        if a.file != nil, a.state != .stopped, !(a.state == .paused && !ctl.blinkOn) {
+        if a.hasSource, a.state != .stopped, !(a.state == .paused && !ctl.blinkOn) {
             drawTime(r)
         }
 
@@ -97,13 +97,13 @@ final class MainView: SkinView {
             }
         }
 
-        if a.file != nil {
+        if a.hasSource, a.bitrate > 0 || a.sampleRate > 0 {
             let kbps = String(min(999, a.bitrate))
             r.text(String(repeating: " ", count: max(0, 3 - kbps.count)) + kbps, 111, 43)
             let khz = String(Int((a.sampleRate / 1000).rounded()))
             r.text(String(repeating: " ", count: max(0, 2 - khz.count)) + String(khz.suffix(2)), 156, 43)
         }
-        let ch = a.file == nil ? 0 : a.channels
+        let ch = a.hasSource ? a.channels : 0
         r.blit("monoster", ch >= 2 ? R(0, 0, 29, 12) : R(0, 12, 29, 12), 239, 41)
         r.blit("monoster", ch == 1 ? R(29, 0, 27, 12) : R(29, 12, 27, 12), 212, 41)
 
@@ -251,7 +251,7 @@ final class MainView: SkinView {
         }
     }
 
-    private func perform(_ id: String, _ e: NSEvent) {
+    private func perform(_ id: String, _ e: NSEvent?) {
         switch id {
         case "prev": ctl.previous()
         case "play": ctl.play()
@@ -275,6 +275,67 @@ final class MainView: SkinView {
         case "vis": ctl.visMode = (ctl.visMode + 1) % 3
         default: break
         }
+    }
+
+    // MARK: VoiceOver
+
+    override var accessibilityName: String { "MusicAmp, finestra principale" }
+
+    override func accessibilityItems() -> [AXItem] {
+        let a = ctl.audio
+        func button(_ id: String, _ label: String, _ r: CGRect) -> AXItem {
+            AXItem(id: id, kind: .button, label: label, rect: r, press: { [weak self] in self?.perform(id, nil) })
+        }
+        func toggle(_ id: String, _ label: String, _ r: CGRect, _ on: Bool) -> AXItem {
+            AXItem(id: id, kind: .toggle, label: label, rect: r, on: on, press: { [weak self] in self?.perform(id, nil) })
+        }
+        let rect = Dictionary((shade ? shadeButtons : buttons).map { ($0.0, $0.1) }, uniquingKeysWith: { a, _ in a })
+        var items: [AXItem] = [
+            AXItem(id: "title", kind: .text, label: "Brano", rect: shade ? R(127, 3, 30, 8) : R(111, 24, 155, 12),
+                   value: ctl.marqueeText),
+        ]
+        if a.hasSource, a.state != .stopped {
+            items.append(AXItem(id: "timeText", kind: .text, label: "Tempo", rect: rect["time"] ?? .zero,
+                                value: "\(AXText.time(a.currentTime)) di \(AXText.time(a.duration))"))
+        }
+        items += [
+            button("prev", "Brano precedente", rect["prev"]!),
+            button("play", a.state == .playing ? "Ricomincia brano" : "Riproduci", rect["play"]!),
+            button("pause", a.state == .paused ? "Riprendi" : "Pausa", rect["pause"]!),
+            button("stop", "Stop", rect["stop"]!),
+            button("next", "Brano successivo", rect["next"]!),
+            button("eject", "Apri file", rect["eject"]!),
+        ]
+        if !shade {
+            let seekStep = { [weak self] (d: Double) in self?.ctl.seek(by: d) }
+            items += [
+                AXItem(id: "pos", kind: .slider, label: "Posizione", rect: R(16, 72, 248, 10),
+                       value: a.duration > 0 ? "\(Int(a.currentTime / a.duration * 100))%" : "nessun brano",
+                       increment: { seekStep(5) }, decrement: { seekStep(-5) }),
+                AXItem(id: "vol", kind: .slider, label: "Volume", rect: R(107, 57, 68, 13), value: "\(Int(ctl.volume.rounded()))%",
+                       increment: { [weak self] in self.map { $0.ctl.volume = min(100, $0.ctl.volume + 5) } },
+                       decrement: { [weak self] in self.map { $0.ctl.volume = max(0, $0.ctl.volume - 5) } }),
+                AXItem(id: "bal", kind: .slider, label: "Bilanciamento", rect: R(177, 57, 38, 13), value: AXText.balance(ctl.balance),
+                       increment: { [weak self] in self.map { $0.ctl.balance = min(100, $0.ctl.balance + 10) } },
+                       decrement: { [weak self] in self.map { $0.ctl.balance = max(-100, $0.ctl.balance - 10) } }),
+                toggle("shuffle", "Shuffle", rect["shuffle"]!, ctl.shuffle),
+                toggle("repeat", "Ripeti", rect["repeat"]!, ctl.repeatOn),
+                toggle("eq", "Mostra equalizzatore", rect["eq"]!, ctl.eqVisible),
+                toggle("pl", "Mostra playlist", rect["pl"]!, ctl.plVisible),
+                toggle("clutterA", "Sempre in primo piano", rect["clutterA"]!, ctl.alwaysOnTop),
+                toggle("clutterD", "Doppia dimensione", rect["clutterD"]!, ctl.doubleSize),
+                button("clutterI", "Info file", rect["clutterI"]!),
+                button("vis", "Cambia visualizzazione", rect["vis"]!),
+                toggle("time", "Mostra tempo rimanente", rect["time"]!, ctl.timeRemaining),
+            ]
+        }
+        items += [
+            button("options", "Menu opzioni", rect["options"]!),
+            button("minimize", "Nascondi", rect["minimize"]!),
+            toggle("shade", "Modalità ridotta", rect["shade"]!, ctl.mainShade),
+            button("close", "Esci", rect["close"]!),
+        ]
+        return items
     }
 
     override func scrollWheel(with e: NSEvent) {

@@ -32,6 +32,23 @@ class SkinView: NSView {
 
     private var windowDrag = false
     private var drawnSignature: Int?
+    var axCache: [String: SkinAXElement] = [:]
+
+    // MARK: Accessibility (VoiceOver)
+    // The skin is pixels, so each view lists its controls as AXItems; they become NSAccessibilityElements.
+
+    var accessibilityName: String { "MusicAmp" }
+    func accessibilityItems() -> [AXItem] { [] }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .group }
+    override func accessibilityLabel() -> String? { accessibilityName }
+    override func accessibilityChildren() -> [Any]? { axElements() }
+
+    override func accessibilityHitTest(_ point: NSPoint) -> Any? {
+        let els = axElements()
+        return els.last { $0.accessibilityFrame().contains(point) } ?? self
+    }
 
     /// Hash of everything the view shows. The timer redraws only when it differs from the last drawn frame.
     var renderSignature: Int { 0 }

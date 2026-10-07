@@ -7,10 +7,15 @@ final class Track {
     var artist: String?
     var songTitle: String?
     var album: String?
+    /// Live "StreamTitle" of a radio track.
+    var streamTitle: String?
 
-    init(url: URL) {
+    /// http(s) URLs are internet radio streams (or remote playlists that resolve to one).
+    var isStream: Bool { !url.isFileURL }
+
+    init(url: URL, title: String? = nil) {
         self.url = url
-        title = url.deletingPathExtension().lastPathComponent
+        self.title = title ?? (url.isFileURL ? url.deletingPathExtension().lastPathComponent : (url.host ?? url.absoluteString))
     }
 }
 
@@ -38,6 +43,7 @@ final class Playlist {
         var out: [URL] = []
         let fm = FileManager.default
         for u in urls {
+            if !u.isFileURL, ["http", "https"].contains(u.scheme?.lowercased() ?? "") { out.append(u); continue }
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: u.path, isDirectory: &isDir) else { continue }
             if isDir.boolValue {
@@ -55,25 +61,66 @@ final class Playlist {
     }
 
     func add(_ urls: [URL]) {
-        let new = Playlist.expand(urls).map(Track.init)
+        let new = Playlist.expand(urls).map { Track(url: $0) }
         tracks += new
+        new.forEach(loadMetadata)
+    }
+
+    /// Inserts at `index` (a drop between rows) and selects what was inserted.
+    func insert(_ urls: [URL], at index: Int) {
+        let new = Playlist.expand(urls).map { Track(url: $0) }
+        guard !new.isEmpty else { return }
+        let i = max(0, min(index, tracks.count))
+        tracks.insert(contentsOf: new, at: i)
+        selection = Set(i..<(i + new.count))
         new.forEach(loadMetadata)
     }
 
     func clear() {
         tracks = []
         selection = []
+        queue = []
         currentTrack = nil
     }
 
     func remove(_ indices: Set<Int>) {
         tracks = tracks.enumerated().filter { !indices.contains($0.offset) }.map(\.element)
         selection = []
+        pruneQueue()
     }
 
     func crop(_ keep: Set<Int>) {
         tracks = tracks.enumerated().filter { keep.contains($0.offset) }.map(\.element)
         selection = Set(tracks.indices)
+        pruneQueue()
+    }
+
+    // MARK: Queue (Winamp "Q"): queued tracks play next, in order, before the playlist continues.
+
+    var queue: [Track] = [] { didSet { version &+= 1 } }
+
+    func queuePosition(_ t: Track) -> Int? { queue.firstIndex { $0 === t }.map { $0 + 1 } }
+
+    /// Q toggles: unqueued rows are appended to the queue, queued ones are taken out.
+    func toggleQueue(_ indices: Set<Int>) {
+        for i in indices.sorted() where tracks.indices.contains(i) {
+            let t = tracks[i]
+            if let q = queue.firstIndex(where: { $0 === t }) { queue.remove(at: q) } else { queue.append(t) }
+        }
+    }
+
+    /// Next queued track still in the playlist, removed from the queue.
+    func popQueue() -> Int? {
+        while !queue.isEmpty {
+            let t = queue.removeFirst()
+            if let i = tracks.firstIndex(where: { $0 === t }) { return i }
+        }
+        return nil
+    }
+
+    private func pruneQueue() {
+        let ids = Set(tracks.map(ObjectIdentifier.init))
+        queue = queue.filter { ids.contains(ObjectIdentifier($0)) }
     }
 
     /// Moves the selected rows by `delta`, keeping them selected.
@@ -99,7 +146,11 @@ final class Playlist {
     func shuffle() { tracks.shuffle(); selection = [] }
     func reverse() { tracks.reverse(); selection = [] }
 
+    /// Bumps the version after in-place changes to a track (radio titles).
+    func touch() { version &+= 1 }
+
     private func loadMetadata(_ t: Track) {
+        guard t.url.isFileURL else { return }
         Task {
             let asset = AVURLAsset(url: t.url)
             let dur = try? await asset.load(.duration)
@@ -143,6 +194,7 @@ final class Playlist {
             }
             guard !line.isEmpty, !line.hasPrefix("#") else { continue }
             if line.hasPrefix("file://"), let u = URL(string: line) { out.append(u); continue }
+            if line.hasPrefix("http://") || line.hasPrefix("https://"), let u = URL(string: line) { out.append(u); continue }
             line = line.replacingOccurrences(of: "\\", with: "/")
             let u = line.hasPrefix("/") ? URL(fileURLWithPath: line) : base.appendingPathComponent(line)
             if FileManager.default.fileExists(atPath: u.path) { out.append(u.standardizedFileURL) }
@@ -153,8 +205,12 @@ final class Playlist {
     func writeM3U(to url: URL) throws {
         var s = "#EXTM3U\n"
         for t in tracks {
-            s += "#EXTINF:\(Int(t.duration ?? -1)),\(t.title)\n\(t.url.path)\n"
+            s += "#EXTINF:\(Int(t.duration ?? -1)),\(t.title)\n\(t.url.isFileURL ? t.url.path : t.url.absoluteString)\n"
         }
         try s.write(to: url, atomically: true, encoding: .utf8)
     }
+}
+
+extension Track: Equatable {
+    static func == (a: Track, b: Track) -> Bool { a === b }
 }
