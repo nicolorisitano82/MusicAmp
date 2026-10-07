@@ -19,4 +19,6 @@ Lo stato delle funzioni e la roadmap stanno nel documento condiviso "MusicAmp �
 ./build-app.sh
 ```
 
-Crea `build/MusicAmp.app` (release, firma ad hoc). Il pacchetto Swift richiede macOS 13 e Swift 5.9; non c'è un progetto Xcode.
+Crea `build/MusicAmp.app` (release, firma ad hoc) e l'immagine disco `build/MusicAmp-<versione>.dmg`, con l'app, un collegamento ad Applicazioni e la licenza. La versione è `CFBundleShortVersionString` di `Resources/Info.plist`. Con `--no-dmg` si crea solo l'app. Il pacchetto Swift richiede macOS 13 e Swift 5.9; non c'è un progetto Xcode.
+
+La firma è ad hoc, senza Developer ID né notarizzazione: su un altro Mac Gatekeeper blocca la prima apertura. Si apre col tasto destro → Apri, oppure da Impostazioni di Sistema → Privacy e sicurezza.
