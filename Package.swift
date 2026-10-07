@@ -19,6 +19,9 @@ let package = Package(
         // WidgetKit extension, packaged by build-app.sh as Contents/PlugIns/MusicAmpWidget.appex.
         .executableTarget(name: "MusicAmpWidget", dependencies: ["MusicAmpShared"], path: "Sources/MusicAmpWidget",
                           swiftSettings: constValues("MusicAmpWidget") + [.unsafeFlags(["-application-extension"])],
-                          linkerSettings: [.unsafeFlags(["-Xlinker", "-application_extension"])]),
+                          // App extensions start in Foundation's NSExtensionMain (as Xcode links them): it registers the
+                          // extension with ExtensionFoundation, then runs the @main WidgetBundle. Without it the widget
+                          // traps at launch ("Failed to create running extension").
+                          linkerSettings: [.unsafeFlags(["-Xlinker", "-application_extension", "-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])]),
     ]
 )

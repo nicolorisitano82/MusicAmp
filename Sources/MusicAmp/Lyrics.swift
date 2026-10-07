@@ -176,7 +176,7 @@ final class LyricsService: ObservableObject {
     @Published private(set) var query: Query?
     private var request = 0
 
-    static let userAgent = "MusicAmp/0.2 (https://github.com/nicolorisitano82/MusicAmp)"
+    static let userAgent = "MusicAmp/0.3 (https://github.com/nicolorisitano82/MusicAmp)"
 
     private var cacheDir: URL {
         let u = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

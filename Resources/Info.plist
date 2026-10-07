@@ -34,17 +34,6 @@
 			</array>
 		</dict>
 	</array>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleURLName</key>
-			<string>com.genomeup.musicamp.command</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>musicamp</string>
-			</array>
-		</dict>
-	</array>
 	<key>CFBundleExecutable</key>
 	<string>MusicAmp</string>
 	<key>CFBundleIconFile</key>
@@ -60,9 +49,20 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.2</string>
+	<string>0.3</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.genomeup.musicamp.command</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>musicamp</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
-	<string>2</string>
+	<string>3</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>NSAppleMusicUsageDescription</key>

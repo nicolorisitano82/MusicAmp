@@ -24,7 +24,7 @@ final class RadioStream: NSObject, URLSessionDataDelegate {
         var bitrate: Int?
     }
 
-    static let userAgent = "MusicAmp/0.2"
+    static let userAgent = "MusicAmp/0.3"
 
     var onHeaders: ((Headers) -> Void)?
     /// Decoded PCM format; called synchronously on the stream queue so the engine is reconnected before buffers arrive.

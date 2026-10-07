@@ -6,7 +6,7 @@ import Foundation
 /// descriptive User-Agent and at most one request per second — both enforced here for every call.
 /// Self-contained (Foundation + AVFoundation only); the UI lives in TagEditorView.swift.
 enum MusicBrainz {
-    static let userAgent = "MusicAmp/0.2 ( https://github.com/nicolorisitano82/MusicAmp )"
+    static let userAgent = "MusicAmp/0.3 ( https://github.com/nicolorisitano82/MusicAmp )"
 
     // MARK: Model
 
