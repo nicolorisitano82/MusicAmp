@@ -136,7 +136,14 @@ private struct AudioTab: View {
             Section("Formati extra (FFmpeg)") {
                 Toggle("Usa FFmpeg per Ogg, Opus, APE, WavPack, Musepack, DSD…", isOn: ctl.binding(\.ffmpegEnabled))
                 if let path = FFmpeg.ffmpegPath {
-                    LabeledContent("Trovato", value: "\(path) \(FFmpeg.version.map { "(\($0))" } ?? "")")
+                    if path.hasPrefix(Bundle.main.bundlePath) {
+                        LabeledContent("Versione", value: "FFmpeg \(FFmpeg.version ?? "") incluso nell'app (LGPL)")
+                        if let src = Bundle.main.url(forResource: "SOURCE", withExtension: "txt", subdirectory: "FFmpeg") {
+                            Button("Licenza e sorgenti di FFmpeg…") { NSWorkspace.shared.open(src.deletingLastPathComponent()) }
+                        }
+                    } else {
+                        LabeledContent("Trovato", value: "\(path) \(FFmpeg.version.map { "(\($0))" } ?? "")")
+                    }
                 } else {
                     Text("FFmpeg non trovato. Per abilitarlo: brew install ffmpeg").foregroundStyle(.secondary)
                 }

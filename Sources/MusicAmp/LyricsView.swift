@@ -106,9 +106,41 @@ final class KaraokeWindow: NSWindow {
 
 // MARK: Shared pieces
 
-/// Blurred cover art (or a gradient) behind the lyrics.
+/// Bass and loudness of what is playing, smoothed for animations (karaoke glow, backdrop pulse, dots).
+/// Fed by the engine's analysis tap; several views may call `update` in the same frame.
+final class MusicPulse {
+    static let shared = MusicPulse()
+    private(set) var bass = 0.0      // 0…1, fast attack, slow release
+    private(set) var level = 0.0     // 0…1, overall
+    private(set) var kick = 0.0      // 0…1, jumps on a bass hit, then fades
+    private var slowBass = 0.0
+    private var last = Date.distantPast
+
+    func update(_ audio: AudioEngine) {
+        let now = Date()
+        let dt = min(0.1, now.timeIntervalSince(last))
+        guard dt > 0.008 else { return }
+        last = now
+        var b = 0.0, l = 0.0
+        if audio.state == .playing {
+            let spec = audio.visData().0
+            if spec.count >= 20 {
+                b = Double(spec.prefix(12).reduce(0, +)) / 12
+                l = Double(spec.reduce(0, +)) / Double(spec.count)
+            }
+        }
+        bass += (b - bass) * (b > bass ? 0.55 : min(1, dt * 5))
+        level += (l - level) * min(1, dt * 8)
+        slowBass += (b - slowBass) * min(1, dt * 0.8)
+        if b > slowBass * 1.25 + 0.06, b - bass > -0.05 { kick = max(kick, min(1, (b - slowBass) * 3)) }
+        kick = max(0, kick - dt * 3.2)
+    }
+}
+
+/// Blurred cover art (or a gradient) behind the lyrics; it breathes with the bass when `pulse` > 0.
 struct LyricsBackdrop: View {
     let cover: NSImage?
+    var pulse: Double = 0
     var body: some View {
         ZStack {
             LinearGradient(colors: [Color(red: 0.16, green: 0.12, blue: 0.32), Color(red: 0.05, green: 0.18, blue: 0.30)],
@@ -118,44 +150,180 @@ struct LyricsBackdrop: View {
                 Color.clear.overlay(
                     Image(nsImage: cover).resizable().aspectRatio(contentMode: .fill)
                         .blur(radius: 70).saturation(1.4).opacity(0.9)
+                        .scaleEffect(1 + 0.05 * pulse)
+                        .brightness(0.12 * pulse)
                 ).clipped()
             }
-            LinearGradient(colors: [.black.opacity(0.35), .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
+            LinearGradient(colors: [.black.opacity(0.35 - 0.1 * pulse), .black.opacity(0.6 - 0.1 * pulse)], startPoint: .top, endPoint: .bottom)
         }
         .ignoresSafeArea()
     }
 }
 
-/// One karaoke line: each word lights up while it is sung (real word times when available, else estimated).
+/// Wraps words onto lines like text, keeping each word a separate view (so it can animate on its own).
+struct WordFlow: Layout {
+    var center = false
+    var spacing: CGFloat
+    var lineSpacing: CGFloat
+
+    private func rows(_ sizes: [CGSize], width: CGFloat) -> [[Int]] {
+        var rows: [[Int]] = [[]]
+        var x: CGFloat = 0
+        for (i, s) in sizes.enumerated() {
+            if x > 0, x + s.width > width { rows.append([]); x = 0 }
+            rows[rows.count - 1].append(i)
+            x += s.width + spacing
+        }
+        return rows
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let width = proposal.width ?? .infinity
+        var h: CGFloat = 0, w: CGFloat = 0
+        let rs = rows(sizes, width: width)
+        for r in rs {
+            var rowW: CGFloat = 0, rowH: CGFloat = 0
+            for i in r { rowW += sizes[i].width; rowH = max(rowH, sizes[i].height) }
+            rowW += spacing * CGFloat(max(0, r.count - 1))
+            w = max(w, rowW)
+            h += rowH
+        }
+        h += lineSpacing * CGFloat(max(0, rs.count - 1))
+        if let pw = proposal.width { w = min(pw, w) }
+        return CGSize(width: w, height: h)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        var y = bounds.minY
+        for r in rows(sizes, width: bounds.width) {
+            let rowW = r.map { sizes[$0].width }.reduce(0, +) + spacing * CGFloat(max(0, r.count - 1))
+            let rowH = r.map { sizes[$0].height }.max() ?? 0
+            var x = center ? bounds.minX + (bounds.width - rowW) / 2 : bounds.minX
+            for i in r {
+                subviews[i].place(at: CGPoint(x: x, y: y + (rowH - sizes[i].height) / 2), proposal: ProposedViewSize(sizes[i]))
+                x += sizes[i].width + spacing
+            }
+            y += rowH + lineSpacing
+        }
+    }
+}
+
+/// One karaoke line, Apple Music style: each word fills from left to right while it is sung; held notes
+/// swell and glow, their letters rising one after another; the line's glow follows the bass.
 struct KaraokeLine: View {
     let words: [Lyrics.TimedWord]
     let now: Double
     let size: CGFloat
     var active = true
+    var center = false
+    var pulse = 0.0
 
     var body: some View {
-        words.enumerated().reduce(Text("")) { acc, item in
-            let (i, w) = item
-            let p = active ? w.progress(now) : 0
-            // Sung words full white, the word being sung brightens as it goes, the rest stays dim.
-            let opacity = active ? 0.32 + 0.68 * p : 0.32
-            return acc + Text(w.text + (i < words.count - 1 ? " " : "")).foregroundColor(.white.opacity(opacity))
+        WordFlow(center: center, spacing: size * 0.26, lineSpacing: size * 0.08) {
+            ForEach(Array(words.enumerated()), id: \.offset) { _, w in
+                KaraokeWord(word: w, now: now, size: size, active: active, pulse: pulse)
+            }
         }
-        .font(.system(size: size, weight: .bold, design: .rounded))
-        .shadow(color: .white.opacity(active ? 0.25 : 0), radius: 12)
+        .shadow(color: .white.opacity(active ? 0.18 + 0.35 * pulse : 0), radius: size * (0.25 + 0.3 * pulse))
     }
 }
 
-/// Three dots that fill up during an instrumental break before the next line.
+struct KaraokeWord: View {
+    let word: Lyrics.TimedWord
+    let now: Double
+    let size: CGFloat
+    let active: Bool
+    let pulse: Double
+
+    private var font: Font { .system(size: size, weight: .bold, design: .rounded) }
+
+    // The view keeps the same structure for the whole song (a held word is always drawn letter by letter,
+    // with its room for the swell always reserved): switching structure or reflowing the line mid-word
+    // made the text flicker.
+    var body: some View {
+        let p = active ? word.progress(now) : 0
+        if word.held { held(p) } else { filled(p) }
+    }
+
+    /// Dim word with a bright copy revealed by a soft-edged sweep.
+    private func filled(_ p: Double) -> some View {
+        let edge = min(1, p * 1.15)
+        return Text(word.text).font(font).foregroundColor(.white.opacity(0.32))
+            .overlay(alignment: .leading) {
+                Text(word.text).font(font).foregroundColor(.white)
+                    .mask(LinearGradient(stops: [.init(color: .black, location: min(edge, max(0, edge - 0.15))),
+                                                 .init(color: .clear, location: edge)],
+                                         startPoint: .leading, endPoint: .trailing))
+            }
+    }
+
+    /// Held note: letters light and lift in sequence across the hold; the word swells and glows, then settles.
+    private func held(_ p: Double) -> some View {
+        let letters = Array(word.text)
+        let n = Double(max(1, letters.count))
+        // Swell up quickly, stay while held, ease back once the note ends.
+        let after = max(0, now - word.end)
+        let env: Double = !active || p <= 0 ? 0 : (after > 0 ? max(0, 1 - after / 0.6) : min(1, p * 4))
+        return HStack(spacing: 0) {
+            ForEach(Array(letters.enumerated()), id: \.offset) { k, ch in
+                let lp = max(0, min(1, p * n - Double(k)))
+                let wave = sin(.pi * lp)
+                Text(String(ch)).font(font)
+                    .foregroundColor(.white.opacity(0.32 + 0.68 * lp))
+                    .offset(y: -size * 0.09 * wave * env)
+                    .scaleEffect(1 + 0.12 * wave * env, anchor: .bottom)
+            }
+        }
+        .scaleEffect(1 + (0.07 + 0.03 * pulse) * env)
+        .shadow(color: .white.opacity((0.55 + 0.3 * pulse) * env), radius: max(0.01, size * 0.35 * env))
+        .padding(.horizontal, size * 0.12)   // fixed room for the swell: the line never reflows
+    }
+}
+
+/// Playback time for lyrics animations: advances smoothly with the wall clock between the engine's
+/// position updates (which come in steps and can wobble back a few ms), drifting gently toward the real
+/// position and jumping only on a seek.
+final class LyricsClock {
+    static let shared = LyricsClock()
+    private var base = 0.0
+    private var baseWall = Date()
+    private var last = 0.0
+
+    func time(_ audio: AudioEngine) -> Double {
+        let actual = audio.currentTime
+        let wall = Date()
+        guard audio.state == .playing else {
+            base = actual; baseWall = wall; last = actual
+            return actual
+        }
+        var t = base + wall.timeIntervalSince(baseWall) * max(0.25, audio.rate)
+        let error = actual - t
+        if abs(error) > 0.25 {
+            base = actual; baseWall = wall; t = actual          // seek, track change, stall
+        } else {
+            base += error * 0.06; t += error * 0.06             // ease toward the real position
+        }
+        if t < last, last - t < 0.25 { t = last }               // never wobble backwards
+        last = t
+        return t
+    }
+}
+
+/// Three dots that fill up during an instrumental break before the next line, beating with the bass.
 struct BreakDots: View {
     let progress: Double
     let size: CGFloat
+    var kick = 0.0
     var body: some View {
         HStack(spacing: size * 0.5) {
             ForEach(0..<3) { i in
-                Circle().fill(.white.opacity(0.25 + 0.75 * max(0, min(1, progress * 3 - Double(i)))))
+                let f = max(0, min(1, progress * 3 - Double(i)))
+                Circle().fill(.white.opacity(0.25 + 0.75 * f))
                     .frame(width: size, height: size)
-                    .scaleEffect(0.8 + 0.2 * max(0, min(1, progress * 3 - Double(i))))
+                    .scaleEffect(0.8 + 0.2 * f + 0.25 * kick)
+                    .shadow(color: .white.opacity(0.5 * kick * f), radius: size * 0.6)
             }
         }
     }
@@ -259,9 +427,10 @@ struct LyricsView: View {
     /// Apple Music–style: current line bright with per-word highlight, the others dimmed and softly blurred.
     private func synced(_ l: Lyrics) -> some View {
         let lines = l.synced ?? []
-        return TimelineView(.animation(minimumInterval: 1.0 / 30)) { _ in
-            let now = ctl.audio.currentTime + 0.12
+        return TimelineView(.animation(minimumInterval: 1.0 / 60)) { _ in
+            let now = LyricsClock.shared.time(ctl.audio) + 0.12
             let current = l.lineIndex(at: now)
+            let music = { MusicPulse.shared.update(ctl.audio); return MusicPulse.shared }()
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: fontSize * 0.7) {
@@ -270,9 +439,9 @@ struct LyricsView: View {
                             Group {
                                 if i == current {
                                     if line.text.isEmpty {
-                                        BreakDots(progress: (now - line.time) / max(1, l.gap(after: i)), size: fontSize * 0.4)
+                                        BreakDots(progress: (now - line.time) / max(1, l.gap(after: i)), size: fontSize * 0.4, kick: music.kick)
                                     } else {
-                                        KaraokeLine(words: l.timedWords(i), now: now, size: fontSize)
+                                        KaraokeLine(words: l.timedWords(i), now: now, size: fontSize, pulse: music.bass)
                                     }
                                 } else {
                                     Text(line.text.isEmpty ? "♪" : line.text)
@@ -390,7 +559,7 @@ struct KaraokeView: View {
         GeometryReader { geo in
             let big = min(geo.size.width / 16, geo.size.height / 7)
             ZStack {
-                TimelineView(.animation(minimumInterval: 1.0 / 30)) { _ in
+                TimelineView(.animation) { _ in
                     stage(big: big)
                 }
                 .padding(.horizontal, geo.size.width * 0.08)
@@ -399,7 +568,12 @@ struct KaraokeView: View {
                     footer
                 }
             }
-            .background(LyricsBackdrop(cover: cover.image))
+            .background(
+                // Full screen: the blurred cover breathes with the bass.
+                TimelineView(.animation(minimumInterval: 1.0 / 30)) { _ in
+                    LyricsBackdrop(cover: cover.image, pulse: { MusicPulse.shared.update(ctl.audio); return MusicPulse.shared.bass }())
+                }
+            )
         }
         .environment(\.colorScheme, .dark)
         .onAppear { cover.update(ctl.playlist.currentTrack?.url) }
@@ -408,7 +582,8 @@ struct KaraokeView: View {
 
     @ViewBuilder
     private func stage(big: CGFloat) -> some View {
-        let now = ctl.audio.currentTime + 0.12
+        let now = LyricsClock.shared.time(ctl.audio) + 0.12
+        let music = { MusicPulse.shared.update(ctl.audio); return MusicPulse.shared }()
         if case .found(let l) = service.state, let lines = l.synced, !ctl.audio.isStream {
             let cur = l.lineIndex(at: now)
             let first = lines.first?.time ?? 0
@@ -420,11 +595,11 @@ struct KaraokeView: View {
                 // current (or the intro / a break)
                 Group {
                     if let c = cur, !lines[c].text.isEmpty {
-                        KaraokeLine(words: l.timedWords(c), now: now, size: big)
+                        KaraokeLine(words: l.timedWords(c), now: now, size: big, center: true, pulse: music.bass)
                     } else if let c = cur {
-                        BreakDots(progress: (now - lines[c].time) / max(1, l.gap(after: c)), size: big * 0.35)
+                        BreakDots(progress: (now - lines[c].time) / max(1, l.gap(after: c)), size: big * 0.35, kick: music.kick)
                     } else {
-                        BreakDots(progress: first > 0 ? now / first : 1, size: big * 0.35)
+                        BreakDots(progress: first > 0 ? now / first : 1, size: big * 0.35, kick: music.kick)
                     }
                 }
                 .multilineTextAlignment(.center)

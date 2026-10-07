@@ -20,6 +20,9 @@ struct Lyrics: Codable, Equatable {
         var start: Double
         var end: Double
         var text: String
+        /// Sung much longer than the other words of the line (a held note): the karaoke emphasises it.
+        var held = false
+        var duration: Double { end - start }
         /// 0 before, 1 after, in between while sung.
         func progress(_ t: Double) -> Double { end <= start ? (t >= start ? 1 : 0) : max(0, min(1, (t - start) / (end - start))) }
     }
@@ -31,10 +34,10 @@ struct Lyrics: Codable, Equatable {
         let line = s[i]
         let next = i + 1 < s.count ? s[i + 1].time : line.time + 6
         if let w = line.words, !w.isEmpty {
-            return w.enumerated().map { k, word in
-                TimedWord(start: word.time, end: k + 1 < w.count ? w[k + 1].time : max(word.time + 0.3, min(next, word.time + 1.5)),
+            return Lyrics.markHeld(w.enumerated().map { k, word in
+                TimedWord(start: word.time, end: k + 1 < w.count ? w[k + 1].time : max(word.time + 0.3, min(next - 0.15, word.time + 4)),
                           text: word.text)
-            }
+            })
         }
         let tokens = line.text.split(separator: " ").map(String.init)
         guard !tokens.isEmpty else { return [] }
@@ -42,10 +45,28 @@ struct Lyrics: Codable, Equatable {
         // ~13 characters per second plus a little breath, never past the next line.
         let span = max(0.4, min(next - line.time - 0.1, Double(chars) / 13 + 0.5))
         var t = line.time
-        return tokens.map { tok in
+        var words = tokens.map { tok -> TimedWord in
             let d = span * Double(max(1, tok.count)) / Double(chars)
             defer { t += d }
             return TimedWord(start: t, end: t + d, text: tok)
+        }
+        // Much more time than the words need: the phrase usually ends on a held note.
+        let spare = next - 0.2 - t
+        if spare > 0.8, words.count > 1, let last = words.last {
+            words[words.count - 1].end = min(last.end + spare, last.end + 3)
+        }
+        return Lyrics.markHeld(words)
+    }
+
+    /// Flags words sung for at least 0.8 s and over twice the line's median word length.
+    static func markHeld(_ words: [TimedWord]) -> [TimedWord] {
+        guard words.count > 1 else { return words }
+        let sorted = words.map(\.duration).sorted()
+        let median = sorted[sorted.count / 2]
+        return words.map { w in
+            var x = w
+            x.held = w.duration >= max(0.8, median * 2.2)
+            return x
         }
     }
 
@@ -155,7 +176,7 @@ final class LyricsService: ObservableObject {
     @Published private(set) var query: Query?
     private var request = 0
 
-    static let userAgent = "MusicAmp/0.1 (https://github.com/nicolorisitano82/MusicAmp)"
+    static let userAgent = "MusicAmp/0.2 (https://github.com/nicolorisitano82/MusicAmp)"
 
     private var cacheDir: URL {
         let u = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

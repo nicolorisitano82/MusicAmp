@@ -52,7 +52,7 @@ La compilazione avviene in background (`MilkdropRenderer.prepare` su una coda se
 
 ### Audio
 
-`bass`, `mid` e `treb` valgono circa 1 sulla media e superano 1 nei picchi: l'energia istantanea è divisa per una media lunga. Le versioni `_att` sono smussate. Gli 576 campioni stereo e lo spettro a 512 bin alimentano le onde.
+`bass`, `mid` e `treb` valgono circa 1 sulla media e superano 1 nei picchi: l'energia istantanea è divisa per una media lunga. Le versioni `_att` sono smussate. I 576 campioni stereo e lo spettro a 512 bin alimentano le onde.
 
 ## Shader di Milkdrop 2: HLSL → Metal
 

@@ -16,9 +16,13 @@ enum FFmpeg {
     static let ffprobePath: String? = locate("ffprobe")
     static var available: Bool { enabled && ffmpegPath != nil && ffprobePath != nil }
 
+    /// The copy bundled in MusicAmp.app (Contents/Helpers, LGPL build) comes first; then MUSICAMP_FFMPEG_DIR,
+    /// then an installed one (Homebrew, MacPorts, PATH).
     private static func locate(_ tool: String) -> String? {
-        var dirs = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"]
-        if let res = Bundle.main.resourcePath { dirs.insert(res, at: 0) }
+        var dirs = [Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers").path]
+        if let res = Bundle.main.resourcePath { dirs.append(res) }
+        if let d = ProcessInfo.processInfo.environment["MUSICAMP_FFMPEG_DIR"] { dirs.append(d) }
+        dirs += ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"]
         dirs += (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
         return dirs.map { "\($0)/\(tool)" }.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
@@ -105,12 +109,18 @@ final class FFmpegDecoder {
         format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: AVAudioChannelCount(channels))!
     }
 
+    /// Live streams are downloaded here (URLSession, system TLS) and written to ffmpeg's stdin, so the
+    /// bundled ffmpeg needs no network support.
+    private var feeder: StreamFeeder?
+    private static let ignoreSIGPIPE: Void = { signal(SIGPIPE, SIG_IGN) }()   // a closed pipe must not kill the app
+
     func start() {
         guard let exe = FFmpeg.ffmpegPath else { onEnd?(StreamError.unsupported("FFmpeg mancante")); return }
-        var args = ["-nostdin", "-hide_banner", "-v", "error"]
-        if live { args += ["-reconnect", "1", "-reconnect_streamed", "1", "-user_agent", RadioStream.userAgent] }
+        _ = FFmpegDecoder.ignoreSIGPIPE
+        var args = ["-hide_banner", "-v", "error"]
+        if !live { args.insert("-nostdin", at: 0) }
         if startOffset > 0 { args += ["-ss", String(format: "%.3f", startOffset)] }
-        args += ["-i", input, "-vn", "-sn", "-map", "0:a:0", "-f", "f32le", "-acodec", "pcm_f32le",
+        args += ["-i", live ? "pipe:0" : input, "-vn", "-sn", "-map", "0:a:0", "-f", "f32le", "-acodec", "pcm_f32le",
                  "-ac", "\(format.channelCount)", "-ar", "\(Int(format.sampleRate))", "pipe:1"]
         let p = Process()
         p.executableURL = URL(fileURLWithPath: exe)
@@ -118,9 +128,20 @@ final class FFmpegDecoder {
         let out = Pipe()
         p.standardOutput = out
         p.standardError = FileHandle.nullDevice
-        p.standardInput = FileHandle.nullDevice
+        let inPipe = Pipe()
+        p.standardInput = live ? inPipe : FileHandle.nullDevice
         do { try p.run() } catch { onEnd?(error); return }
         lock.lock(); process = p; lock.unlock()
+        if live, let u = URL(string: input) {
+            let f = StreamFeeder(url: u, to: inPipe.fileHandleForWriting)
+            f.onFailure = { [weak self] err in
+                guard let self, !self.isCancelled else { return }
+                self.liveError = err
+                p.terminate()
+            }
+            feeder = f
+            f.start()
+        }
         let handle = out.fileHandleForReading
         let ch = Int(format.channelCount)
         let framesPerChunk = 8192
@@ -145,6 +166,8 @@ final class FFmpegDecoder {
             }
             p.waitUntilExit()
             guard let self, !self.isCancelled else { return }
+            // A live stream never ends cleanly: report it so the engine reconnects.
+            if self.live { self.onEnd?(self.liveError ?? StreamError.ended); return }
             self.onEnd?(p.terminationStatus == 0 || p.terminationStatus == 255 ? nil : StreamError.ended)
         }
     }
@@ -156,6 +179,63 @@ final class FFmpegDecoder {
         cancelled = true
         let p = process
         lock.unlock()
+        feeder?.cancel()
         if let p, p.isRunning { p.terminate() }
+    }
+
+    private var liveError: Error?
+}
+
+/// Downloads a live stream and writes it to a pipe (ffmpeg's stdin); closing the pipe ends ffmpeg's input.
+final class StreamFeeder: NSObject, URLSessionDataDelegate {
+    private let url: URL
+    private let handle: FileHandle
+    private var session: URLSession?
+    var onFailure: ((Error) -> Void)?
+    private let queue: OperationQueue = {
+        let q = OperationQueue()
+        q.maxConcurrentOperationCount = 1
+        return q
+    }()
+
+    init(url: URL, to handle: FileHandle) {
+        self.url = url
+        self.handle = handle
+    }
+
+    func start() {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 15
+        let s = URLSession(configuration: cfg, delegate: self, delegateQueue: queue)
+        var req = URLRequest(url: url)
+        req.setValue(RadioStream.userAgent, forHTTPHeaderField: "User-Agent")
+        session = s
+        s.dataTask(with: req).resume()
+    }
+
+    func cancel() {
+        session?.invalidateAndCancel()
+        try? handle.close()
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        if let h = response as? HTTPURLResponse, !(200..<300).contains(h.statusCode) {
+            completionHandler(.cancel)
+            onFailure?(StreamError.http(h.statusCode))
+            return
+        }
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        // Blocks while ffmpeg is behind (the pipe is full): natural back-pressure on the download.
+        do { try handle.write(contentsOf: data) } catch { session.invalidateAndCancel() }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        try? handle.close()
+        if let error, (error as NSError).code != NSURLErrorCancelled { onFailure?(error) }
+        session.finishTasksAndInvalidate()
     }
 }

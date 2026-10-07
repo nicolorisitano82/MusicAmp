@@ -34,6 +34,11 @@ final class AudioEngine {
 
     // Remote file (podcast episode not downloaded): AVPlayer streams it with seek and speed.
     private var remote: AVPlayer?
+    /// Hands the episode's audio from AVPlayer to our graph (EQ, visualizer, Milkdrop); see RemoteTap.swift.
+    private var remoteTap: RemoteAudioTap?
+    private var remoteToken = 0
+    /// The streamed episode now plays through our graph.
+    var remoteBridged: Bool { remoteTap?.bridged == true }
     private var remoteEnd: NSObjectProtocol?
     /// Remote seekable file is the source (not a live stream).
     var isRemote: Bool { remote != nil }
@@ -117,6 +122,8 @@ final class AudioEngine {
     private var wave = [Float](repeating: 0, count: 76)
     /// Milkdrop input: 576 stereo samples, a 512-bin spectrum and raw bass/mid/treble energy.
     var milkdropEnabled = false
+    /// Every block leaving the EQ (tests measure levels here: a node takes only one tap).
+    var onTap: ((AVAudioPCMBuffer) -> Void)?
     private var mdLeft = [Float](repeating: 0, count: 576), mdRight = [Float](repeating: 0, count: 576)
     private var mdSpectrum = [Float](repeating: 0, count: 512)
     private var mdBands: (Float, Float, Float) = (0, 0, 0)
@@ -155,7 +162,9 @@ final class AudioEngine {
         engine.connect(timePitch, to: eq, format: bus)
         timePitch.bypass = true
         engine.connect(eq, to: engine.mainMixerNode, format: bus)
-        engine.mainMixerNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buf, _ in
+        // Analysis after the EQ but before the volume, like Winamp: the visualizer moves even at volume 0.
+        eq.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buf, _ in
+            self?.onTap?(buf)
             self?.analyze(buf)
         }
         NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
@@ -256,8 +265,9 @@ final class AudioEngine {
 
     func play() {
         if let r = remote {
-            if state == .playing { r.seek(to: .zero) }
+            if state == .playing { r.seek(to: .zero); player.stop() }
             r.playImmediately(atRate: Float(rate))
+            if remoteTap?.bridged == true { startEngine(); player.play() }
             state = .playing
             onChange?()
             return
@@ -307,6 +317,7 @@ final class AudioEngine {
             if state == .playing {
                 pausedTime = currentTime
                 r.pause()
+                player.pause()
                 state = .paused
                 onChange?()
             } else if state == .paused {
@@ -344,6 +355,7 @@ final class AudioEngine {
         if let r = remote {
             r.pause()
             r.seek(to: .zero)
+            player.stop()
             state = .stopped
             pausedTime = 0
             onChange?()
@@ -367,6 +379,11 @@ final class AudioEngine {
         if let r = remote {
             let t = max(0, duration > 0 ? min(duration, time) : time)
             r.seek(to: CMTime(seconds: t, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+            if remoteTap?.bridged == true {
+                // Drop audio already queued from the old position.
+                player.stop()
+                if state == .playing { player.play() }
+            }
             if state != .playing { pausedTime = t }
             onChange?()
             return
@@ -646,15 +663,23 @@ final class AudioEngine {
 
     private func applyRate() {
         let r = max(0.5, min(3, rate)), p = max(-1200, min(1200, pitchCents))
-        timePitch.rate = Float(r)
-        timePitch.pitch = Float(p)
-        timePitch.bypass = abs(r - 1) < 0.001 && abs(p) < 0.5
+        if remote != nil {
+            // AVPlayer already plays the episode at this speed (the tap gets stretched audio).
+            timePitch.rate = 1
+            timePitch.pitch = Float(p)
+            timePitch.bypass = abs(p) < 0.5
+        } else {
+            timePitch.rate = Float(r)
+            timePitch.pitch = Float(p)
+            timePitch.bypass = abs(r - 1) < 0.001 && abs(p) < 0.5
+        }
         if let rp = remote, state == .playing { rp.rate = Float(r) }
     }
 
     // MARK: Remote files (podcast episodes streamed before download)
 
-    /// Streams a remote audio file with AVPlayer: seekable, speed-adjustable (EQ and visualizer need a download).
+    /// Streams a remote audio file with AVPlayer (seekable, speed with clear speech); its audio is tapped into
+    /// our graph, so EQ, balance, output device, visualizer and Milkdrop work as for local files.
     func playRemote(_ url: URL, at start: Double = 0, index: Int? = nil) {
         stop()
         endStream()
@@ -674,6 +699,28 @@ final class AudioEngine {
             self.onFinish?()
         }
         remote = p
+        remoteToken &+= 1
+        let tok = remoteToken
+        let tap = RemoteAudioTap()
+        tap.onFormat = { [weak self, weak tap] fmt in
+            DispatchQueue.main.async {
+                guard let self, let tap, self.remoteToken == tok, self.remote === p else { return }
+                self.player.stop()
+                self.engine.stop()
+                self.connect(self.cur, fmt)
+                self.deck.gain.globalGain = 0
+                self.applyRate()
+                self.startEngine()
+                if self.state == .playing { self.player.play() }
+                tap.bridged = true
+            }
+        }
+        tap.onBuffer = { [weak self, weak tap] buf in
+            guard let self, let tap, tap.bridged else { return }
+            self.player.scheduleBuffer(buf, completionHandler: nil)
+        }
+        tap.attach(to: item)
+        remoteTap = tap
         if start > 0 { p.seek(to: CMTime(seconds: start, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) }
         p.playImmediately(atRate: Float(max(0.5, min(3, rate))))
         state = .playing
@@ -684,7 +731,12 @@ final class AudioEngine {
         if let o = remoteEnd { NotificationCenter.default.removeObserver(o) }
         remoteEnd = nil
         remote?.pause()
+        if remoteTap?.bridged == true { player.stop() }
+        remoteTap?.bridged = false
+        remoteTap = nil
+        remoteToken &+= 1
         remote = nil
+        applyRate()
     }
 
     // MARK: FFmpeg
@@ -830,7 +882,7 @@ final class AudioEngine {
         reconnects = 0
         lastKnownTime = 0
         state = .playing
-        if url.pathExtension.lowercased() == "m3u8" { startHLS(url) } else { startRadio(url) }
+        startRadio(url, hls: url.pathExtension.lowercased() == "m3u8")
         onChange?()
     }
 
@@ -857,10 +909,11 @@ final class AudioEngine {
         }
     }
 
-    private func startRadio(_ url: URL) {
+    /// HLS goes through our own client too (HLSFetcher); only what it cannot handle falls back to AVPlayer.
+    private func startRadio(_ url: URL, hls: Bool = false) {
         radioToken &+= 1
         let tok = radioToken
-        let r = RadioStream(url: url)
+        let r = RadioStream(url: url, hls: hls)
         r.onHeaders = { [weak self] h in
             DispatchQueue.main.async {
                 guard let self, self.radioToken == tok else { return }
@@ -898,13 +951,18 @@ final class AudioEngine {
             DispatchQueue.main.async {
                 guard let self, self.radioToken == tok else { return }
                 self.radio = nil
-                if isHLS { self.startHLS(u) } else { self.startRadio(u) }
+                self.startRadio(u, hls: isHLS)
             }
         }
         r.onEnd = { [weak self] err in
             DispatchQueue.main.async {
                 guard let self, self.radioToken == tok, self.state == .playing else { return }
-                self.streamFailed(err, retry: { self.startRadio(url) })
+                if hls, case HLSFetcher.HLSError.unsupported? = err {
+                    self.radio = nil
+                    self.startHLS(url)   // fMP4, encrypted or LATM: AVPlayer can still play it
+                    return
+                }
+                self.streamFailed(err, retry: { self.startRadio(url, hls: hls) })
             }
         }
         radio = r
@@ -983,7 +1041,8 @@ final class AudioEngine {
         }
     }
 
-    /// HLS (.m3u8): AVPlayer plays it; EQ and visualizer are not available on this path.
+    /// HLS that our client cannot handle (fMP4, encrypted, LATM): AVPlayer plays it; EQ and visualizer are not
+    /// available on this path.
     private func startHLS(_ url: URL) {
         radioToken &+= 1
         radio?.cancel()

@@ -494,7 +494,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         let now = Date()
         let playing = audio.state == .playing
         let showVis = visShown
-        audio.analysisEnabled = playing && (showVis || audio.milkdropEnabled)
+        let lyricsOpen = lyricsWindowRef?.isVisible == true || karaokeWindowRef?.isVisible == true   // karaoke follows the music
+        audio.analysisEnabled = playing && (showVis || audio.milkdropEnabled || lyricsOpen)
         var animating = false
         if showVis {
             animating = updateVis(playing: playing) || playing

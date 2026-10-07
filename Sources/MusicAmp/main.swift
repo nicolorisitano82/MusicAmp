@@ -1,5 +1,7 @@
 import AppKit
+import SwiftUI
 import Metal
+import CommonCrypto
 import AVFoundation
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -332,6 +334,71 @@ if let i = CommandLine.arguments.firstIndex(of: "--test-milkdrop") {
     exit(failures == 0 ? 0 : 1)
 }
 
+/// Debug: `MusicAmp --karaoke-snapshot out.png`: renders karaoke lines (made-up words) at chosen instants.
+if let i = CommandLine.arguments.firstIndex(of: "--karaoke-snapshot"), CommandLine.arguments.count > i + 1 {
+    let lrc = LRC.parse("[00:01.00]<00:01.00>la <00:01.30>luce <00:01.60>sale <00:01.90>piano <00:02.20>sooopra <00:05.20>noi\n[00:06.00]fine\n") ?? []
+    let words = Lyrics(plain: nil, synced: lrc, source: "test").timedWords(0)
+    let shots: [(String, Double, Double)] = [("riempimento a metà di \"sale\"", 1.75, 0), ("parola tenuta: inizio", 2.6, 0.2),
+                                             ("parola tenuta: a metà, bassi forti", 3.7, 0.9), ("parola tenuta: fine", 5.1, 0.3)]
+    MainActor.assumeIsolated {
+    let view = VStack(alignment: .leading, spacing: 26) {
+        ForEach(Array(shots.enumerated()), id: \.offset) { _, s in
+            VStack(alignment: .leading, spacing: 6) {
+                Text(s.0).font(.system(size: 13)).foregroundColor(.white.opacity(0.6))
+                KaraokeLine(words: words, now: s.1, size: 44, pulse: s.2)
+            }
+        }
+    }
+    .padding(40)
+    .frame(width: 900)
+    .background(Color(red: 0.1, green: 0.08, blue: 0.2))
+    let r = ImageRenderer(content: view)
+    r.scale = 1
+    if let img = r.cgImage { try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: CommandLine.arguments[i + 1])) }
+    }
+    exit(0)
+}
+
+/// Debug: `MusicAmp --karaoke-sweep`: renders a karaoke line at 120 consecutive instants (through a held word)
+/// and reports frame-to-frame change, to catch flicker (isolated spikes) and layout jumps (size changes).
+if CommandLine.arguments.contains("--karaoke-sweep") {
+    let lrc = LRC.parse("[00:01.00]<00:01.00>la <00:01.30>luce <00:01.60>sale <00:01.90>piano <00:02.20>sooopra <00:05.20>noi\n[00:06.00]fine\n") ?? []
+    let words = Lyrics(plain: nil, synced: lrc, source: "test").timedWords(0)
+    var frames: [[UInt8]] = []
+    var sizes = Set<String>()
+    let step = 1.0 / 60
+    MainActor.assumeIsolated {
+        for k in 0..<330 {   // 5.5 s at 60 fps, through the held word and its settle
+            let t = 1.0 + Double(k) * step
+            let r = ImageRenderer(content: KaraokeLine(words: words, now: t, size: 40, pulse: 0.3)
+                .frame(width: CGFloat(Double(ProcessInfo.processInfo.environment["KARAOKE_W"] ?? "800") ?? 800), alignment: .leading).padding(20).background(Color.black))
+            r.scale = 1
+            guard let img = r.cgImage, let data = img.dataProvider?.data as Data? else { continue }
+            sizes.insert("\(img.width)x\(img.height)")
+            frames.append([UInt8](data))
+        }
+    }
+    func diff(_ a: [UInt8], _ b: [UInt8]) -> Double {
+        guard a.count == b.count else { return 255 }
+        var d = 0
+        for i in stride(from: 0, to: a.count, by: 4) { d += abs(Int(a[i]) - Int(b[i])) }
+        return Double(d) / Double(a.count / 4)
+    }
+    // Flicker: frame i jumps away from both neighbours while the neighbours are alike (out and back).
+    var flicker = 0, maxStep = 0.0
+    for i in 1..<max(1, frames.count - 1) {
+        let a = diff(frames[i - 1], frames[i]), b = diff(frames[i], frames[i + 1]), around = diff(frames[i - 1], frames[i + 1])
+        maxStep = max(maxStep, a)
+        if min(a, b) > 0.3, around < 0.5 * min(a, b) {
+            flicker += 1
+            print(String(format: "  sfarfallio a t=%.3f: %.2f / %.2f, vicini tra loro %.2f", 1.0 + Double(i) * step, a, b, around))
+        }
+    }
+    print(String(format: "fotogrammi %d a 60 fps, dimensioni %@, salto massimo tra fotogrammi %.2f, sfarfallii %d",
+                 frames.count, sizes.sorted().joined(separator: ","), maxStep, flicker))
+    exit(flicker == 0 && sizes.count == 1 ? 0 : 1)
+}
+
 /// Debug: `MusicAmp --milkdrop-snapshot file.milk out.png [frames]`: renders a preset with synthetic audio and saves the last frame.
 if let i = CommandLine.arguments.firstIndex(of: "--milkdrop-snapshot"), CommandLine.arguments.count > i + 2,
    let p = MilkPreset.load(URL(fileURLWithPath: CommandLine.arguments[i + 1])), let rd = MilkdropRenderer() {
@@ -625,6 +692,64 @@ if let i = CommandLine.arguments.firstIndex(of: "--self-test") {
     let closed = PlaylistTree(tt, collapsed: ["b:a|x", "a:b"])
     check(closed.rows.count == tree.rows.count - 4 && closed.rowOfTrack[2] == 1 && closed.rowOfTrack[1] == 5,
           "albero: album e artista chiusi nascondono i brani, che puntano all'intestazione")
+    // HLS: MPEG-TS demux (PAT → PMT → PES) and ID3 titles, on a hand-made segment.
+    func tsPacket(_ pid: Int, start: Bool, _ payload: [UInt8]) -> [UInt8] {
+        var p: [UInt8] = [0x47, UInt8((start ? 0x40 : 0) | (pid >> 8)), UInt8(pid & 0xFF), 0x10] + payload
+        if p.count < 188 {
+            // Pad with an adaptation field so the payload ends exactly at 188 bytes.
+            let pad = 188 - p.count
+            p[3] = 0x30
+            p.insert(contentsOf: [UInt8(pad - 1)] + (pad > 1 ? [0x00] + Array(repeating: 0xFF, count: pad - 2) : []), at: 4)
+        }
+        return p
+    }
+    func id3(_ frames: [(String, String)]) -> [UInt8] {
+        var body: [UInt8] = []
+        for (id, text) in frames {
+            let data: [UInt8] = [3] + Array(text.utf8)
+            body += Array(id.utf8) + [0, 0, 0, UInt8(data.count)] + [0, 0] + data
+        }
+        return Array("ID3".utf8) + [4, 0, 0, 0, 0, 0, UInt8(body.count)] + body
+    }
+    let pat: [UInt8] = [0, 0x00, 0xB0, 13, 0, 1, 0xC1, 0, 0, 0, 1, 0xE1, 0x00, 0, 0, 0, 0]
+    let pmt: [UInt8] = [0, 0x02, 0xB0, 23, 0, 1, 0xC1, 0, 0, 0xE1, 0x01, 0xF0, 0,
+                        0x0F, 0xE1, 0x01, 0xF0, 0, 0x15, 0xE1, 0x02, 0xF0, 0, 0, 0, 0, 0]
+    let adts: [UInt8] = [0xFF, 0xF1, 0x50, 0x80, 0x02, 0x1F, 0xFC] + Array(repeating: 0x21, count: 200)
+    let pesHeader: [UInt8] = [0, 0, 1, 0xC0, 0, 0, 0x80, 0x80, 5, 0x21, 0, 1, 0, 1]
+    let tag = id3([("TPE1", "Artista"), ("TIT2", "Titolo")])
+    var ts = tsPacket(0, start: true, pat) + tsPacket(0x100, start: true, pmt)
+    ts += tsPacket(0x101, start: true, pesHeader + Array(adts[0..<150]))
+    ts += tsPacket(0x101, start: false, Array(adts[150...]))
+    ts += tsPacket(0x102, start: true, [0, 0, 1, 0xBD, 0, 0, 0x80, 0x80, 5, 0x21, 0, 1, 0, 1] + tag)
+    let fetcher = HLSFetcher(url: URL(string: "https://example.com/a.m3u8")!)
+    var got: String?
+    fetcher.onTitle = { got = $0 }
+    if let (es, type) = try? fetcher.demux(Data(ts)) {
+        check([UInt8](es) == adts && type == kAudioFileAAC_ADTSType, "hls: demux TS → \(es.count) byte AAC ADTS, intatti attraverso due pacchetti")
+    } else { check(false, "hls: demux TS") }
+    check(got == "Artista - Titolo", "hls: titolo ID3 dal flusso di metadati (\(got ?? "nessuno"))")
+    let packed = Data(id3([("TIT2", "Solo titolo")]) + adts)
+    got = nil
+    let pk = try? fetcher.demux(packed)
+    check(pk?.0.count == adts.count && pk?.1 == kAudioFileAAC_ADTSType && got == "Solo titolo", "hls: audio packed con tag ID3 iniziale")
+    let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=64000\nlow.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=128000\nmid.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\nvideo.m3u8\n"
+    check(HLSFetcher.pickVariant(master, base: URL(string: "https://x.y/radio/master.m3u8")!)?.0.absoluteString == "https://x.y/radio/mid.m3u8", "hls: variante audio migliore fino a 320 kb/s")
+    let media = "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:41\n#EXTINF:6.0,\nseg41.ts\n#EXTINF:6.0,\nseg42.ts\n"
+    let mpl = try? HLSFetcher.parseMedia(media, base: URL(string: "https://x.y/radio/live.m3u8")!)
+    check(mpl?.firstSeq == 41 && mpl?.segments.count == 2 && mpl?.segments[1].url.absoluteString == "https://x.y/radio/seg42.ts", "hls: playlist media, sequenza e URL relativi")
+    let enc = try? HLSFetcher.parseMedia("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:7\n#EXT-X-KEY:METHOD=AES-128,URI=\"../k.key\"\n#EXTINF:6,\na.ts\n#EXT-X-KEY:METHOD=NONE\n#EXTINF:6,\nb.ts\n", base: URL(string: "https://x.y/r/live.m3u8")!)
+    check(enc?.segments[0].key?.absoluteString == "https://x.y/k.key" && enc?.segments[1].key == nil, "hls: EXT-X-KEY AES-128 (URI relativo) e METHOD=NONE")
+    check((try? HLSFetcher.parseMedia("#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"k\"\n#EXTINF:6,\na.ts\n", base: URL(string: "https://x.y/")!)) == nil,
+          "hls: SAMPLE-AES → AVPlayer")
+    // AES-128-CBC round trip with the sequence-number IV.
+    let aesKey = Data((0..<16).map { UInt8($0 * 7 & 0xFF) }), plain = Data(ts.prefix(1000))
+    let iv = HLSFetcher.sequenceIV(1851520)
+    var cipher = Data(count: plain.count + 16), moved = 0
+    let cipherCount = cipher.count
+    _ = cipher.withUnsafeMutableBytes { o in plain.withUnsafeBytes { d in aesKey.withUnsafeBytes { k in
+        CCCrypt(CCOperation(kCCEncrypt), CCAlgorithm(kCCAlgorithmAES), CCOptions(kCCOptionPKCS7Padding), k.baseAddress, 16, iv, d.baseAddress, plain.count, o.baseAddress, cipherCount, &moved) } } }
+    cipher.count = moved
+    check(iv.suffix(4) == [0x00, 0x1C, 0x40, 0x80] && (try? HLSFetcher.decrypt(cipher, key: aesKey, iv: iv)) == plain, "hls: decifratura AES-128-CBC, IV dal numero di sequenza")
     let small = RGBA(width: 2, height: 2)
     check(Skin.scale2x(small.image()!).map { ($0.width, $0.height) } ?? (0, 0) == (4, 4), "scale2x: raddoppia")
     try? FileManager.default.removeItem(at: rdir)
@@ -644,22 +769,29 @@ if let i = CommandLine.arguments.firstIndex(of: "--test-radio"), CommandLine.arg
         if a.stream.title != lastTitle { lastTitle = a.stream.title; print("  title: \(a.stream.title ?? "-")") }
         if let e = a.stream.error { print("  status: \(e)") }
     }
-    var rms: Float = 0
-    a.eq.installTap(onBus: 0, bufferSize: 4096, format: nil) { buf, _ in
-        guard let ch = buf.floatChannelData else { return }
-        var sum: Float = 0
-        for i in 0..<Int(buf.frameLength) { sum += ch[0][i] * ch[0][i] }
-        rms = max(rms, (sum / Float(max(1, buf.frameLength))).squareRoot())
+    var rms: Float = 0   // from the analysis tap (after the EQ, before the volume)
+    if let b = ProcessInfo.processInfo.environment["MUSICAMP_BALANCE"].flatMap(Double.init) { a.setBalance(b) }
+    var lr: (Float, Float) = (0, 0)
+    a.onTap = { buf in
+        guard let d = buf.floatChannelData, buf.format.channelCount >= 2 else { return }
+        var l: Float = 0, r: Float = 0
+        for i in 0..<Int(buf.frameLength) { l += d[0][i] * d[0][i]; r += d[1][i] * d[1][i] }
+        lr = (max(lr.0, (l / Float(max(1, buf.frameLength))).squareRoot()), max(lr.1, (r / Float(max(1, buf.frameLength))).squareRoot()))
     }
+    a.analysisEnabled = true   // normally switched on by the UI timer when a visualizer is shown
+    a.milkdropEnabled = true
     a.playStream(url)
     let start = Date()
-    var peak: Float = 0
+    var peak: Float = 0, mdPeak: Float = 0
     while Date().timeIntervalSince(start) < secs {
         RunLoop.main.run(until: Date().addingTimeInterval(0.25))
         peak = max(peak, a.visData().0.max() ?? 0)
+        let md = a.milkdropData().left
+        mdPeak = max(mdPeak, md.map { abs($0) }.max() ?? 0)
+        rms = max(rms, (md.reduce(0) { $0 + $1 * $1 } / Float(max(1, md.count))).squareRoot())
     }
     print("  name=\(a.stream.name ?? "-") hls=\(a.stream.isHLS) rate=\(Int(a.sampleRate)) ch=\(a.channels) kbps=\(a.bitrate)")
-    print("  state=\(a.state) buffering=\(a.stream.buffering) played=\(String(format: "%.1f", a.currentTime))s vis-peak=\(String(format: "%.2f", peak)) eq-rms=\(String(format: "%.3f", rms)) error=\(a.stream.error ?? "none")")
+    print("  state=\(a.state) buffering=\(a.stream.buffering) played=\(String(format: "%.1f", a.currentTime))s vis-peak=\(String(format: "%.2f", peak)) milkdrop-peak=\(String(format: "%.2f", mdPeak)) eq-rms=\(String(format: "%.3f", rms)) L=\(String(format: "%.3f", lr.0)) R=\(String(format: "%.3f", lr.1)) error=\(a.stream.error ?? "none")")
     exit(a.currentTime > 1 || a.stream.isHLS ? 0 : 1)
 }
 
@@ -697,7 +829,7 @@ if CommandLine.arguments.contains("--test-transitions") {
         e.gapless = true
         var samples: [Float] = []
         let lock = NSLock()
-        e.eq.installTap(onBus: 0, bufferSize: 2048, format: nil) { buf, _ in
+        e.onTap = { buf in
             guard let d = buf.floatChannelData else { return }
             lock.lock(); samples += UnsafeBufferPointer(start: d[0], count: Int(buf.frameLength)); lock.unlock()
         }
@@ -736,6 +868,51 @@ if CommandLine.arguments.contains("--test-transitions") {
     let cfirst = c.rms.firstIndex { $0 > 0.1 } ?? 0
     let cbody = Array(c.rms[cfirst..<min(c.rms.count, cfirst + 290)])
     check((cbody.min() ?? 0) > 0.2, "crossfade: no dip to silence (min rms \(String(format: "%.3f", cbody.min() ?? 0)))")
+
+    // 2b. Balance: left/right level of A (44.1 kHz) and, after the gapless switch, of B (48 kHz, the other
+    //     deck, reconnected for the new format). Changing it mid-track must apply at once too.
+    func balanceRun(_ bal: Double, changeTo: Double? = nil) -> (a: (Float, Float), b: (Float, Float)) {
+        let e = AudioEngine()
+        e.setVolume(0)
+        e.gapless = true
+        e.setBalance(bal)
+        var blocks: [(t: Double, l: Float, r: Float)] = []
+        let lock = NSLock()
+        let t0 = Date()
+        e.onTap = { buf in
+            guard let d = buf.floatChannelData, buf.format.channelCount >= 2 else { return }
+            let n = Int(buf.frameLength)
+            var l: Float = 0, r: Float = 0
+            for i in 0..<n { l += d[0][i] * d[0][i]; r += d[1][i] * d[1][i] }
+            lock.lock(); blocks.append((Date().timeIntervalSince(t0), (l / Float(max(1, n))).squareRoot(), (r / Float(max(1, n))).squareRoot())); lock.unlock()
+        }
+        var served = false
+        e.nextProvider = { served ? nil : { served = true; return (1, b1) }() }
+        e.use(try! AVAudioFile(forReading: a1), url: a1, index: 0)
+        e.play()
+        if let c = changeTo {
+            while Date().timeIntervalSince(t0) < 0.6 { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+            e.setBalance(c)
+        }
+        while Date().timeIntervalSince(t0) < 3.6 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        e.stop()
+        lock.lock(); defer { lock.unlock() }
+        func avg(_ from: Double, _ to: Double) -> (Float, Float) {
+            let xs = blocks.filter { $0.t > from && $0.t < to && ($0.l + $0.r) > 0.01 }
+            guard !xs.isEmpty else { return (0, 0) }
+            return (xs.map(\.l).reduce(0, +) / Float(xs.count), xs.map(\.r).reduce(0, +) / Float(xs.count))
+        }
+        return (avg(1.0, 1.8), avg(2.5, 3.5))
+    }
+    func fmt(_ x: (Float, Float)) -> String { String(format: "L %.3f R %.3f", x.0, x.1) }
+    let center = balanceRun(0), left = balanceRun(-100), right = balanceRun(100), half = balanceRun(50)
+    check(abs(center.a.0 - center.a.1) < 0.01 && center.a.0 > 0.2, "bilanciamento al centro: canali uguali (\(fmt(center.a)))")
+    check(left.a.1 < 0.02 && left.a.0 > 0.2, "bilanciamento tutto a sinistra: destro muto (\(fmt(left.a)))")
+    check(right.a.0 < 0.02 && right.a.1 > 0.2, "bilanciamento tutto a destra: sinistro muto (\(fmt(right.a)))")
+    check(half.a.0 < half.a.1 * 0.8 && half.a.0 > 0.05, "bilanciamento a metà destra: sinistro attenuato, non muto (\(fmt(half.a)))")
+    check(left.b.1 < 0.02 && left.b.0 > 0.2 && right.b.0 < 0.02 && right.b.1 > 0.2, "bilanciamento mantenuto sul brano successivo a 48 kHz (sx \(fmt(left.b)), dx \(fmt(right.b)))")
+    let moved = balanceRun(0, changeTo: -100)
+    check(moved.a.1 < 0.02 && moved.a.0 > 0.2, "bilanciamento cambiato durante la riproduzione (\(fmt(moved.a)))")
 
     // 3. EBU R128: stereo 1 kHz sine at -20 dBFS peak -> -20 LUFS (BS.1770 calibration).
     let cal = tone("cal.caf", freq: 997, seconds: 10, amp: 0.1, rate: 48000)
@@ -779,7 +956,10 @@ if CommandLine.arguments.contains("--test-ffmpeg") {
     var failures = 0
     func check(_ ok: Bool, _ what: String) { print((ok ? "PASS " : "FAIL ") + what); if !ok { failures += 1 } }
     guard let ff = FFmpeg.ffmpegPath else { print("ffmpeg non trovato"); exit(1) }
-    print("ffmpeg \(FFmpeg.version ?? "?") at \(ff)")
+    print("decodifica: ffmpeg \(FFmpeg.version ?? "?") at \(ff)")
+    // Test files need encoders (lavfi, libopus) the bundled decode-only build doesn't have: use a full ffmpeg.
+    let encoder = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/local/bin/ffmpeg"].first { FileManager.default.isExecutableFile(atPath: $0) } ?? ff
+    print("file di prova: \(encoder)")
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("musicamp-ffmpeg", isDirectory: true)
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let formats: [(String, [String])] = [("ogg", ["-c:a", "vorbis", "-strict", "-2"]), ("opus", ["-c:a", "libopus"]),
@@ -787,7 +967,7 @@ if CommandLine.arguments.contains("--test-ffmpeg") {
     for (ext, codec) in formats {
         let url = dir.appendingPathComponent("tone.\(ext)")
         try? FileManager.default.removeItem(at: url)
-        FFmpeg.run(ff, ["-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3:sample_rate=48000", "-ac", "2"] + codec + [url.path])
+        FFmpeg.run(encoder, ["-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3:sample_rate=48000", "-ac", "2"] + codec + [url.path])
         guard FileManager.default.fileExists(atPath: url.path), let probe = FFmpeg.probe(url) else {
             check(false, "\(ext): encode/probe"); continue
         }
@@ -795,7 +975,7 @@ if CommandLine.arguments.contains("--test-ffmpeg") {
         let e = AudioEngine()
         e.setVolume(0)
         var rms: Float = 0
-        e.eq.installTap(onBus: 0, bufferSize: 4096, format: nil) { buf, _ in
+        e.onTap = { buf in
             guard let ch = buf.floatChannelData else { return }
             var sum: Float = 0
             for i in 0..<Int(buf.frameLength) { sum += ch[0][i] * ch[0][i] }
@@ -892,8 +1072,26 @@ if let i = CommandLine.arguments.firstIndex(of: "--test-podcast") {
     if let u = episodeURL {
         let r = AudioEngine()
         r.setVolume(0)
+        r.analysisEnabled = true
+        r.milkdropEnabled = true
         r.playRemote(u, at: 60)
         wait(4)
+        let level = r.milkdropData().left.map { abs($0) }.max() ?? 0
+        check(r.remoteBridged && level > 0.001, "streaming: l'audio passa dal nostro motore (EQ, visualizzatore, Milkdrop), picco \(String(format: "%.2f", level))")
+        var lr: (Float, Float) = (0, 0)
+        r.onTap = { buf in
+            guard let d = buf.floatChannelData, buf.format.channelCount >= 2 else { return }
+            var l: Float = 0, rr: Float = 0
+            for i in 0..<Int(buf.frameLength) { l += d[0][i] * d[0][i]; rr += d[1][i] * d[1][i] }
+            lr = (lr.0 + l, lr.1 + rr)
+        }
+        r.setBalance(100)
+        wait(0.5)
+        lr = (0, 0)   // measure only after the change has settled
+        wait(1)
+        check(lr.1 > 0.01 && lr.0 < lr.1 * 0.001, "streaming: bilanciamento tutto a destra (energia L \(String(format: "%.4f", lr.0)), R \(String(format: "%.1f", lr.1)))")
+        r.setBalance(0)
+        r.onTap = nil
         let p0 = r.currentTime
         check(p0 >= 60 && p0 < 66, "streaming episodio: parte dal punto salvato (60 s → \(String(format: "%.1f", p0)))")
         r.rate = 1.5
@@ -949,6 +1147,14 @@ if CommandLine.arguments.contains("--test-lyrics") {
     check(w1.count == 3 && w1[0].start == 6 && zip(w1, w1.dropFirst()).allSatisfy { $0.end <= $1.start + 0.001 } && w1.last!.end < 30,
           "stima parole: in ordine, dentro la riga, prima della successiva")
     check(el.gap(after: 1) > 20, "pausa strumentale lunga rilevata")
+    // Held notes: real word times with one long word; estimated line with much spare time before the next.
+    let heldLRC = LRC.parse("[00:01.00]<00:01.00>la <00:01.30>la <00:01.60>looong <00:04.20>fine\n[00:05.00]dopo\n") ?? []
+    let hw = Lyrics(plain: nil, synced: heldLRC, source: "test").timedWords(0)
+    check(hw.map(\.held) == [false, false, true, false], "parola tenuta: riconosciuta dai tempi reali (2,6 s contro 0,3 s)")
+    let spare = Lyrics(plain: nil, synced: LRC.parse("[00:01.00]uno due tre\n[00:06.00]quattro cinque sei\n[00:07.20]sette\n") ?? [], source: "test")
+    let sw = spare.timedWords(0), tight = spare.timedWords(1)
+    check(sw.last?.held == true && sw.dropLast().allSatisfy { !$0.held } && (sw.last?.end ?? 0) <= 5.8, "parola tenuta: stimata sull'ultima parola quando la riga ha tempo in più")
+    check(tight.allSatisfy { !$0.held }, "nessuna parola tenuta in una riga senza tempo in più")
 
     // 2. Sidecar .lrc next to the file.
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("musicamp-lyrics", isDirectory: true)

@@ -24,7 +24,7 @@ final class RadioStream: NSObject, URLSessionDataDelegate {
         var bitrate: Int?
     }
 
-    static let userAgent = "MusicAmp/0.1"
+    static let userAgent = "MusicAmp/0.2"
 
     var onHeaders: ((Headers) -> Void)?
     /// Decoded PCM format; called synchronously on the stream queue so the engine is reconnected before buffers arrive.
@@ -58,12 +58,18 @@ final class RadioStream: NSObject, URLSessionDataDelegate {
     private var converter: AVAudioConverter?
     private var maxPacketSize = 0
 
-    init(url: URL) {
+    /// HLS playlists are followed by `HLSFetcher`; its audio goes through the same decoder.
+    private let isHLS: Bool
+    private var hls: HLSFetcher?
+
+    init(url: URL, hls: Bool = false) {
         self.url = url
+        self.isHLS = hls
         super.init()
     }
 
     func start() {
+        if isHLS { startHLS(); return }
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 15
         cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -76,7 +82,27 @@ final class RadioStream: NSObject, URLSessionDataDelegate {
         task?.resume()
     }
 
+    private func startHLS() {
+        let f = HLSFetcher(url: url)
+        f.onAudio = { [weak self] data, type in
+            self?.queue.addOperation { [weak self] in
+                guard let self, !self.cancelled else { return }
+                if self.fileStream == nil { self.openParser(hint: type) }
+                self.feed(data)
+            }
+        }
+        f.onTitle = { [weak self] t in self?.onTitle?(t) }
+        f.onBandwidth = { [weak self] bw in self?.onHeaders?(Headers(name: nil, genre: nil, bitrate: bw / 1000)) }
+        f.onEnd = { [weak self] err in
+            guard let self, !self.cancelled else { return }
+            self.onEnd?(err ?? StreamError.ended)
+        }
+        hls = f
+        f.start()
+    }
+
     func cancel() {
+        hls?.cancel()
         queue.addOperation { [self] in
             cancelled = true
             closeParser()
@@ -104,14 +130,16 @@ final class RadioStream: NSObject, URLSessionDataDelegate {
             return
         }
         let type = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
-        let ext = url.pathExtension.lowercased()
+        // After redirects the final URL decides (";listen.pls" can redirect straight to an MP3 stream).
+        let ext = (response.url ?? url).pathExtension.lowercased()
+        let isAudioType = type.hasPrefix("audio/") && !type.contains("mpegurl") && !type.contains("scpls") && !type.contains("x-mpegurl")
         metaInt = Int(http.value(forHTTPHeaderField: "icy-metaint") ?? "") ?? 0
         untilMeta = metaInt
         onHeaders?(Headers(name: http.value(forHTTPHeaderField: "icy-name"),
                            genre: http.value(forHTTPHeaderField: "icy-genre"),
                            bitrate: Int(http.value(forHTTPHeaderField: "icy-br")?.split(separator: ",").first ?? "")))
 
-        if type.contains("mpegurl") || type.contains("scpls") || ["m3u", "m3u8", "pls"].contains(ext) {
+        if !isAudioType && (type.contains("mpegurl") || type.contains("scpls") || ["m3u", "m3u8", "pls"].contains(ext)) {
             playlistBody = Data()   // resolve when complete
         } else if type.contains("ogg") || type.contains("opus") || type.contains("flac") {
             completionHandler(.cancel)

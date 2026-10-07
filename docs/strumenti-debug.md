@@ -8,7 +8,7 @@ L'eseguibile (`.build/debug/MusicAmp`, `.build/release/MusicAmp` o `MusicAmp.app
 | --- | --- |
 | `--self-test [preset.eqf …]` | Preset EQ `.eqf`/`.q1`, coda, inserimento al punto di rilascio, skin Retina (bitmap e cursori `@2x`, Scale2x), playlist ad albero |
 | `--test-transitions` | Gapless, crossfade, loudness EBU R128, lettura dei tag ReplayGain |
-| `--test-ffmpeg` | Decodifica con FFmpeg di Ogg, Opus, WavPack e TTA (richiede `ffmpeg`) |
+| `--test-ffmpeg` | Decodifica di Ogg, Opus, WavPack e TTA con l'FFmpeg scelto da MusicAmp (incluso, `MUSICAMP_FFMPEG_DIR` o installato); i file di prova si generano con un FFmpeg completo installato |
 | `--test-radio URL [secondi]` | Riproduce una radio senza audio e stampa formato, titolo e livello |
 | `--test-podcast` | Parser RSS (titoli, autori, copertine, durate, id degli episodi), OPML anche annidati, scaricamento e lettura di un feed reale, velocità e riproduzione in streaming con ripresa dal punto salvato |
 | `--test-lyrics` | Parser LRC ed LRC esteso, tempi per parola, file `.lrc` affiancati, ricerca su LRCLIB (stampa solo conteggi, mai testi) |
@@ -26,12 +26,15 @@ L'eseguibile (`.build/debug/MusicAmp`, `.build/release/MusicAmp` o `MusicAmp.app
 | `--make-retina in.wsz out.wsz` | Aggiunge gemelli `@2x` (Scale2x) a una skin |
 | `--milkdrop-verify cartella [report.txt] [campione]` | Traduce e compila in parallelo tutti i `.milk` di una cartella, elenca le cause d'errore più frequenti e renderizza un campione di preset (per trovare quelli neri o fermi) |
 | `--milkdrop-msl preset.milk` | Mostra la traduzione Metal degli shader di un preset e gli errori del compilatore con la riga incriminata |
+| `--karaoke-sweep` | Renderizza una riga karaoke a 330 istanti consecutivi (60 fps) attraverso una parola tenuta e cerca sfarfallii (fotogrammi che saltano e tornano) e cambi di dimensione; `KARAOKE_W` imposta la larghezza per provare gli a capo. Esce con codice 1 se ne trova |
+| `--karaoke-snapshot out.png` | Renderizza righe karaoke (parole di prova) in istanti diversi: riempimento, parola tenuta, effetto dei bassi |
 | `--milkdrop-snapshot preset.milk out.png [fotogrammi]` | Renderizza un preset con audio sintetico, stampa l'andamento (pixel accesi, decay, zoom…) e salva l'ultimo fotogramma |
 
 ## Variabili d'ambiente
 
 | Variabile | Effetto |
 | --- | --- |
+| `MUSICAMP_FFMPEG_DIR=cartella` | Usa `ffmpeg`/`ffprobe` di quella cartella (per esempio `vendor/ffmpeg`) quando non c'è quello incluso nell'app |
 | `MUSICAMP_RETINA=1` | `--snapshot` disegna a 2x usando i bitmap `@2x` |
 | `MUSICAMP_TREE=1` | `--snapshot` mostra la playlist ad albero |
 | `MUSICAMP_EGG=1` | `--snapshot` con l'easter egg della barra del titolo |
