@@ -245,7 +245,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
                 let bands: [(String, Int, Double, Double)] = [("LSC", 105, -1.2, 0.7), ("PK", 302, -1.7, 0.51), ("PK", 2374, 3.1, 2.32), ("PK", 75, 3.3, 1.05),
                     ("PK", 5218, 2.5, 2.96), ("PK", 3400, -2.0, 4.1), ("PK", 7900, 1.4, 3.0), ("PK", 1200, -0.8, 1.6), ("PK", 160, 0.9, 2.2), ("HSC", 10000, -0.5, 0.7)]
                 for (i, b) in bands.enumerated() { sample += "Filter \(i + 1): ON \(b.0) Fc \(b.1) Hz Gain \(b.2) dB Q \(b.3)\n" }
-                if var p = PEQProfile.parse(sample, name: "Apple AirPods Pro 2") { p.name = "Apple AirPods Pro 2 (HypetheSonics on GRAS RA0045)"; self.peqProfile = p }
+                if let p = PEQProfile.parse(sample, name: "Sample Headphones (demo profile)") { self.peqProfile = p }
                 self.peqEnabled = true
                 self.openPreferences(tab: .headphones)
             }

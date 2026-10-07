@@ -39,6 +39,22 @@ Un player audio minimale e nativo per macOS, compatibile con le skin classiche d
 | --- | --- |
 | ![Playlist raggruppata per artista e album](docs/images/playlist-albero.png) | ![Finestra di informazioni sul file disegnata con gen.bmp](docs/images/finestra-skin.png) |
 
+### Barra di avanzamento a forma d'onda
+
+Opzionale (Impostazioni → Visualization): l'onda del brano è disegnata dentro la barra della skin, con i colori presi dal suo `viscolor.txt`. Spenta, la skin resta identica.
+
+| Barra classica | Con la forma d'onda |
+| --- | --- |
+| ![Finestra principale con la barra di avanzamento classica](docs/images/barra-classica.png) | ![Finestra principale con la barra a forma d'onda](docs/images/barra-onda.png) |
+
+### Widget
+
+![Widget Now Playing nelle misure piccola, media e grande](docs/images/widget.png)
+
+### EQ parametrico per cuffie
+
+![Impostazioni → Headphones con un profilo di esempio e la sua curva](docs/images/cuffie.png)
+
 ### Editor dei tag
 
 ![Editor dei tag con più file selezionati](docs/images/editor-tag.png)
@@ -50,15 +66,24 @@ Un player audio minimale e nativo per macOS, compatibile con le skin classiche d
 | ![Preset Bass Tunnel](docs/images/milkdrop-bass-tunnel.png) | ![Preset Shader Bloom, con shader Milkdrop 2](docs/images/milkdrop-shader-bloom.png) |
 | ![Preset Chroma Tunnel, con shader Milkdrop 2](docs/images/milkdrop-chroma-tunnel.png) | ![Preset Beat Rings](docs/images/milkdrop-beat-rings.png) |
 
-*Preset inclusi in MusicAmp, renderizzati con audio di prova. Le immagini dell'interfaccia usano la skin predefinita di MusicAmp.*
+*Preset inclusi in MusicAmp, renderizzati con audio di prova. Le immagini dell'interfaccia usano la skin predefinita di MusicAmp, brani e profili di prova.*
 
 ## Installazione
 
-Scarica il DMG dall'ultima [release](https://github.com/nicolorisitano82/MusicAmp/releases), aprilo e trascina **MusicAmp** in Applicazioni. Serve macOS 14 o successivo.
+Scarica il DMG dall'ultima [release](https://github.com/nicolorisitano82/MusicAmp/releases), aprilo e trascina **MusicAmp** in Applicazioni. Serve macOS 14 o successivo su un Mac con Apple Silicon.
 
 L'app non è ancora firmata con un Developer ID né notarizzata, quindi alla prima apertura macOS la blocca. Aprila col **tasto destro → Apri**, oppure da **Impostazioni di Sistema → Privacy e sicurezza → Apri comunque**.
 
 Le skin non sono incluse: trascina un file `.wsz` sul player per caricarlo. I preset Milkdrop vanno in `~/Library/Application Support/MusicAmp/Milkdrop`; 8 sono già inclusi.
+
+## Primi passi
+
+- **Widget:** apri MusicAmp almeno una volta, poi clic destro sulla scrivania → **Modifica widget…**, cerca **MusicAmp** e trascina la misura che vuoi. Per il Centro Notifiche: clic su data e ora → **Modifica widget**.
+- **Comandi rapidi e Siri:** le azioni di MusicAmp sono già nell'app Comandi rapidi (cerca "MusicAmp"); per esempio "Play or pause MusicAmp" o "Play Top Rated in MusicAmp".
+- **Da script o link:** `open -g musicamp://next`, `musicamp://volume?level=40`, `musicamp://sleep?minutes=30`. Elenco completo in [docs/sistema.md](docs/sistema.md).
+- **Timer e sveglia:** Impostazioni → Timer, oppure Controlli → Sleep Timer and Alarm.
+- **Voti e playlist intelligenti:** ⌥⌘1–5 per votare il brano in corso, clic destro nella playlist per i brani selezionati, ⌥⌘S per le playlist intelligenti.
+- **Profilo per le tue cuffie:** Impostazioni → Headphones → Choose Headphones….
 
 ## Compilare
 
@@ -70,7 +95,7 @@ Crea `build/MusicAmp.app` e `build/MusicAmp-<versione>.dmg`. Servono Swift 5.9, 
 
 ## Documentazione
 
-La [documentazione tecnica](docs/README.md) copre architettura, formato delle skin classiche e Retina, motore audio, Milkdrop e strumenti di test.
+La [documentazione tecnica](docs/README.md) copre architettura, formato delle skin classiche e Retina, motore audio, tag, [ascolti e playlist intelligenti](docs/playlist-intelligenti.md), [Comandi rapidi e widget](docs/sistema.md), Milkdrop e strumenti di test.
 
 ## Licenza
 
