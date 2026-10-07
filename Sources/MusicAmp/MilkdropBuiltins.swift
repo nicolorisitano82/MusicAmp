@@ -154,6 +154,60 @@ enum MilkdropBuiltins {
         per_pixel_1=dx = q1*sin(y*10 + time);
         per_pixel_2=dy = q1*cos(x*10 + time*1.3);
         """),
+        ("MusicAmp - Shader Bloom", """
+        [preset00]
+        fDecay=1.000
+        nWaveMode=0
+        fWaveAlpha=0.900
+        fWaveScale=1.100
+        bAdditiveWaves=1
+        bWaveThick=1
+        zoom=1.010
+        warp=0.300
+        per_frame_1=wave_r = 0.6 + 0.4*sin(time*0.6); wave_g = 0.5 + 0.5*sin(time*0.8 + 1); wave_b = 0.7;
+        per_frame_2=zoom = 1.005 + 0.02*bass_att; rot = 0.01*sin(time*0.2);
+        per_frame_3=q1 = bass_att;
+        warp_1=`shader_body {
+        warp_2=`    float2 d = (uv - 0.5) * aspect.xy;
+        warp_3=`    float2 uv2 = uv + 0.003*float2(sin(time + d.y*9), cos(time*1.1 + d.x*9));
+        warp_4=`    ret = tex2D(sampler_main, uv2);
+        warp_5=`    ret += (GetBlur1(uv) - ret) * 0.12;
+        warp_6=`    ret += 0.03 * (tex2D(sampler_noise_lq, uv_orig*texsize.xy/256 + rand_frame.xy).xyz - 0.5) * q1;
+        warp_7=`    ret *= 0.962;
+        warp_8=`}
+        comp_1=`shader_body {
+        comp_2=`    float3 c = tex2D(sampler_main, uv).xyz;
+        comp_3=`    float3 b = GetBlur2(uv);
+        comp_4=`    ret = c + b * 0.9 * (0.4 + 0.6*saturate(bass_att*0.5));
+        comp_5=`    ret *= hue_shader;
+        comp_6=`    ret = 1 - exp(-ret * 1.5);
+        comp_7=`}
+        """),
+        ("MusicAmp - Chroma Tunnel", """
+        [preset00]
+        fDecay=0.980
+        nWaveMode=0
+        fWaveAlpha=1.000
+        fWaveScale=1.400
+        bAdditiveWaves=1
+        bWaveThick=1
+        zoom=0.980
+        rot=0.020
+        warp=0.500
+        per_frame_1=wave_r = 0.5 + 0.5*sin(time); wave_g = 0.5 + 0.5*sin(time*1.4 + 2); wave_b = 0.5 + 0.5*sin(time*1.9 + 4);
+        per_frame_2=q1 = time*0.1 + bass_att*0.05;
+        comp_1=`shader_body {
+        comp_2=`    float2 p = (uv - 0.5) * aspect.xy;
+        comp_3=`    float r = length(p), a = atan2(p.y, p.x);
+        comp_4=`    float2 t = float2(a / 6.2832 + time*0.02, 0.12 / (r + 0.04) + q1);
+        comp_5=`    float3 c;
+        comp_6=`    c.r = tex2D(sampler_main, frac(t + float2(0.004, 0))).r;
+        comp_7=`    c.g = tex2D(sampler_main, frac(t)).g;
+        comp_8=`    c.b = tex2D(sampler_main, frac(t - float2(0.004, 0))).b;
+        comp_9=`    ret = c * saturate(r * 3) + GetBlur1(uv) * 0.35;
+        comp_10=`    ret *= 2.2;
+        comp_11=`}
+        """),
     ]
 
     static var presets: [MilkPreset] { all.map { MilkPreset.parse($0.1, name: $0.0) } }

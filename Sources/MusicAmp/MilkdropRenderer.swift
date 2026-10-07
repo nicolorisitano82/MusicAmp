@@ -1,29 +1,59 @@
 import Foundation
 import Metal
+import MetalKit
+import MetalPerformanceShaders
 import simd
 
-// Milkdrop 1.x pipeline on Metal. Each frame:
+// Milkdrop on Metal. Each frame:
 //  1. warp: the previous frame is drawn through a 48×36 mesh whose texture coordinates come from the
-//     zoom/rot/warp/cx/cy/dx/dy/sx/sy values (per-pixel code runs once per vertex), darkened by `decay`;
+//     zoom/rot/warp/cx/cy/dx/dy/sx/sy values (per-pixel code runs once per vertex). Milkdrop 1 presets
+//     darken it by `decay`; Milkdrop 2 presets run their own warp shader (HLSL translated to Metal);
 //  2. motion vectors, custom shapes, custom waves, the main waveform, darken-center and borders are drawn
 //     on top, into the same feedback texture (so they get warped on the next frames);
-//  3. composite: the feedback texture goes to the screen with video echo, gamma and brighten/darken/
-//     solarize/invert.
-// Presets switch with a 2.7 s blend of both meshes and their drawings.
+//  3. blur1/2/3 (½, ¼, ⅛ size) are made from it when a shader reads them;
+//  4. composite to the screen: the preset's comp shader, or video echo + gamma + brighten/darken/solarize/invert.
+// Presets switch with a 2.7 s cross-fade: both presets draw every pass, the new one blended in with a
+// constant blend factor.
+
+/// A preset ready to draw: its equations plus its compiled Milkdrop 2 shaders (nil = fixed pipeline).
+final class MilkPrepared {
+    let runtime: MilkRuntime
+    var warp: MTLRenderPipelineState?
+    var comp: MTLRenderPipelineState?
+    var warpUser: [MTLTexture] = []
+    var compUser: [MTLTexture] = []
+    var usesBlur = false
+    var notes: [String] = []
+    let randPreset = SIMD4<Float>(Float.random(in: 0...1), Float.random(in: 0...1), Float.random(in: 0...1), Float.random(in: 0...1))
+    let rotAxes: [SIMD3<Float>] = (0..<24).map { _ in simd_normalize(SIMD3<Float>(Float.random(in: -1...1), Float.random(in: -1...1), Float.random(in: -1...1)) + 0.001) }
+    let rotPhase: [Float] = (0..<24).map { _ in Float.random(in: 0...(2 * .pi)) }
+    init(_ rt: MilkRuntime) { runtime = rt }
+    var name: String { runtime.preset.name }
+}
 
 final class MilkdropRenderer {
     let device: MTLDevice
     private let queue: MTLCommandQueue
     private let warpPipe, colorPipe, colorAddPipe, texPipe, texAddPipe, compPipe: MTLRenderPipelineState
-    private let wrapSampler, clampSampler: MTLSamplerState
+    private let samplers: [MTLSamplerState]   // linear wrap, linear clamp, point wrap, point clamp
+    private var wrapSampler: MTLSamplerState { samplers[0] }
+    private var clampSampler: MTLSamplerState { samplers[1] }
     private var feedback: [MTLTexture] = []
+    private var blur: [MTLTexture] = [], blurTmp: [MTLTexture] = []
+    private let noiseLQ, noiseMQ, noiseHQ, volLQ, volHQ, black: MTLTexture
+    private lazy var mpsScale = MPSImageBilinearScale(device: device)
+    private lazy var mpsBlur = MPSImageGaussianBlur(device: device, sigma: 1.6)
+    private var userTextureCache: [String: MTLTexture] = [:]
+    private let cacheLock = NSLock()
     private var cur = 0
     private let meshIndex: MTLBuffer
     private let meshIndexCount: Int
 
-    private(set) var runtime: MilkRuntime?
-    private var previous: MilkRuntime?
+    private(set) var current: MilkPrepared?
+    private var previous: MilkPrepared?
+    var runtime: MilkRuntime? { current?.runtime }
     private var blendStart = 0.0
+    private var installedAt = 0.0
     let blendDuration = 2.7
 
     private let start = Date()
@@ -42,42 +72,33 @@ final class MilkdropRenderer {
         do {
             let lib = try device.makeLibrary(source: MilkdropRenderer.shaderSource, options: nil)
             func pipe(_ v: String, _ f: String, blend: Int) throws -> MTLRenderPipelineState {
-                let d = MTLRenderPipelineDescriptor()
-                d.vertexFunction = lib.makeFunction(name: v)
-                d.fragmentFunction = lib.makeFunction(name: f)
-                let a = d.colorAttachments[0]!
-                a.pixelFormat = MilkdropRenderer.format
-                if blend > 0 {
-                    a.isBlendingEnabled = true
-                    a.rgbBlendOperation = .add
-                    a.alphaBlendOperation = .add
-                    a.sourceRGBBlendFactor = .sourceAlpha
-                    a.destinationRGBBlendFactor = blend == 1 ? .oneMinusSourceAlpha : .one
-                    a.sourceAlphaBlendFactor = .one
-                    a.destinationAlphaBlendFactor = .oneMinusSourceAlpha
-                }
-                return try device.makeRenderPipelineState(descriptor: d)
+                try MilkdropRenderer.pipeline(device, lib, v, f, blend: blend)
             }
-            warpPipe = try pipe("warp_v", "warp_f", blend: 0)
+            warpPipe = try pipe("warp_v", "warp_f", blend: 3)
             colorPipe = try pipe("col_v", "col_f", blend: 1)
             colorAddPipe = try pipe("col_v", "col_f", blend: 2)
             texPipe = try pipe("tex_v", "tex_f", blend: 1)
             texAddPipe = try pipe("tex_v", "tex_f", blend: 2)
-            compPipe = try pipe("comp_v", "comp_f", blend: 0)
+            compPipe = try pipe("comp_v", "comp_f", blend: 3)
         } catch {
             NSLog("Milkdrop shaders: %@", "\(error)")
             return nil
         }
-        func sampler(_ mode: MTLSamplerAddressMode) -> MTLSamplerState {
+        samplers = [(MTLSamplerMinMagFilter.linear, MTLSamplerAddressMode.repeat), (.linear, .clampToEdge), (.nearest, .repeat), (.nearest, .clampToEdge)].map { f, a in
             let d = MTLSamplerDescriptor()
-            d.minFilter = .linear
-            d.magFilter = .linear
-            d.sAddressMode = mode
-            d.tAddressMode = mode
+            d.minFilter = f
+            d.magFilter = f
+            d.sAddressMode = a
+            d.tAddressMode = a
+            d.rAddressMode = a
             return device.makeSamplerState(descriptor: d)!
         }
-        wrapSampler = sampler(.repeat)
-        clampSampler = sampler(.clampToEdge)
+        noiseLQ = MilkdropRenderer.noise2D(device, grid: 256)
+        noiseMQ = MilkdropRenderer.noise2D(device, grid: 64)
+        noiseHQ = MilkdropRenderer.noise2D(device, grid: 32)
+        volLQ = MilkdropRenderer.noise3D(device, grid: 32)
+        volHQ = MilkdropRenderer.noise3D(device, grid: 8)
+        black = MilkdropRenderer.noise2D(device, grid: 1, size: 1, value: 0)
         var idx: [UInt32] = []
         let c = MilkMesh.cols, r = MilkMesh.rows
         for j in 0..<r {
@@ -90,17 +111,93 @@ final class MilkdropRenderer {
         meshIndex = device.makeBuffer(bytes: idx, length: idx.count * 4)!
     }
 
+    /// blend: 0 opaque, 1 alpha, 2 additive, 3 constant factor (cross-fade between presets).
+    static func pipeline(_ device: MTLDevice, _ lib: MTLLibrary, _ v: String, _ f: String, blend: Int) throws -> MTLRenderPipelineState {
+        let d = MTLRenderPipelineDescriptor()
+        d.vertexFunction = lib.makeFunction(name: v)
+        d.fragmentFunction = lib.makeFunction(name: f)
+        let a = d.colorAttachments[0]!
+        a.pixelFormat = MilkdropRenderer.format
+        if blend > 0 {
+            a.isBlendingEnabled = true
+            a.rgbBlendOperation = .add
+            a.alphaBlendOperation = .add
+            switch blend {
+            case 3:
+                a.sourceRGBBlendFactor = .blendAlpha
+                a.destinationRGBBlendFactor = .oneMinusBlendAlpha
+                a.sourceAlphaBlendFactor = .one
+                a.destinationAlphaBlendFactor = .zero
+            default:
+                a.sourceRGBBlendFactor = .sourceAlpha
+                a.destinationRGBBlendFactor = blend == 1 ? .oneMinusSourceAlpha : .one
+                a.sourceAlphaBlendFactor = .one
+                a.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            }
+        }
+        return try device.makeRenderPipelineState(descriptor: d)
+    }
+
     // MARK: Presets
 
-    func load(_ preset: MilkPreset, blend: Bool = true) {
-        let rt = MilkRuntime(preset)
-        if blend, let r = runtime {
-            previous = r
+    /// Compiles the preset's equations and shaders. Thread-safe: call it off the main thread.
+    func prepare(_ preset: MilkPreset) -> MilkPrepared {
+        let pr = MilkPrepared(MilkRuntime(preset))
+        func build(_ src: String, _ stage: HLSLTranslator.Stage) -> (MTLRenderPipelineState, [MTLTexture])? {
+            guard src.contains("shader_body") else { return nil }
+            let label = stage == .warp ? "warp" : "comp"
+            do {
+                let tr = HLSLTranslator(stage: stage)
+                let msl = try tr.translate(src, entry: "md_main")
+                let opts = MTLCompileOptions()
+                opts.fastMathEnabled = true
+                let lib = try device.makeLibrary(source: MDShaderPrelude.source + msl, options: opts)
+                let p = try MilkdropRenderer.pipeline(device, lib, stage == .warp ? "md_warp_v" : "md_comp_v", "md_main", blend: 3)
+                if tr.usesBlur { pr.usesBlur = true }
+                return (p, tr.userTextures.map { userTexture($0, near: preset.url) })
+            } catch {
+                let msg = "\(error)".components(separatedBy: .newlines).first { $0.contains("error") } ?? "\(error)".components(separatedBy: .newlines).first ?? ""
+                pr.notes.append("shader \(label): \(msg.prefix(160))")
+                return nil
+            }
+        }
+        if let (p, u) = build(preset.warpShader, .warp) { pr.warp = p; pr.warpUser = u }
+        if let (p, u) = build(preset.compShader, .comp) { pr.comp = p; pr.compUser = u }
+        return pr
+    }
+
+    func install(_ pr: MilkPrepared, blend: Bool = true) {
+        if blend, let c = current {
+            previous = c
             blendStart = now
         } else {
             previous = nil
         }
-        runtime = rt
+        current = pr
+        installedAt = now
+    }
+
+    func load(_ preset: MilkPreset, blend: Bool = true) { install(prepare(preset), blend: blend) }
+
+    /// A preset's own texture (sampler_clouds → clouds.jpg next to the preset or in Milkdrop/textures), else noise.
+    private func userTexture(_ name: String, near: URL?) -> MTLTexture {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let t = userTextureCache[name] { return t }
+        var dirs = [MilkdropLibrary.folder.appendingPathComponent("textures"), MilkdropLibrary.folder]
+        if let near { dirs.insert(near.deletingLastPathComponent(), at: 0); dirs.insert(near.deletingLastPathComponent().appendingPathComponent("textures"), at: 1) }
+        let loader = MTKTextureLoader(device: device)
+        for d in dirs {
+            guard let files = try? FileManager.default.contentsOfDirectory(at: d, includingPropertiesForKeys: nil) else { continue }
+            for f in files where f.deletingPathExtension().lastPathComponent.lowercased() == name.lowercased()
+                && ["jpg", "jpeg", "png", "bmp", "tga", "tif", "tiff", "gif"].contains(f.pathExtension.lowercased()) {
+                if let t = try? loader.newTexture(URL: f, options: [.SRGB: false, .origin: MTKTextureLoader.Origin.topLeft]) {
+                    userTextureCache[name] = t
+                    return t
+                }
+            }
+        }
+        return noiseHQ
     }
 
     /// Tests and snapshots drive time themselves (seconds); nil = wall clock.
@@ -146,7 +243,7 @@ final class MilkdropRenderer {
 
     /// Renders one frame into `target` (a drawable texture or an offscreen one for tests/snapshots).
     func render(into target: MTLTexture, commandBuffer cbExternal: MTLCommandBuffer? = nil) -> MTLCommandBuffer? {
-        guard let rt = runtime else { return nil }
+        guard let curP = current else { return nil }
         let w = target.width, h = target.height
         ensureFeedback(w, h)
         let t = now
@@ -157,24 +254,18 @@ final class MilkdropRenderer {
         let aspect = (w > h ? Double(h) / Double(w) : 1, h > w ? Double(w) / Double(h) : 1)
         let audio = lastAudio
 
-        rt.runFrame(time: t, frameNo: frameNo, fps: fps, audio: audio, aspect: aspect, size: (w, h))
+        curP.runtime.runFrame(time: t, frameNo: frameNo, fps: fps, audio: audio, aspect: aspect, size: (w, h))
         var p = 1.0
-        var prev = previous
-        if let pr = prev {
+        var layers: [(MilkPrepared, Float)] = [(curP, 1)]
+        if let pr = previous {
             p = min(1, (t - blendStart) / blendDuration)
             p = p * p * (3 - 2 * p)   // smoothstep
-            if p >= 1 { previous = nil; prev = nil } else {
-                pr.runFrame(time: t, frameNo: frameNo, fps: fps, audio: audio, aspect: aspect, size: (w, h))
+            if p >= 1 { previous = nil } else {
+                pr.runtime.runFrame(time: t, frameNo: frameNo, fps: fps, audio: audio, aspect: aspect, size: (w, h))
+                layers = [(pr, 1), (curP, Float(p))]
             }
         }
-
-        // 1. Warp mesh (blended with the outgoing preset).
-        var mesh = warpMesh(rt, time: t, aspect: aspect)
-        if let pr = prev {
-            let old = warpMesh(pr, time: t, aspect: aspect)
-            for i in 0..<mesh.count { mesh[i].z = mesh[i].z * Float(p) + old[i].z * Float(1 - p); mesh[i].w = mesh[i].w * Float(p) + old[i].w * Float(1 - p) }
-        }
-        func mix(_ k: String) -> Double { prev.map { $0[k] * (1 - p) + rt[k] * p } ?? rt[k] }
+        let meshes = layers.map { warpMesh($0.0.runtime, time: t, aspect: aspect) }
 
         let src = feedback[cur], dst = feedback[1 - cur]
         guard let cb = cbExternal ?? queue.makeCommandBuffer() else { return nil }
@@ -183,20 +274,34 @@ final class MilkdropRenderer {
         rp.colorAttachments[0].loadAction = .dontCare
         rp.colorAttachments[0].storeAction = .store
         guard let enc = cb.makeRenderCommandEncoder(descriptor: rp) else { return nil }
-        enc.setRenderPipelineState(warpPipe)
-        mesh.withUnsafeBytes { enc.setVertexBytes($0.baseAddress!, length: $0.count, index: 0) }
-        var decay = Float(max(0, min(1, mix("decay"))))
-        enc.setFragmentBytes(&decay, length: 4, index: 0)
-        enc.setFragmentTexture(src, index: 0)
-        enc.setFragmentSamplerState(rt["wrap"] != 0 ? wrapSampler : clampSampler, index: 0)
-        enc.drawIndexedPrimitives(type: .triangle, indexCount: meshIndexCount, indexType: .uint32, indexBuffer: meshIndex, indexBufferOffset: 0)
 
-        // 2. Drawings on top.
+        // 1. Warp: each layer through its own mesh and warp shader, the new preset faded in on top.
+        for (i, (pr, alpha)) in layers.enumerated() {
+            let rt = pr.runtime
+            enc.setBlendColor(red: 0, green: 0, blue: 0, alpha: alpha)
+            guard let mb = meshes[i].withUnsafeBytes({ device.makeBuffer(bytes: $0.baseAddress!, length: $0.count) }) else { continue }
+            enc.setVertexBuffer(mb, offset: 0, index: 0)
+            if let wp = pr.warp {
+                enc.setRenderPipelineState(wp)
+                var u = uniforms(pr, time: t, size: (w, h), aspect: aspect, audio: audio, user: pr.warpUser)
+                enc.setFragmentBytes(&u, length: u.count * 16, index: 0)
+                bindShaderResources(enc, main: src, user: pr.warpUser)
+            } else {
+                enc.setRenderPipelineState(warpPipe)
+                var decay = Float(max(0, min(1, rt["decay"])))
+                enc.setFragmentBytes(&decay, length: 4, index: 0)
+                enc.setFragmentTexture(src, index: 0)
+                enc.setFragmentSamplerState(rt["wrap"] != 0 ? wrapSampler : clampSampler, index: 0)
+            }
+            enc.drawIndexedPrimitives(type: .triangle, indexCount: meshIndexCount, indexType: .uint32, indexBuffer: meshIndex, indexBufferOffset: 0)
+        }
+
+        // 2. Drawings on top (the outgoing preset fades out, the new one in).
         let px = Float(2.0 / Double(h))   // one pixel in clip units (vertical)
-        var drawings: [(MilkRuntime, Float)] = [(rt, Float(p))]
-        if let pr = prev { drawings.insert((pr, Float(1 - p)), at: 0) }
-        for (r, alpha) in drawings {
-            motionVectors(r, mesh: mesh, alpha: alpha, enc: enc, px: px)
+        for (i, (pr, _)) in layers.enumerated() {
+            let r = pr.runtime
+            let alpha = layers.count == 1 ? 1 : (i == 0 ? Float(1 - p) : Float(p))
+            motionVectors(r, mesh: meshes[i], alpha: alpha, enc: enc, px: px)
             shapes(r, alpha: alpha, enc: enc, src: src, aspect: aspect, px: px)
             customWaves(r, audio: audio, alpha: alpha, enc: enc, px: px)
             mainWave(r, audio: audio, time: t, alpha: alpha, enc: enc, aspect: aspect, px: px)
@@ -205,21 +310,35 @@ final class MilkdropRenderer {
         }
         enc.endEncoding()
 
-        // 3. Composite to the target.
+        // 3. Blur pyramid for shaders that read it.
+        if layers.contains(where: { $0.0.usesBlur }) { encodeBlur(cb, from: dst) }
+
+        // 4. Composite to the target.
         let cp = MTLRenderPassDescriptor()
         cp.colorAttachments[0].texture = target
         cp.colorAttachments[0].loadAction = .dontCare
         cp.colorAttachments[0].storeAction = .store
         guard let ce = cb.makeRenderCommandEncoder(descriptor: cp) else { return nil }
-        ce.setRenderPipelineState(compPipe)
-        var u = CompUniforms(gamma: Float(max(0.1, mix("gamma"))), echoAlpha: Float(max(0, min(1, mix("echo_alpha")))),
-                             echoZoom: Float(max(0.01, mix("echo_zoom"))), echoOrient: Int32(rt["echo_orient"]) & 3,
-                             brighten: rt["brighten"] != 0 ? 1 : 0, darken: rt["darken"] != 0 ? 1 : 0,
-                             solarize: rt["solarize"] != 0 ? 1 : 0, invert: rt["invert"] != 0 ? 1 : 0)
-        ce.setFragmentBytes(&u, length: MemoryLayout<CompUniforms>.stride, index: 0)
-        ce.setFragmentTexture(dst, index: 0)
-        ce.setFragmentSamplerState(clampSampler, index: 0)
-        ce.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        for (pr, alpha) in layers {
+            let rt = pr.runtime
+            ce.setBlendColor(red: 0, green: 0, blue: 0, alpha: alpha)
+            if let c = pr.comp {
+                ce.setRenderPipelineState(c)
+                var u = uniforms(pr, time: t, size: (w, h), aspect: aspect, audio: audio, user: pr.compUser)
+                ce.setFragmentBytes(&u, length: u.count * 16, index: 0)
+                bindShaderResources(ce, main: dst, user: pr.compUser)
+            } else {
+                ce.setRenderPipelineState(compPipe)
+                var u = CompUniforms(gamma: Float(max(0.1, rt["gamma"])), echoAlpha: Float(max(0, min(1, rt["echo_alpha"]))),
+                                     echoZoom: Float(max(0.01, rt["echo_zoom"])), echoOrient: Int32(rt["echo_orient"]) & 3,
+                                     brighten: rt["brighten"] != 0 ? 1 : 0, darken: rt["darken"] != 0 ? 1 : 0,
+                                     solarize: rt["solarize"] != 0 ? 1 : 0, invert: rt["invert"] != 0 ? 1 : 0)
+                ce.setFragmentBytes(&u, length: MemoryLayout<CompUniforms>.stride, index: 0)
+                ce.setFragmentTexture(dst, index: 0)
+                ce.setFragmentSamplerState(clampSampler, index: 0)
+            }
+            ce.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        }
         ce.endEncoding()
         cur = 1 - cur
         return cb
@@ -230,12 +349,146 @@ final class MilkdropRenderer {
         var brighten: Int32, darken: Int32, solarize: Int32, invert: Int32
     }
 
+    // MARK: Milkdrop 2 shader environment
+
+    private func bindShaderResources(_ enc: MTLRenderCommandEncoder, main: MTLTexture, user: [MTLTexture]) {
+        enc.setFragmentTexture(main, index: 0)
+        for i in 0..<3 { enc.setFragmentTexture(i < blur.count ? blur[i] : black, index: 1 + i) }
+        enc.setFragmentTexture(noiseLQ, index: 4)
+        enc.setFragmentTexture(noiseMQ, index: 5)
+        enc.setFragmentTexture(noiseHQ, index: 6)
+        enc.setFragmentTexture(volLQ, index: 7)
+        enc.setFragmentTexture(volHQ, index: 8)
+        for i in 0..<8 { enc.setFragmentTexture(i < user.count ? user[i] : noiseHQ, index: 9 + i) }
+        for (i, s) in samplers.enumerated() { enc.setFragmentSamplerState(s, index: i) }
+    }
+
+    /// The `U.v[]` block of MDUniforms for one preset and stage.
+    private func uniforms(_ pr: MilkPrepared, time t: Double, size: (Int, Int), aspect: (Double, Double), audio: MilkAudio, user: [MTLTexture]) -> [SIMD4<Float>] {
+        let rt = pr.runtime
+        var v = [SIMD4<Float>](repeating: .zero, count: MDUniforms.count)
+        let ft = Float(t)
+        let progress = Float(min(1, max(0, (t - installedAt) / 20)))
+        v[0] = SIMD4(ft, Float(fps), Float(frameNo), progress)
+        let vol = (audio.bass + audio.mid + audio.treb) / 3, volAtt = (audio.bassAtt + audio.midAtt + audio.trebAtt) / 3
+        v[1] = SIMD4(Float(audio.bass), Float(audio.mid), Float(audio.treb), Float(vol))
+        v[2] = SIMD4(Float(audio.bassAtt), Float(audio.midAtt), Float(audio.trebAtt), Float(volAtt))
+        v[3] = SIMD4(Float(aspect.0), Float(aspect.1), Float(1 / aspect.0), Float(1 / aspect.1))
+        v[4] = SIMD4(Float(size.0), Float(size.1), 1 / Float(size.0), 1 / Float(size.1))
+        v[5] = SIMD4(Float.random(in: 0...1), Float.random(in: 0...1), Float.random(in: 0...1), Float.random(in: 0...1))
+        v[6] = pr.randPreset
+        let roam = SIMD4<Float>(0.13, 0.09, 0.055, 0.043) * ft
+        v[7] = 0.5 + 0.5 * SIMD4(cos(roam.x), cos(roam.y), cos(roam.z), cos(roam.w))
+        v[8] = 0.5 + 0.5 * SIMD4(sin(roam.x), sin(roam.y), sin(roam.z), sin(roam.w))
+        let slow = roam * 0.1
+        v[9] = 0.5 + 0.5 * SIMD4(cos(slow.x), cos(slow.y), cos(slow.z), cos(slow.w))
+        v[10] = 0.5 + 0.5 * SIMD4(sin(slow.x), sin(slow.y), sin(slow.z), sin(slow.w))
+        v[11] = SIMD4(Float(rt["b1n"]), Float(rt["b1x"]), Float(rt["b2n"]), Float(rt["b2x"]))
+        v[12] = SIMD4(Float(rt["b3n"]), Float(rt["b3x"]), 0, 0)
+        // hue_shader: four slowly cycling corner colours, normalised to full brightness.
+        for i in 0..<4 {
+            let fi = Float(i), r = pr.randPreset
+            var c = SIMD3<Float>(0.6 + 0.3 * sin(ft * 0.429 + 3 + fi * 21 + r.x * 6),
+                                 0.6 + 0.3 * sin(ft * 0.553 + 1 + fi * 13 + r.y * 6),
+                                 0.6 + 0.3 * sin(ft * 0.495 + 5 + fi * 9 + r.z * 6))
+            c /= max(c.x, max(c.y, c.z))
+            v[MDUniforms.hueBase + i] = SIMD4(c, 1)
+        }
+        for q in 0..<32 { v[17 + q / 4][q % 4] = Float(rt["q\(q + 1)"]) }
+        // rot_s1…rot_rand4: rotations at increasing speeds (slow, default, fast, very fast, ultra fast, fixed).
+        let speeds: [Float] = [0.02, 0.08, 0.3, 0.9, 2.4, 0]
+        for i in 0..<24 {
+            let axis = pr.rotAxes[i]
+            let angle = speeds[i / 4] * ft * (1 + 0.37 * Float(i % 4)) + pr.rotPhase[i]
+            let m = simd_float3x3(simd_quatf(angle: angle, axis: axis))
+            let b = 25 + i * 4
+            v[b] = SIMD4(m.columns.0, 0); v[b + 1] = SIMD4(m.columns.1, 0); v[b + 2] = SIMD4(m.columns.2, 0); v[b + 3] = SIMD4(0, 0, 0, 1)
+        }
+        for (i, tex) in user.prefix(8).enumerated() {
+            v[MDUniforms.userTexSizeBase + i] = SIMD4(Float(tex.width), Float(tex.height), 1 / Float(tex.width), 1 / Float(tex.height))
+        }
+        return v
+    }
+
+    private func encodeBlur(_ cb: MTLCommandBuffer, from main: MTLTexture) {
+        guard blur.count == 3, blurTmp.count == 3 else { return }
+        var source = main
+        for i in 0..<3 {
+            mpsScale.encode(commandBuffer: cb, sourceTexture: source, destinationTexture: blurTmp[i])
+            mpsBlur.encode(commandBuffer: cb, sourceTexture: blurTmp[i], destinationTexture: blur[i])
+            source = blur[i]
+        }
+    }
+
+    static func noise2D(_ device: MTLDevice, grid: Int, size: Int = 256, value: UInt8? = nil) -> MTLTexture {
+        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: size, height: size, mipmapped: false)
+        let t = device.makeTexture(descriptor: d)!
+        var px = [UInt8](repeating: value ?? 0, count: size * size * 4)
+        if value == nil {
+            // Random values on a grid, smoothly interpolated: grid == size gives white noise.
+            let g = (0..<(grid * grid * 4)).map { _ in Float.random(in: 0...1) }
+            for y in 0..<size {
+                for x in 0..<size {
+                    let fx = Float(x) * Float(grid) / Float(size), fy = Float(y) * Float(grid) / Float(size)
+                    let x0 = Int(fx) % grid, y0 = Int(fy) % grid, x1 = (x0 + 1) % grid, y1 = (y0 + 1) % grid
+                    var tx = fx - Float(Int(fx)), ty = fy - Float(Int(fy))
+                    tx = tx * tx * (3 - 2 * tx); ty = ty * ty * (3 - 2 * ty)
+                    for c in 0..<4 {
+                        func at(_ i: Int, _ j: Int) -> Float { g[(j * grid + i) * 4 + c] }
+                        let v = (at(x0, y0) * (1 - tx) + at(x1, y0) * tx) * (1 - ty) + (at(x0, y1) * (1 - tx) + at(x1, y1) * tx) * ty
+                        px[(y * size + x) * 4 + c] = UInt8(max(0, min(255, v * 255)))
+                    }
+                }
+            }
+        }
+        t.replace(region: MTLRegionMake2D(0, 0, size, size), mipmapLevel: 0, withBytes: px, bytesPerRow: size * 4)
+        return t
+    }
+
+    static func noise3D(_ device: MTLDevice, grid: Int, size: Int = 32) -> MTLTexture {
+        let d = MTLTextureDescriptor()
+        d.textureType = .type3D
+        d.pixelFormat = .rgba8Unorm
+        d.width = size; d.height = size; d.depth = size
+        let t = device.makeTexture(descriptor: d)!
+        let g = (0..<(grid * grid * grid * 4)).map { _ in Float.random(in: 0...1) }
+        var px = [UInt8](repeating: 0, count: size * size * size * 4)
+        for z in 0..<size {
+            for y in 0..<size {
+                for x in 0..<size {
+                    let f = SIMD3<Float>(Float(x), Float(y), Float(z)) * Float(grid) / Float(size)
+                    let i0 = SIMD3<Int>(Int(f.x) % grid, Int(f.y) % grid, Int(f.z) % grid)
+                    let i1 = SIMD3<Int>((i0.x + 1) % grid, (i0.y + 1) % grid, (i0.z + 1) % grid)
+                    var tt = f - SIMD3<Float>(Float(Int(f.x)), Float(Int(f.y)), Float(Int(f.z)))
+                    tt = tt * tt * (3 - 2 * tt)
+                    for c in 0..<4 {
+                        func at(_ a: Int, _ b: Int, _ cc: Int) -> Float { g[((cc * grid + b) * grid + a) * 4 + c] }
+                        func lerp(_ a: Float, _ b: Float, _ s: Float) -> Float { a + (b - a) * s }
+                        let v = lerp(lerp(lerp(at(i0.x, i0.y, i0.z), at(i1.x, i0.y, i0.z), tt.x), lerp(at(i0.x, i1.y, i0.z), at(i1.x, i1.y, i0.z), tt.x), tt.y),
+                                     lerp(lerp(at(i0.x, i0.y, i1.z), at(i1.x, i0.y, i1.z), tt.x), lerp(at(i0.x, i1.y, i1.z), at(i1.x, i1.y, i1.z), tt.x), tt.y), tt.z)
+                        px[((z * size + y) * size + x) * 4 + c] = UInt8(max(0, min(255, v * 255)))
+                    }
+                }
+            }
+        }
+        t.replace(region: MTLRegionMake3D(0, 0, 0, size, size, size), mipmapLevel: 0, slice: 0, withBytes: px, bytesPerRow: size * 4, bytesPerImage: size * size * 4)
+        return t
+    }
+
     private func ensureFeedback(_ w: Int, _ h: Int) {
         if let f = feedback.first, f.width == w, f.height == h { return }
         let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: MilkdropRenderer.format, width: w, height: h, mipmapped: false)
         d.usage = [.renderTarget, .shaderRead]
         d.storageMode = .private
         feedback = (0..<2).compactMap { _ in device.makeTexture(descriptor: d) }
+        func level(_ k: Int) -> MTLTexture? {
+            let bd = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: max(1, w >> k), height: max(1, h >> k), mipmapped: false)
+            bd.usage = [.shaderRead, .shaderWrite, .renderTarget]
+            bd.storageMode = .private
+            return device.makeTexture(descriptor: bd)
+        }
+        blur = (1...3).compactMap(level)
+        blurTmp = (1...3).compactMap(level)
         // Start from black.
         if let cb = queue.makeCommandBuffer() {
             for t in feedback {

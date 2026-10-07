@@ -132,16 +132,36 @@ final class MilkdropController: NSObject, MTKViewDelegate, NSWindowDelegate {
         entries = MilkdropLibrary.entries()
     }
 
+    private let compileQueue = DispatchQueue(label: "milkdrop.compile", qos: .userInitiated)
+    private var pending = 0
+
+    /// Shaders compile in the background; the current preset keeps playing until the new one is ready.
     private func select(_ i: Int, blend: Bool = true, record: Bool = true) {
-        guard entries.indices.contains(i), let p = entries[i].load() else { return }
-        renderer.load(p, blend: blend)
+        guard entries.indices.contains(i) else { return }
+        let entry = entries[i]
         lastChange = Date()
-        UserDefaults.standard.set(p.name, forKey: "milkdropPreset")
         if record {
             history = Array(history.prefix(historyPos + 1)) + [i]
             historyPos = history.count - 1
         }
-        show(p.name + (p.usesShaders ? "  ·  shader MD2 non ancora supportati" : ""))
+        pending += 1
+        let ticket = pending
+        compileQueue.async { [weak self] in
+            guard let self, let p = entry.load() else { return }
+            let prepared = self.renderer.prepare(p)
+            DispatchQueue.main.async {
+                guard ticket == self.pending else { return }   // a newer choice won
+                self.renderer.install(prepared, blend: blend)
+                self.lastChange = Date()
+                UserDefaults.standard.set(p.name, forKey: "milkdropPreset")
+                var text = p.name
+                if !prepared.notes.isEmpty {
+                    text += "  ·  shader non tradotto, uso la pipeline classica"
+                    NSLog("Milkdrop %@: %@", p.name, prepared.notes.joined(separator: " | "))
+                }
+                self.show(text)
+            }
+        }
     }
 
     func next() {

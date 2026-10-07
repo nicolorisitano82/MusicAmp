@@ -227,7 +227,46 @@ if let i = CommandLine.arguments.firstIndex(of: "--test-milkdrop") {
     rt.runFrame(time: 1, frameNo: 1, fps: 60, audio: MilkAudio(), aspect: (1, 1), size: (100, 100))
     check(rt["a"] == 1 && rt["b"] == 2 && rt["decay"] == 0.9 && rt["warp"] == 1, "milk: per-frame eseguito, default per i valori mancanti")
     let builtins = MilkdropBuiltins.presets
-    check(builtins.count == 6 && builtins.allSatisfy { !$0.frameCode.isEmpty }, "preset inclusi: \(builtins.count), tutti con codice per-frame")
+    check(builtins.count == 8 && builtins.allSatisfy { !$0.frameCode.isEmpty }, "preset inclusi: \(builtins.count), tutti con codice per-frame")
+
+    // 2b. Milkdrop 2 shaders: HLSL → Metal, compiled for real.
+    let shaderCases: [(String, String, String)] = [
+        ("troncamento float4 → float3, decay nel warp", "shader_body { ret = tex2D(sampler_main, uv); ret *= 0.97; }", ""),
+        ("funzione, static const, mul con matrice, lerp/frac/saturate, q e _qa, rumore 3D",
+         "static const float3 tint = float3(1, 0.5, 0.25);\nfloat3 swirl(float2 p, float k) { float2x2 m = float2x2(cos(k), -sin(k), sin(k), cos(k)); return tex2D(sampler_main, mul(p - 0.5, m) + 0.5).xyz * tint; }\n" +
+         "shader_body { float3 a = swirl(uv, q1*0.1 + time*0.01); float3 n = tex3D(sampler_noisevol_hq, float3(uv*4, time*0.1)).xyz; ret = lerp(a, n, 0.05) + frac(_qa.x)*0; ret = saturate(ret - 0.002); }", ""),
+        ("comp: blur, hue_shader, cast di rot_s1, texture utente, texsize_, for, ternario, lum", "",
+         "sampler sampler_clouds2; float4 texsize_clouds2;\nshader_body { float3 acc = 0; for (int i = 0; i < 4; i++) { float s = i / 4.0; acc += GetBlur1(uv + float2(s*0.01, 0)) * 0.25; }\n" +
+         " float3 p = mul(float3(uv - 0.5, 0), (float3x3)rot_s1); float3 cl = tex2D(sampler_clouds2, p.xy * texsize_clouds2.zw * 100).xyz;\n" +
+         " ret = (rad > 0.4 ? acc : GetMain(uv)) * hue_shader + cl * 0.1 + lum(acc) * 0.1; ret.rg += ret.b > 0.5 ? 0.1 : 0; }"),
+        ("sincos, parametro out, pow con scalare, step/smoothstep, swizzle su scalare", "",
+         "void foo(float x, out float2 r) { float s, c; sincos(x, s, c); r = float2(s, c); }\n" +
+         "shader_body { float2 r; foo(time, r); float3 c = GetPixel(uv + r*0.001); ret = pow(c, 1.2) * step(0.1, rad) + smoothstep(0.2, 0.8, c.g) * 0.1; ret = max(ret, 0.0); ret += bass.xxx * 0; }"),
+        ("costrutti dei preset reali: macro con GetPixel, uniform modificate, ridichiarazioni, float2x2(float4), -matrice, mul vettore·vettore",
+         "#define PIX(p) GetPixel(p)\n#define K 0.5\nfloat2x2 m0;\nshader_body { q1 = q1 + 1; rand_preset = rand_preset.yzwx; float2 a = uv; float2 a = a * K; float2x2 r = float2x2(_qb); m0 = -r;" +
+         " float d = mul(float3(a, 1), float3(1, 2, 3)); ret = PIX(mul(a - 0.5, m0) + 0.5) * d * q1 + rand_preset.x * 0; }", ""),
+        ("globali usate nelle funzioni, sampler_state, variabile 'or', array piatto, g_fTexSize, tex2d minuscolo, normalize scalare", "",
+         "float3 sunpos; float k = time * 0.1;\nsampler sampler_grad = sampler_state { Texture = <grad>; MipFilter = LINEAR; };\nconst float4 samples[2] = {1,0,0,1, 0,1,0,1};\n" +
+         "float3 shade(float2 p) { return sunpos * k + tex2d(sampler_grad, p).xyz; }\n" +
+         "shader_body { sunpos = float3(1, 0.5, 0.2); float3 or = shade(uv) * samples[1].y; ret = or + normalize(-2.0) * 0 + g_fTexSize.z; }"),
+        ("int e vettori misti, #define, while, compound su swizzle", "#define ZOOM 0.98\nshader_body { int n = 3; float2 z = (uv - 0.5) * ZOOM + 0.5; int k = 0; while (k < n) { z += 0.001 * float2(k, -k); k++; } ret = tex2D(sampler_fc_main, z).rgb; ret.xy *= 0.99; }", ""),
+    ]
+    if let rd0 = MilkdropRenderer() {
+        for (label, warp, comp) in shaderCases {
+            var pr = MilkPreset(name: "t")
+            pr.warpShader = warp
+            pr.compShader = comp
+            let prep = rd0.prepare(pr)
+            let ok = prep.notes.isEmpty && (warp.isEmpty || prep.warp != nil) && (comp.isEmpty || prep.comp != nil)
+            check(ok, "md2: " + label + (ok ? "" : " — " + prep.notes.joined(separator: " | ")))
+        }
+        let bad = rd0.prepare({ var p = MilkPreset(name: "bad"); p.warpShader = "shader_body { ret = nonexistent_fn(uv) +; }"; return p }())
+        check(bad.warp == nil && !bad.notes.isEmpty, "md2: shader rotto → pipeline classica e nota d'errore")
+        for p in builtins where p.usesShaders {
+            let prep = rd0.prepare(p)
+            check(prep.notes.isEmpty, "md2: \(p.name) compila" + (prep.notes.isEmpty ? "" : " — " + prep.notes.joined(separator: " | ")))
+        }
+    }
 
     // 3. Offscreen rendering with synthetic audio.
     let out = CommandLine.arguments.count > i + 1 ? URL(fileURLWithPath: CommandLine.arguments[i + 1]) : nil
@@ -291,6 +330,172 @@ if let i = CommandLine.arguments.firstIndex(of: "--test-milkdrop") {
     }
     print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
     exit(failures == 0 ? 0 : 1)
+}
+
+/// Debug: `MusicAmp --milkdrop-snapshot file.milk out.png [frames]`: renders a preset with synthetic audio and saves the last frame.
+if let i = CommandLine.arguments.firstIndex(of: "--milkdrop-snapshot"), CommandLine.arguments.count > i + 2,
+   let p = MilkPreset.load(URL(fileURLWithPath: CommandLine.arguments[i + 1])), let rd = MilkdropRenderer() {
+    let frames = CommandLine.arguments.count > i + 3 ? Int(CommandLine.arguments[i + 3]) ?? 150 : 150
+    let w = 640, h = 360
+    let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: MilkdropRenderer.format, width: w, height: h, mipmapped: false)
+    d.usage = [.renderTarget, .shaderRead]
+    d.storageMode = .managed
+    let tex = rd.device.makeTexture(descriptor: d)!
+    let prep = rd.prepare(p)
+    rd.install(prep, blend: false)
+    print("shader: warp \(prep.warp != nil ? "sì" : "no"), comp \(prep.comp != nil ? "sì" : "no"), blur \(prep.usesBlur)")
+    prep.notes.forEach { print("  " + $0) }
+    var px = [UInt8](repeating: 0, count: w * h * 4)
+    for f in 0..<frames {
+        let t = Double(f) / 30
+        rd.fixedTime = 100 + t
+        let beat: Float = f % 15 < 3 ? 1 : 0.25
+        let l = (0..<576).map { Float(sin(Double($0) * 0.13 + t * 9)) * 0.6 * beat }
+        rd.updateAudio(left: l, right: l.reversed(), spectrum: (0..<512).map { Float(max(0, 1 - Double($0) / 256)) * beat }, bands: (beat * 0.02, beat * 0.01, beat * 0.005), dt: 1 / 30)
+        guard let cb = rd.render(into: tex) else { break }
+        let b = cb.makeBlitCommandEncoder()!; b.synchronize(resource: tex); b.endEncoding()
+        cb.commit(); cb.waitUntilCompleted()
+        if f % 30 == 29 || f == frames - 1 {
+            tex.getBytes(&px, bytesPerRow: w * 4, from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
+            let lit = stride(from: 0, to: px.count, by: 4).filter { Int(px[$0]) + Int(px[$0 + 1]) + Int(px[$0 + 2]) > 24 }.count
+            let r = rd.runtime!
+            print(String(format: "frame %3d: %.1f%% acceso  decay %.3f zoom %.3f warp %.2f wave_a %.2f gamma %.2f", f + 1, 100 * Double(lit) / Double(w * h),
+                         r["decay"], r["zoom"], r["warp"], r["wave_a"], r["gamma"]))
+        }
+    }
+    let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                        bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)!
+    px.withUnsafeBytes { memcpy(ctx.data!, $0.baseAddress!, px.count) }
+    try? NSBitmapImageRep(cgImage: ctx.makeImage()!).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: CommandLine.arguments[i + 2]))
+    exit(0)
+}
+
+/// Debug: `MusicAmp --milkdrop-msl file.milk`: prints the Metal translation of a preset's shaders and Metal's errors.
+if let i = CommandLine.arguments.firstIndex(of: "--milkdrop-msl"), CommandLine.arguments.count > i + 1,
+   let p = MilkPreset.load(URL(fileURLWithPath: CommandLine.arguments[i + 1])), let dev = MTLCreateSystemDefaultDevice() {
+    for (label, src, stage) in [("warp", p.warpShader, HLSLTranslator.Stage.warp), ("comp", p.compShader, .comp)] where src.contains("shader_body") {
+        print("===== \(label)")
+        do {
+            let msl = try HLSLTranslator(stage: stage).translate(src, entry: "md_main")
+            let lines = msl.components(separatedBy: "\n")
+            let preludeLines = MDShaderPrelude.source.components(separatedBy: "\n").count - 1
+            do { _ = try dev.makeLibrary(source: MDShaderPrelude.source + msl, options: nil); print("OK") } catch {
+                for l in "\(error)".components(separatedBy: "\n") where l.contains("error:") {
+                    print(l)
+                    // program_source:LINE:COL → show that line of the translation.
+                    if let m = l.range(of: #"program_source:(\d+)"#, options: .regularExpression),
+                       let n = Int(l[m].split(separator: ":")[1]), n - preludeLines - 1 >= 0, n - preludeLines - 1 < lines.count {
+                        print("    > " + lines[n - preludeLines - 1].trimmingCharacters(in: .whitespaces))
+                    }
+                }
+            }
+        } catch { print("traduzione: \(error)") }
+    }
+    exit(0)
+}
+
+/// Debug: `MusicAmp --milkdrop-verify <dir> [report.txt] [render-sample]`: translates and compiles every .milk under
+/// <dir> (in parallel) and renders a sample of them, then prints totals and the most common failure causes.
+if let i = CommandLine.arguments.firstIndex(of: "--milkdrop-verify"), CommandLine.arguments.count > i + 1 {
+    let dir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+    let reportURL = CommandLine.arguments.count > i + 2 ? URL(fileURLWithPath: CommandLine.arguments[i + 2]) : nil
+    let sample = CommandLine.arguments.count > i + 3 ? Int(CommandLine.arguments[i + 3]) ?? 200 : 200
+    var files: [URL] = []
+    if let en = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil) {
+        for case let f as URL in en where f.pathExtension.lowercased() == "milk" { files.append(f) }
+    }
+    files.sort { $0.path < $1.path }
+    guard let rd = MilkdropRenderer() else { print("Metal non disponibile"); exit(1) }
+    struct Result { var name: String; var shaders = 0; var warpOK = true; var compOK = true; var notes: [String] = []; var parseFailed = false }
+    var results = [Result?](repeating: nil, count: files.count)
+    let lock = NSLock()
+    var done = 0
+    let t0 = Date()
+    DispatchQueue.concurrentPerform(iterations: files.count) { k in
+        let f = files[k]
+        var r = Result(name: f.path.replacingOccurrences(of: dir.path + "/", with: ""))
+        if let p = MilkPreset.load(f) {
+            let prep = rd.prepare(p)
+            r.shaders = (p.warpShader.contains("shader_body") ? 1 : 0) + (p.compShader.contains("shader_body") ? 1 : 0)
+            r.warpOK = !p.warpShader.contains("shader_body") || prep.warp != nil
+            r.compOK = !p.compShader.contains("shader_body") || prep.comp != nil
+            r.notes = prep.notes
+        } else {
+            r.parseFailed = true
+        }
+        lock.lock()
+        results[k] = r
+        done += 1
+        if done % 500 == 0 { print("  \(done)/\(files.count)…"); fflush(stdout) }
+        lock.unlock()
+    }
+    let all = results.compactMap { $0 }
+    let withShaders = all.filter { $0.shaders > 0 }
+    let fullOK = withShaders.filter { $0.warpOK && $0.compOK }
+    let stages = all.reduce(0) { $0 + $1.shaders }
+    let stageOK = all.reduce(0) { $0 + ($1.shaders > 0 ? (($1.warpOK ? 1 : 0) + ($1.compOK ? 1 : 0)) - (2 - $1.shaders) : 0) }
+    print(String(format: "preset: %d (%d illeggibili), con shader MD2: %d", all.count, all.filter(\.parseFailed).count, withShaders.count))
+    print(String(format: "preset MD2 con tutti gli shader tradotti e compilati: %d / %d (%.1f%%)", fullOK.count, withShaders.count, 100 * Double(fullOK.count) / Double(max(1, withShaders.count))))
+    print(String(format: "shader singoli compilati: %d / %d (%.1f%%), in %.0f s", stageOK, stages, 100 * Double(stageOK) / Double(max(1, stages)), Date().timeIntervalSince(t0)))
+    // Most common causes: error text with names and numbers blanked out.
+    func signature(_ note: String) -> String {
+        var s = note
+        if let r = s.range(of: "error: ") { s = String(s[r.upperBound...]) }
+        s = s.replacingOccurrences(of: "'[^']*'", with: "'…'", options: .regularExpression)
+        s = s.replacingOccurrences(of: "\\b[0-9]+\\b", with: "N", options: .regularExpression)
+        return String((note.hasPrefix("shader warp") ? "[warp] " : "[comp] ") + s.prefix(110))
+    }
+    var causes: [String: (Int, String)] = [:]
+    for r in all { for n in r.notes { let k = signature(n); causes[k] = ((causes[k]?.0 ?? 0) + 1, causes[k]?.1 ?? r.name) } }
+    print("cause più frequenti:")
+    for (k, v) in causes.sorted(by: { $0.value.0 > $1.value.0 }).prefix(25) { print(String(format: "%6d  %@   (es. %@)", v.0, k, String(v.1.suffix(60)))) }
+    if let reportURL {
+        var rep = ""
+        for r in all where !r.notes.isEmpty { rep += r.name + "\n" + r.notes.map { "    " + $0 }.joined(separator: "\n") + "\n" }
+        try? rep.write(to: reportURL, atomically: true, encoding: .utf8)
+    }
+    // Render a sample: catches crashes, black or frozen output at runtime.
+    let w = 320, h = 180
+    let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: MilkdropRenderer.format, width: w, height: h, mipmapped: false)
+    d.usage = [.renderTarget, .shaderRead]
+    d.storageMode = .managed
+    let tex = rd.device.makeTexture(descriptor: d)!
+    let q = rd.device.makeCommandQueue()!
+    var black = 0, frozen = 0, rendered = 0
+    var blackNames: [String] = []
+    let step = max(1, files.count / max(1, sample))
+    for k in stride(from: 0, to: files.count, by: step) {
+        guard let p = MilkPreset.load(files[k]) else { continue }
+        rd.load(p, blend: false)
+        var prev: [UInt8] = []
+        var lit = 0.0, diff = 0.0
+        for f in 0..<90 {
+            let t = Double(f) / 30
+            rd.fixedTime = 100 + t
+            let beat: Float = f % 15 < 3 ? 1 : 0.25
+            let l = (0..<576).map { Float(sin(Double($0) * 0.13 + t * 9)) * 0.6 * beat }
+            rd.updateAudio(left: l, right: l.reversed(), spectrum: (0..<512).map { Float(max(0, 1 - Double($0) / 256)) * beat }, bands: (beat * 0.02, beat * 0.01, beat * 0.005), dt: 1 / 30)
+            guard let cb = rd.render(into: tex) else { break }
+            if f >= 80, f % 9 == 8 {
+                let b = cb.makeBlitCommandEncoder()!; b.synchronize(resource: tex); b.endEncoding()
+            }
+            cb.commit(); cb.waitUntilCompleted()
+            if f >= 80, f % 9 == 8 {
+                var px = [UInt8](repeating: 0, count: w * h * 4)
+                tex.getBytes(&px, bytesPerRow: w * 4, from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
+                lit = Double(stride(from: 0, to: px.count, by: 4).filter { Int(px[$0]) + Int(px[$0 + 1]) + Int(px[$0 + 2]) > 24 }.count) / Double(w * h)
+                if !prev.isEmpty { diff = Double(zip(px, prev).filter { abs(Int($0) - Int($1)) > 4 }.count) / Double(px.count) }
+                prev = px
+            }
+        }
+        _ = q
+        rendered += 1
+        if lit < 0.01 { black += 1; blackNames.append(files[k].lastPathComponent) }
+        else if diff < 0.0005 { frozen += 1 }
+    }
+    print("render di prova: \(rendered) preset, \(black) quasi neri, \(frozen) fermi")
+    for n in blackNames.prefix(15) { print("   nero: " + n) }
+    exit(0)
 }
 
 /// Debug: `MusicAmp --resolve-fonts "Name" ...` runs the font lookup and prints where each font came from.

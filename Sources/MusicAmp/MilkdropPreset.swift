@@ -6,6 +6,7 @@ import Foundation
 
 struct MilkPreset {
     var name: String
+    var url: URL?
     var values: [String: Double] = [:]
     var initCode = "", frameCode = "", pixelCode = ""
     var waves: [Part] = Array(repeating: Part(), count: 4)
@@ -47,6 +48,7 @@ struct MilkPreset {
         "zoomexp": 1, "zoom": 1, "rot": 0, "cx": 0.5, "cy": 0.5, "dx": 0, "dy": 0, "warp": 1, "sx": 1, "sy": 1,
         "wave_r": 1, "wave_g": 1, "wave_b": 1, "wave_x": 0.5, "wave_y": 0.5,
         "ob_size": 0.01, "ob_r": 0, "ob_g": 0, "ob_b": 0, "ob_a": 0, "ib_size": 0.01, "ib_r": 0.25, "ib_g": 0.25, "ib_b": 0.25, "ib_a": 0,
+        "b1n": 0, "b1x": 1, "b2n": 0, "b2x": 1, "b3n": 0, "b3x": 1,
         "mv_x": 12, "mv_y": 9, "mv_dx": 0, "mv_dy": 0, "mv_l": 0.9, "mv_r": 1, "mv_g": 1, "mv_b": 1, "mv_a": 0,
     ]
 
@@ -65,7 +67,9 @@ struct MilkPreset {
     static func load(_ url: URL) -> MilkPreset? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
-        return parse(text, name: url.deletingPathExtension().lastPathComponent)
+        var p = parse(text, name: url.deletingPathExtension().lastPathComponent)
+        p.url = url
+        return p
     }
 
     static func parse(_ text: String, name: String) -> MilkPreset {
