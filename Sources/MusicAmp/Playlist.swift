@@ -20,8 +20,10 @@ final class Track {
 }
 
 final class Playlist {
-    static let audioExtensions: Set<String> = ["mp3", "m4a", "m4b", "aac", "alac", "wav", "aif", "aiff", "aifc",
-                                               "flac", "caf", "mp4", "mp2", "ac3", "3gp", "amr"]
+    static let nativeExtensions: Set<String> = ["mp3", "m4a", "m4b", "aac", "alac", "wav", "aif", "aiff", "aifc",
+                                                "flac", "caf", "mp4", "mp2", "ac3", "3gp", "amr"]
+    /// Native formats plus what an installed ffmpeg adds (Ogg, Opus, APE, WavPack…).
+    static var audioExtensions: Set<String> { FFmpeg.available ? nativeExtensions.union(FFmpeg.extensions) : nativeExtensions }
 
     var tracks: [Track] = [] { didSet { version &+= 1 } }
     var selection = Set<Int>() { didSet { version &+= 1 } }
@@ -151,6 +153,25 @@ final class Playlist {
 
     private func loadMetadata(_ t: Track) {
         guard t.url.isFileURL else { return }
+        if FFmpeg.extensions.contains(t.url.pathExtension.lowercased()) {
+            // AVFoundation can't read these: ask ffprobe.
+            guard FFmpeg.available else { return }
+            DispatchQueue.global(qos: .utility).async {
+                guard let p = FFmpeg.probe(t.url) else { return }
+                DispatchQueue.main.async {
+                    if p.duration > 0 { t.duration = p.duration }
+                    if let title = p.title, !title.isEmpty {
+                        t.title = (p.artist?.isEmpty == false) ? "\(p.artist!) - \(title)" : title
+                    }
+                    t.artist = p.artist
+                    t.songTitle = p.title
+                    t.album = p.album
+                    self.version &+= 1
+                    if t === self.currentTrack { self.onCurrentMetadata?() }
+                }
+            }
+            return
+        }
         Task {
             let asset = AVURLAsset(url: t.url)
             let dur = try? await asset.load(.duration)

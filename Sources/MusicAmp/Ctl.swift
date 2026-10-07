@@ -21,8 +21,16 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     // Settings (didSet notify() keeps the SwiftUI preferences panel in sync with clicks on the skin)
     var doubleSize = false { didSet { notify() } }
     var alwaysOnTop = false { didSet { notify() } }
-    var shuffle = false { didSet { notify() } }
-    var repeatOn = false { didSet { notify() } }
+    var shuffle = false { didSet { notify(); if shuffle != oldValue { invalidateTransition() } } }
+    var repeatOn = false { didSet { notify(); if repeatOn != oldValue { invalidateTransition() } } }
+    // Transitions and loudness
+    var gapless = true { didSet { applyTransitionSettings(); notify() } }
+    var crossfadeOn = false { didSet { applyTransitionSettings(); notify() } }
+    var crossfadeSeconds: Double = 5 { didSet { applyTransitionSettings(); notify() } }
+    var rgMode = 1 { didSet { applyTransitionSettings(); notify() } }   // 0 off, 1 track, 2 album
+    var rgPreamp: Double = 0 { didSet { applyTransitionSettings(); notify() } }
+    var rgAnalyze = true { didSet { applyTransitionSettings(); notify() } }
+    var rgPreventClip = true { didSet { applyTransitionSettings(); notify() } }
     var timeRemaining = false { didSet { notify() } }
     var visMode = 0 { didSet { notify() } }   // 0 spectrum, 1 oscilloscope, 2 off
     var volume: Double = 75 { didSet { audio.setVolume(volume) } }
@@ -53,6 +61,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var plFontSize = 9 { didSet { notify() } }
     var plShowNumbers = true { didSet { notify() } }
     var plUseSkinFont = true { didSet { notify() } }
+    var ffmpegEnabled = true { didSet { FFmpeg.enabled = ffmpegEnabled; notify() } }
     /// Seconds of radio audio buffered before playback starts (and after an underrun).
     var radioBuffer: Double = 2 { didSet { audio.bufferSeconds = radioBuffer; notify() } }
     var menuBarEnabled = true { didSet { menuBar?.setEnabled(menuBarEnabled); notify() } }
@@ -62,6 +71,11 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
 
     // Transient UI state
     var marqueeOverride: String?
+    /// The title is being dragged by hand: auto-scroll waits.
+    var marqueeDragging = false
+    /// "It really whips the llama's ass" title bar, toggled with ⌃⇧ + "nullsoft" as in Winamp.
+    var easterEgg = false
+    private var eggKeys = ""
     var marqueeOffset: CGFloat = 0
     private(set) var tickCount = 0
     private(set) var visBars = [Float](repeating: 0, count: 75)
@@ -135,6 +149,11 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         audio.onFinish = { [weak self] in self?.next(auto: true) }
         audio.onChange = { [weak self] in self?.transportChanged() }
         audio.onStreamInfo = { [weak self] in self?.streamInfoChanged() }
+        audio.nextProvider = { [weak self] in self?.peekNext() }
+        audio.onAdvance = { [weak self] i in self?.didAdvance(to: i) }
+        audio.gainProvider = { ReplayGain.shared.gain(for: $0) }
+        ReplayGain.shared.onUpdate = { [weak self] u in self?.audio.refreshGain(for: u) }
+        applyTransitionSettings()
         nowPlaying = NowPlaying(ctl: self)
         playlist.onCurrentMetadata = { [weak self] in self?.nowPlaying?.update() }
         loadAutoEQ()
@@ -205,7 +224,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     private var visShown: Bool { visMode != 2 && (isShowing(mainWindow) || (plVisDisplayed && isShowing(plWindow))) }
 
     private var marqueeScrolls: Bool {
-        marqueeScroll && marqueeOverride == nil && !mainShade && isShowing(mainWindow) && marqueeText.count * 5 > 154
+        marqueeScroll && marqueeOverride == nil && !marqueeDragging && !mainShade && isShowing(mainWindow) && marqueeText.count * 5 > 154
     }
 
     private func setTimerInterval(_ i: TimeInterval) {
@@ -261,6 +280,62 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             }
         }
         mainView.needsDisplay = true
+    }
+
+    // MARK: Gapless / crossfade / ReplayGain
+
+    /// Shuffle pick announced ahead of time, so the transition and the playlist agree.
+    private var pendingShuffle: Int?
+
+    /// The track an automatic advance would play, without consuming the queue (nil = stop at the end).
+    func peekNext() -> (index: Int, url: URL)? {
+        let n = playlist.tracks.count
+        guard n > 0, let cur = playlist.current else { return nil }
+        var i: Int?
+        if let q = playlist.queue.first, let qi = playlist.tracks.firstIndex(where: { $0 === q }) {
+            i = qi
+        } else if shuffle, n > 1 {
+            if pendingShuffle == nil {
+                var r: Int
+                repeat { r = Int.random(in: 0..<n) } while r == cur
+                pendingShuffle = r
+            }
+            i = pendingShuffle
+        } else if cur + 1 < n {
+            i = cur + 1
+        } else if repeatOn {
+            i = 0
+        }
+        guard let idx = i, playlist.tracks.indices.contains(idx), !playlist.tracks[idx].isStream else { return nil }
+        return (idx, playlist.tracks[idx].url)
+    }
+
+    /// The engine moved to the prepared track on its own (gapless or crossfade).
+    private func didAdvance(to index: Int) {
+        guard playlist.tracks.indices.contains(index) else { return }
+        let t = playlist.tracks[index]
+        if let q = playlist.queue.first, q === t { playlist.queue.removeFirst() }
+        pendingShuffle = nil
+        playlist.currentTrack = t
+        marqueeOffset = 0
+        plView.ensureVisible(index)
+    }
+
+    /// Queue, shuffle or repeat changed: a prepared next track may no longer be the right one.
+    func invalidateTransition() {
+        pendingShuffle = nil
+        audio.cancelTransition()
+    }
+
+    func applyTransitionSettings() {
+        audio.crossfadeSeconds = crossfadeOn ? crossfadeSeconds : 0
+        audio.gapless = gapless
+        let rg = ReplayGain.shared
+        rg.mode = ReplayGain.Mode(rawValue: rgMode) ?? .track
+        rg.preamp = rgPreamp
+        rg.analyzeUntagged = rgAnalyze
+        rg.preventClipping = rgPreventClip
+        audio.refreshGain()
     }
 
     func selectOutput(_ uid: String?) {
@@ -374,6 +449,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     /// then starts it when `start`. `then` runs on the main thread once the file is ready.
     func playIndex(_ i: Int, start: Bool = true, then: (() -> Void)? = nil) {
         guard playlist.tracks.indices.contains(i) else { return }
+        pendingShuffle = nil
         let t = playlist.tracks[i]
         playlist.currentTrack = t
         marqueeOffset = 0
@@ -392,19 +468,25 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         }
         let token = loadToken
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = Result { try AVAudioFile(forReading: t.url) }
+            // Native first (AVAudioFile); formats macOS can't read go through ffmpeg when installed.
+            let ext = t.url.pathExtension.lowercased()
+            let native = FFmpeg.extensions.contains(ext) ? nil : try? AVAudioFile(forReading: t.url)
+            let probe = native == nil && FFmpeg.available ? FFmpeg.probe(t.url) : nil
             DispatchQueue.main.async {
                 guard let self, self.loadToken == token else { return }   // another track was chosen meanwhile
-                switch result {
-                case .success(let f):
-                    self.audio.use(f, url: t.url)
-                    if start { self.audio.play() }
-                    then?()
-                case .failure:
+                if let f = native {
+                    self.audio.use(f, url: t.url, index: i)
+                } else if let p = probe {
+                    self.audio.useFFmpeg(url: t.url, probe: p, index: i)
+                } else {
                     self.audio.unload()
-                    self.flashMarquee("IMPOSSIBILE APRIRE IL FILE")
+                    let needsFFmpeg = FFmpeg.extensions.contains(ext) && FFmpeg.ffmpegPath == nil
+                    self.flashMarquee(needsFFmpeg ? "SERVE FFMPEG: BREW INSTALL FFMPEG" : "IMPOSSIBILE APRIRE IL FILE", seconds: 3)
                     NSSound.beep()
+                    return
                 }
+                if start { self.audio.play() }
+                then?()
             }
         }
     }
@@ -412,7 +494,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     private var loadToken = 0
 
     @objc func play() {
-        if audio.file == nil || playlist.current == nil {
+        if !audio.hasSource || playlist.current == nil {
             if playlist.tracks.isEmpty { openFiles(); return }
             playIndex(playlist.current ?? playlist.selection.min() ?? 0)
             return
@@ -435,7 +517,10 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         }
         var i: Int
         if shuffle, n > 1 {
-            repeat { i = Int.random(in: 0..<n) } while i == playlist.current
+            // Reuse the pick already announced to the engine for a gapless/crossfade transition.
+            if let p = pendingShuffle, p < n, p != playlist.current { i = p } else {
+                repeat { i = Int.random(in: 0..<n) } while i == playlist.current
+            }
         } else {
             i = (playlist.current ?? -1) + 1
             if i >= n {
@@ -851,6 +936,17 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
 
     func handleKey(_ e: NSEvent) -> Bool {
         if e.modifierFlags.contains(.command) { return false }
+        if e.modifierFlags.contains(.control), e.modifierFlags.contains(.shift) {
+            eggKeys = String((eggKeys + (e.charactersIgnoringModifiers ?? "").lowercased()).suffix(8))
+            if eggKeys == "nullsoft" {
+                eggKeys = ""
+                easterEgg.toggle()
+                // Some skins repeat the normal title in the easter-egg rows: the display always says it.
+                flashMarquee(easterEgg ? "IT REALLY WHIPS THE LLAMA'S ASS!" : "NULLSOFT", seconds: 3)
+                mainView.needsDisplay = true
+            }
+            return true
+        }
         switch e.keyCode {
         case 123: seek(by: -5); return true
         case 124: seek(by: 5); return true
@@ -1014,10 +1110,11 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     @objc func queueSelected() {
         guard !playlist.selection.isEmpty else { NSSound.beep(); return }
         playlist.toggleQueue(playlist.selection)
+        invalidateTransition()
         flashMarquee(playlist.queue.isEmpty ? "CODA VUOTA" : "IN CODA: \(playlist.queue.count)", seconds: 1.2)
     }
 
-    @objc func clearQueue() { playlist.queue = [] }
+    @objc func clearQueue() { playlist.queue = []; invalidateTransition() }
 
     @objc func jumpToCurrent() { if let i = playlist.current { plView.ensureVisible(i); playlist.selection = [i] } }
 
@@ -1159,6 +1256,14 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         plShowNumbers = bool("plShowNumbers", true)
         plUseSkinFont = bool("plUseSkinFont", true)
         radioBuffer = dbl("radioBuffer", 2)
+        gapless = bool("gapless", true)
+        ffmpegEnabled = bool("ffmpegEnabled", true)
+        crossfadeOn = bool("crossfadeOn", false)
+        crossfadeSeconds = dbl("crossfadeSeconds", 5)
+        rgMode = int("rgMode", 1)
+        rgPreamp = dbl("rgPreamp", 0)
+        rgAnalyze = bool("rgAnalyze", true)
+        rgPreventClip = bool("rgPreventClip", true)
         autoDownloadFonts = bool("autoDownloadFonts", true)
         menuBarEnabled = bool("menuBarEnabled", true)
         notifyTrackChange = bool("notifyTrackChange", true)
@@ -1181,7 +1286,9 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             "playlist": playlist.tracks.map { $0.url.isFileURL ? $0.url.path : $0.url.absoluteString },
             "streamTitles": Dictionary(playlist.tracks.filter(\.isStream).map { ($0.url.absoluteString, $0.title) },
                                        uniquingKeysWith: { a, _ in a }),
-            "radioBuffer": radioBuffer,
+            "radioBuffer": radioBuffer, "ffmpegEnabled": ffmpegEnabled, "gapless": gapless, "crossfadeOn": crossfadeOn,
+            "crossfadeSeconds": crossfadeSeconds, "rgMode": rgMode, "rgPreamp": rgPreamp, "rgAnalyze": rgAnalyze,
+            "rgPreventClip": rgPreventClip,
             "current": playlist.current ?? -1,
             "resumeTime": audio.currentTime, "resumePlaying": audio.state == .playing,
         ]

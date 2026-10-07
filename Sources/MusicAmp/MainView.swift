@@ -10,6 +10,7 @@ final class MainView: SkinView {
     private var pressInside = false
     private var dragKind: String?
     private var seekPreview: Double?
+    private var marqueeGrab: (x: CGFloat, offset: CGFloat) = (0, 0)
 
     private let buttons: [(String, CGRect)] = [
         ("prev", R(16, 88, 23, 18)), ("play", R(39, 88, 23, 18)), ("pause", R(62, 88, 23, 18)),
@@ -39,7 +40,7 @@ final class MainView: SkinView {
         h.combine(ctl.marqueeOffset); h.combine(ctl.marqueeOverride); h.combine(ctl.marqueeText)
         h.combine(ctl.volume); h.combine(ctl.balance); h.combine(ctl.shuffle); h.combine(ctl.repeatOn)
         h.combine(ctl.eqVisible); h.combine(ctl.plVisible); h.combine(ctl.alwaysOnTop); h.combine(ctl.doubleSize)
-        h.combine(ctl.timeRemaining); h.combine(ctl.visMode)
+        h.combine(ctl.timeRemaining); h.combine(ctl.visMode); h.combine(ctl.easterEgg)
         h.combine(pressed); h.combine(pressInside); h.combine(dragKind); h.combine(seekPreview)
         return h.finalize()
     }
@@ -51,7 +52,9 @@ final class MainView: SkinView {
         if shade { renderShade(r); return }
         let a = ctl.audio
         r.blit("main", R(0, 0, 275, 116), 0, 0)
-        r.blit("titlebar", isActive ? R(27, 0, 275, 14) : R(27, 15, 275, 14), 0, 0)
+        // Easter egg (⌃⇧ + "nullsoft"): the "It really whips the llama's ass" title bar rows of TITLEBAR.BMP.
+        let titleY: CGFloat = ctl.easterEgg ? (isActive ? 57 : 72) : (isActive ? 0 : 15)
+        r.blit("titlebar", R(27, titleY, 275, 14), 0, 0)
         titleButtons(r, shade: false)
 
         // Clutter bar
@@ -91,7 +94,8 @@ final class MainView: SkinView {
                 } else {
                     let full = t + "  ***  "
                     let w = CGFloat(full.count * 5)
-                    let off = ctl.marqueeOffset.truncatingRemainder(dividingBy: w)
+                    var off = ctl.marqueeOffset.truncatingRemainder(dividingBy: w)
+                    if off < 0 { off += w }   // dragged right past the start
                     r.text(full + full, 111 - off, 27)
                 }
             }
@@ -203,6 +207,13 @@ final class MainView: SkinView {
             return false
         }
         if R(16, 72, 248, 10).contains(p), loaded { dragKind = "pos"; updateDrag(p); return true }
+        // Winamp lets you drag the song title to scroll it by hand.
+        if R(111, 24, 155, 12).contains(p), ctl.marqueeOverride == nil, ctl.marqueeText.count * 5 > 154 {
+            dragKind = "marquee"
+            marqueeGrab = (p.x, ctl.marqueeOffset)
+            ctl.marqueeDragging = true
+            return true
+        }
         if R(107, 57, 68, 13).contains(p) { dragKind = "vol"; updateDrag(p); return true }
         if R(177, 57, 38, 13).contains(p) { dragKind = "bal"; updateDrag(p); return true }
         for (id, r) in buttons where r.contains(p) { pressed = id; pressInside = true; return true }
@@ -223,6 +234,7 @@ final class MainView: SkinView {
             if (k == "pos" || k == "shadepos"), let sp = seekPreview { ctl.audio.seek(to: sp * ctl.audio.duration) }
             dragKind = nil
             seekPreview = nil
+            ctl.marqueeDragging = false
             ctl.marqueeOverride = nil
             return
         }
@@ -232,6 +244,8 @@ final class MainView: SkinView {
 
     private func updateDrag(_ p: CGPoint) {
         switch dragKind {
+        case "marquee":
+            ctl.marqueeOffset = marqueeGrab.offset - (p.x - marqueeGrab.x)
         case "vol":
             ctl.volume = max(0, min(100, (p.x - 107 - 7) / 54 * 100))
             ctl.marqueeOverride = "VOLUME: \(Int(ctl.volume.rounded()))%"

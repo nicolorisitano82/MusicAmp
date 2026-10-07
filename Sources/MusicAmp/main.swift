@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var started = false
@@ -127,6 +128,7 @@ func snapshot(_ args: [String]) -> Never {
         }
     }
     c.snapshotMode = true
+    c.easterEgg = ProcessInfo.processInfo.environment["MUSICAMP_EGG"] != nil
     c.debugFillVis()
     var images = renderAll()
     (c.mainShade, c.eqShade, c.plW) = (true, true, 3)
@@ -245,6 +247,166 @@ if let i = CommandLine.arguments.firstIndex(of: "--test-radio"), CommandLine.arg
     print("  name=\(a.stream.name ?? "-") hls=\(a.stream.isHLS) rate=\(Int(a.sampleRate)) ch=\(a.channels) kbps=\(a.bitrate)")
     print("  state=\(a.state) buffering=\(a.stream.buffering) played=\(String(format: "%.1f", a.currentTime))s vis-peak=\(String(format: "%.2f", peak)) eq-rms=\(String(format: "%.3f", rms)) error=\(a.stream.error ?? "none")")
     exit(a.currentTime > 1 || a.stream.isHLS ? 0 : 1)
+}
+
+/// Debug: `MusicAmp --test-transitions` measures gapless and crossfade on generated tones (muted) and checks
+/// the EBU R128 meter and ReplayGain tag reading.
+if CommandLine.arguments.contains("--test-transitions") {
+    var failures = 0
+    func check(_ ok: Bool, _ what: String) { print((ok ? "PASS " : "FAIL ") + what); if !ok { failures += 1 } }
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("musicamp-transitions", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    func tone(_ name: String, freq: Double, seconds: Double, amp: Float, rate: Double = 44100) -> URL {
+        let url = dir.appendingPathComponent(name)
+        try? FileManager.default.removeItem(at: url)
+        let fmt = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
+        let f = try! AVAudioFile(forWriting: url, settings: fmt.settings)
+        let n = AVAudioFrameCount(seconds * rate)
+        let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: n)!
+        buf.frameLength = n
+        for i in 0..<Int(n) {
+            let v = amp * Float(sin(2 * Double.pi * freq * Double(i) / rate))
+            buf.floatChannelData![0][i] = v
+            buf.floatChannelData![1][i] = v
+        }
+        try! f.write(from: buf)
+        return url
+    }
+    let a1 = tone("a.caf", freq: 440, seconds: 2, amp: 0.5)
+    let b1 = tone("b.caf", freq: 440, seconds: 2, amp: 0.5, rate: 48000)   // different rate on purpose
+
+    /// Plays A then B (muted); returns per-10 ms RMS of the pre-volume signal and when the advance happened.
+    func run(crossfade: Double) -> (rms: [Float], advanceAt: Double?) {
+        let e = AudioEngine()
+        e.setVolume(0)
+        e.crossfadeSeconds = crossfade
+        e.gapless = true
+        var samples: [Float] = []
+        let lock = NSLock()
+        e.eq.installTap(onBus: 0, bufferSize: 2048, format: nil) { buf, _ in
+            guard let d = buf.floatChannelData else { return }
+            lock.lock(); samples += UnsafeBufferPointer(start: d[0], count: Int(buf.frameLength)); lock.unlock()
+        }
+        var advanceAt: Double?
+        var served = false
+        e.nextProvider = { served ? nil : { served = true; return (1, b1) }() }
+        let t0 = Date()
+        e.onAdvance = { _ in advanceAt = Date().timeIntervalSince(t0) }
+        e.use(try! AVAudioFile(forReading: a1), url: a1, index: 0)
+        e.play()
+        while Date().timeIntervalSince(t0) < 5 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        e.stop()
+        lock.lock(); defer { lock.unlock() }
+        let rate = e.eq.outputFormat(forBus: 0).sampleRate
+        let win = Int(rate / 100)
+        let rms = stride(from: 0, to: max(0, samples.count - win), by: win).map { i -> Float in
+            var s: Float = 0
+            for k in i..<(i + win) { s += samples[k] * samples[k] }
+            return (s / Float(win)).squareRoot()
+        }
+        return (rms, advanceAt)
+    }
+
+    // 1. Gapless: once the tone starts, no 10 ms window drops to silence until B ends (~4 s of audio).
+    let g = run(crossfade: 0)
+    let first = g.rms.firstIndex { $0 > 0.1 } ?? 0
+    let body = Array(g.rms[first..<min(g.rms.count, first + 390)])
+    let minLevel = body.min() ?? 0
+    check(g.advanceAt != nil, "gapless: advanced to the next track automatically")
+    check(body.count >= 390 && minLevel > 0.2, "gapless: no silent 10 ms window across the join (min rms \(String(format: "%.3f", minLevel)), 44.1 → 48 kHz)")
+
+    // 2. Crossfade 1 s: the advance comes ~1 s before A's end, and the equal-power fade keeps the level up.
+    let c = run(crossfade: 1)
+    if let t = c.advanceAt { print("  crossfade advance at \(String(format: "%.2f", t)) s (A lasts 2.00 s)") }
+    check((c.advanceAt ?? 9) < 1.6, "crossfade: next track starts about 1 s before the end")
+    let cfirst = c.rms.firstIndex { $0 > 0.1 } ?? 0
+    let cbody = Array(c.rms[cfirst..<min(c.rms.count, cfirst + 290)])
+    check((cbody.min() ?? 0) > 0.2, "crossfade: no dip to silence (min rms \(String(format: "%.3f", cbody.min() ?? 0)))")
+
+    // 3. EBU R128: stereo 1 kHz sine at -20 dBFS peak -> -20 LUFS (BS.1770 calibration).
+    let cal = tone("cal.caf", freq: 997, seconds: 10, amp: 0.1, rate: 48000)
+    if let (l, peak) = ReplayGain.measure(cal) {
+        check(abs(l - -20) < 0.3, "loudness: 997 Hz -20 dBFS stereo = \(String(format: "%.2f", l)) LUFS (expected -20.0)")
+        check(abs(peak - 0.1) < 0.005, "loudness: sample peak \(String(format: "%.3f", peak))")
+    } else { check(false, "loudness: measure returned nil") }
+
+    // 4. Tags: a TXXX-style block is found anywhere in the file, also UTF-16.
+    let tagged = dir.appendingPathComponent("tagged.bin")
+    var blob = Data(repeating: 0x41, count: 1000)
+    blob += Data("TXXX".utf8) + Data([0, 0, 0, 30, 0, 0, 0]) + Data("REPLAYGAIN_TRACK_GAIN".utf8) + Data([0]) + Data("-6.54 dB".utf8)
+    blob += Data("REPLAYGAIN_TRACK_PEAK".utf16.flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] }) + Data([0, 0]) + Data("0.988".utf16.flatMap { [UInt8($0 & 0xFF), 0] })
+    try? blob.write(to: tagged)
+    let info = ReplayGain.readTags(tagged)
+    check(info?.trackGain == -6.54, "tags: REPLAYGAIN_TRACK_GAIN = \(info?.trackGain.map { String($0) } ?? "nil")")
+    check(info?.trackPeak == 0.988, "tags: UTF-16 REPLAYGAIN_TRACK_PEAK = \(info?.trackPeak.map { String($0) } ?? "nil")")
+
+    print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
+    exit(failures == 0 ? 0 : 1)
+}
+
+/// Debug: `MusicAmp --replaygain file ...` prints tag values and the measured loudness.
+if let i = CommandLine.arguments.firstIndex(of: "--replaygain") {
+    for path in CommandLine.arguments[(i + 1)...] {
+        let u = URL(fileURLWithPath: path)
+        let tags = ReplayGain.readTags(u)
+        let t0 = Date()
+        let m = ReplayGain.measure(u)
+        print("\(u.lastPathComponent)")
+        print("  tag: gain \(tags?.trackGain.map { String(format: "%+.2f dB", $0) } ?? "nessuno")  peak \(tags?.trackPeak.map { String(format: "%.3f", $0) } ?? "-")")
+        if let (l, p) = m {
+            print("  misura: \(String(format: "%.1f", l)) LUFS, picco \(String(format: "%.3f", p)) → guadagno \(String(format: "%+.1f", -18 - l)) dB (\(String(format: "%.1f", Date().timeIntervalSince(t0))) s)")
+        }
+    }
+    exit(0)
+}
+
+/// Debug: `MusicAmp --test-ffmpeg` encodes short tones with ffmpeg and plays them back through the engine (muted).
+if CommandLine.arguments.contains("--test-ffmpeg") {
+    var failures = 0
+    func check(_ ok: Bool, _ what: String) { print((ok ? "PASS " : "FAIL ") + what); if !ok { failures += 1 } }
+    guard let ff = FFmpeg.ffmpegPath else { print("ffmpeg non trovato"); exit(1) }
+    print("ffmpeg \(FFmpeg.version ?? "?") at \(ff)")
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("musicamp-ffmpeg", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let formats: [(String, [String])] = [("ogg", ["-c:a", "vorbis", "-strict", "-2"]), ("opus", ["-c:a", "libopus"]),
+                                         ("wv", ["-c:a", "wavpack"]), ("tta", ["-c:a", "tta"])]
+    for (ext, codec) in formats {
+        let url = dir.appendingPathComponent("tone.\(ext)")
+        try? FileManager.default.removeItem(at: url)
+        FFmpeg.run(ff, ["-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3:sample_rate=48000", "-ac", "2"] + codec + [url.path])
+        guard FileManager.default.fileExists(atPath: url.path), let probe = FFmpeg.probe(url) else {
+            check(false, "\(ext): encode/probe"); continue
+        }
+        check(abs(probe.duration - 3) < 0.15, "\(ext): probe \(probe.codec) \(Int(probe.sampleRate)) Hz, \(String(format: "%.2f", probe.duration)) s")
+        let e = AudioEngine()
+        e.setVolume(0)
+        var rms: Float = 0
+        e.eq.installTap(onBus: 0, bufferSize: 4096, format: nil) { buf, _ in
+            guard let ch = buf.floatChannelData else { return }
+            var sum: Float = 0
+            for i in 0..<Int(buf.frameLength) { sum += ch[0][i] * ch[0][i] }
+            rms = max(rms, (sum / Float(max(1, buf.frameLength))).squareRoot())
+        }
+        var finished = false
+        e.onFinish = { finished = true }
+        e.useFFmpeg(url: url, probe: probe)
+        e.play()
+        let t0 = Date()
+        while Date().timeIntervalSince(t0) < 0.8 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        let pos1 = e.currentTime
+        e.seek(to: 2.0)
+        let t1 = Date()
+        while Date().timeIntervalSince(t1) < 0.4 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        let pos2 = e.currentTime
+        while !finished, Date().timeIntervalSince(t1) < 3 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        check(rms > 0.05, "\(ext): audio reaches the EQ (rms \(String(format: "%.3f", rms)))")
+        check(pos1 > 0.4 && pos1 < 1.2, "\(ext): position advances (\(String(format: "%.2f", pos1)) s after 0.8 s)")
+        check(pos2 >= 2.0 && pos2 < 2.8, "\(ext): seek to 2.0 s -> \(String(format: "%.2f", pos2)) s")
+        check(finished, "\(ext): end of track reported")
+        e.stop()
+    }
+    print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
+    exit(failures == 0 ? 0 : 1)
 }
 
 /// Debug: `MusicAmp --parse-cursor file.ani|file.cur` prints frame count, delays and hotspots.

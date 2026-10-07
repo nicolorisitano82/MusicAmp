@@ -31,6 +31,7 @@ struct RadioStation: Codable, Identifiable, Hashable {
     var playable: Bool {
         if hls == 1 { return true }
         let c = (codec ?? "").uppercased()
+        if ["OGG", "OPUS", "FLAC"].contains(c) { return FFmpeg.available }
         return ["MP3", "AAC", "AAC+", "UNKNOWN", ""].contains(c)
     }
 }

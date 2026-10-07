@@ -35,7 +35,10 @@ final class JumpModel: ObservableObject {
         let m = matches
         guard m.indices.contains(highlighted) else { NSSound.beep(); return }
         let i = m[highlighted].index
-        if ctl.playlist.queuePosition(ctl.playlist.tracks[i]) == nil { ctl.playlist.toggleQueue([i]) }
+        if ctl.playlist.queuePosition(ctl.playlist.tracks[i]) == nil {
+            ctl.playlist.toggleQueue([i])
+            ctl.invalidateTransition()
+        }
         ctl.flashMarquee("IN CODA: \(ctl.playlist.queue.count)", seconds: 1.2)
         move(1)
     }

@@ -107,6 +107,42 @@ private struct AudioTab: View {
                 Text("Con \"Predefinito di sistema\" MusicAmp segue l'uscita scelta qui, nel Centro di controllo o nelle Impostazioni Suono, anche se è un altoparlante AirPlay.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("Transizioni") {
+                Toggle("Gapless: nessuna pausa tra i brani", isOn: ctl.binding(\.gapless))
+                Toggle("Crossfade tra i brani", isOn: ctl.binding(\.crossfadeOn))
+                HStack {
+                    Text("Durata dissolvenza")
+                    Slider(value: ctl.binding(\.crossfadeSeconds), in: 1...12, step: 1)
+                    Text("\(Int(ctl.crossfadeSeconds)) s").monospacedDigit().frame(width: 36, alignment: .trailing)
+                }
+                .disabled(!ctl.crossfadeOn)
+                Text("Le transizioni valgono per il passaggio automatico al brano successivo; Avanti e Indietro cambiano subito.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("ReplayGain (volume uniforme)") {
+                Picker("Modalità", selection: ctl.binding(\.rgMode)) {
+                    Text("Disattivato").tag(0)
+                    Text("Traccia").tag(1)
+                    Text("Album").tag(2)
+                }
+                .pickerStyle(.segmented)
+                Stepper("Preamplificazione: \(String(format: "%+.0f", ctl.rgPreamp)) dB", value: ctl.binding(\.rgPreamp), in: -12...12, step: 1)
+                    .disabled(ctl.rgMode == 0)
+                Toggle("Analizza i brani senza tag (EBU R128)", isOn: ctl.binding(\.rgAnalyze))
+                    .disabled(ctl.rgMode == 0)
+                Toggle("Evita la distorsione (limita al picco)", isOn: ctl.binding(\.rgPreventClip))
+                    .disabled(ctl.rgMode == 0)
+            }
+            Section("Formati extra (FFmpeg)") {
+                Toggle("Usa FFmpeg per Ogg, Opus, APE, WavPack, Musepack, DSD…", isOn: ctl.binding(\.ffmpegEnabled))
+                if let path = FFmpeg.ffmpegPath {
+                    LabeledContent("Trovato", value: "\(path) \(FFmpeg.version.map { "(\($0))" } ?? "")")
+                } else {
+                    Text("FFmpeg non trovato. Per abilitarlo: brew install ffmpeg").foregroundStyle(.secondary)
+                }
+                Text("I formati extra passano da equalizzatore, visualizzatore e ReplayGain; gapless e crossfade valgono solo tra formati nativi.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Radio") {
                 Stepper("Buffer prima dell'ascolto: \(Int(ctl.radioBuffer)) s", value: ctl.binding(\.radioBuffer), in: 1...10, step: 1)
                 Text("Più buffer evita interruzioni su reti lente, ma la radio parte un po' dopo. Gli stream HLS (.m3u8) usano il buffer di sistema e non passano da equalizzatore e visualizzatore.")
