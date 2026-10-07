@@ -1,14 +1,32 @@
 #!/bin/bash
-# Builds build/MusicAmp.app (release, ad-hoc signed, with a bundled LGPL FFmpeg) and build/MusicAmp-<version>.dmg.
+# Builds build/MusicAmp.app (release, universal arm64 + x86_64, ad-hoc signed, with a bundled LGPL FFmpeg)
+# and build/MusicAmp-<version>.dmg.
 # --no-dmg skips the disk image (faster when only the app is needed).
 set -euo pipefail
 cd "$(dirname "$0")"
 
-swift build -c release
+# One release build per architecture (each one alone keeps the constant-values flags of Package.swift working;
+# a single multi-arch build drops them), copied aside and joined with lipo. Apple Silicon last: its
+# .build/<module>.swiftconstvalues feed the App Intents metadata below.
+ARCHDIR=.build/universal
+rm -rf "$ARCHDIR"
+# The constant values are written only when a module compiles: if one is missing, make it compile.
+for m in MusicAmp MusicAmpWidget; do
+    [[ -f ".build/$m.swiftconstvalues" ]] || touch Sources/$m/*.swift
+done
+for arch in x86_64 arm64; do
+    swift build -c release --triple "$arch-apple-macosx14.0"
+    bin=$(swift build -c release --triple "$arch-apple-macosx14.0" --show-bin-path)
+    mkdir -p "$ARCHDIR/$arch"
+    cp "$bin/MusicAmp" "$bin/MusicAmpWidget" "$ARCHDIR/$arch/"
+done
+universal() {   # product, destination
+    lipo -create "$ARCHDIR/arm64/$1" "$ARCHDIR/x86_64/$1" -output "$2"
+}
 APP=build/MusicAmp.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp .build/release/MusicAmp "$APP/Contents/MacOS/MusicAmp"
+universal MusicAmp "$APP/Contents/MacOS/MusicAmp"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
@@ -31,7 +49,7 @@ appintents MusicAmp "$APP/Contents/Resources"
 # Widget extension (WidgetKit, sandboxed).
 APPEX="$APP/Contents/PlugIns/MusicAmpWidget.appex"
 mkdir -p "$APPEX/Contents/MacOS" "$APPEX/Contents/Resources"
-cp .build/release/MusicAmpWidget "$APPEX/Contents/MacOS/MusicAmpWidget"
+universal MusicAmpWidget "$APPEX/Contents/MacOS/MusicAmpWidget"
 cp Resources/Widget/Info.plist "$APPEX/Contents/Info.plist"
 appintents MusicAmpWidget "$APPEX/Contents/Resources"
 codesign --force --sign - --entitlements Resources/Widget/Widget.entitlements "$APPEX" >/dev/null

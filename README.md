@@ -70,7 +70,7 @@ Opzionale (Impostazioni → Visualization): l'onda del brano è disegnata dentro
 
 ## Installazione
 
-Scarica il DMG dall'ultima [release](https://github.com/nicolorisitano82/MusicAmp/releases), aprilo e trascina **MusicAmp** in Applicazioni. Serve macOS 14 o successivo su un Mac con Apple Silicon.
+Scarica il DMG dall'ultima [release](https://github.com/nicolorisitano82/MusicAmp/releases), aprilo e trascina **MusicAmp** in Applicazioni. Serve macOS 14 o successivo, su Mac con Apple Silicon o Intel (app universale).
 
 L'app non è ancora firmata con un Developer ID né notarizzata, quindi alla prima apertura macOS la blocca. Aprila col **tasto destro → Apri**, oppure da **Impostazioni di Sistema → Privacy e sicurezza → Apri comunque**.
 
@@ -91,7 +91,7 @@ Le skin non sono incluse: trascina un file `.wsz` sul player per caricarlo. I pr
 ./build-app.sh
 ```
 
-Crea `build/MusicAmp.app` e `build/MusicAmp-<versione>.dmg`. Servono Swift 5.9, macOS 14 e Xcode installato (per i metadati di Comandi rapidi e widget); non c'è un progetto Xcode. La prima build scarica e compila FFmpeg dai sorgenti ufficiali (circa un minuto).
+Crea `build/MusicAmp.app` (universale arm64 + x86_64) e `build/MusicAmp-<versione>.dmg`. Servono Swift 5.9, macOS 14 e Xcode installato (per i metadati di Comandi rapidi e widget); non c'è un progetto Xcode. La prima build scarica e compila FFmpeg dai sorgenti ufficiali (circa un minuto).
 
 ## Documentazione
 
