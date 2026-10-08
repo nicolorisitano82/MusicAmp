@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import Speech
 
 /// Song lyrics: plain text and, when available, time-synced lines (LRC).
 struct Lyrics: Codable, Equatable {
@@ -174,7 +175,15 @@ final class LyricsService: ObservableObject {
 
     @Published private(set) var state: State = .idle
     @Published private(set) var query: Query?
+    /// 0…1 while lyrics are being synced from the audio (transcription on this Mac).
+    @Published private(set) var syncing: Double?
+    @Published private(set) var syncError: String?
+    /// Sync plain lyrics from the audio by themselves when the lyrics panel or karaoke shows them.
+    @Published var autoSync = UserDefaults.standard.object(forKey: "lyrics.autoSync") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(autoSync, forKey: "lyrics.autoSync") }
+    }
     private var request = 0
+    private var autoTried = Set<String>()
 
     static let userAgent = "MusicAmp/0.4 (https://github.com/nicolorisitano82/MusicAmp)"
 
@@ -228,6 +237,59 @@ final class LyricsService: ObservableObject {
             }
         }
     }
+
+    // MARK: Synced from the audio
+
+    /// Can the current lyrics be timed from the audio? A local, non-cue file, lyrics without times (or none).
+    var canSync: Bool {
+        guard syncing == nil, let f = query?.file, f.isFileURL, !CueSheet.isCueTrack(f), SpeechTranscriber.isAvailable else { return false }
+        switch state {
+        case .notFound: return true
+        case .found(let l): return l.synced == nil && !l.instrumental
+        default: return false
+        }
+    }
+
+    /// Called by the views showing lyrics: syncs plain lyrics automatically once per track.
+    func autoSyncIfUseful() {
+        guard autoSync, canSync, case .found = state, let q = query else { return }
+        let key = Self.cacheKey(q)
+        guard autoTried.insert(key).inserted else { return }
+        syncFromAudio()
+    }
+
+    /// Transcribes the track on this Mac and times its plain lyrics (or, with none, uses what was heard as the
+    /// lyrics), then caches the result like downloaded lyrics so the panel and karaoke use it from now on.
+    func syncFromAudio() {
+        guard canSync, let q = query, let file = q.file else { return }
+        let plain: String? = { if case .found(let l) = state { return l.plain } else { return nil } }()
+        let r = request
+        syncing = 0
+        syncError = nil
+        Task {
+            do {
+                let locale = plain.flatMap(AI.language) ?? AI.language(of: q.title) ?? Locale.current
+                let words = try await AI.transcribe(file, locale: locale) { p in Task { @MainActor in if r == self.request { self.syncing = p } } }
+                let lines = plain.map { AI.align(lyrics: $0, to: words) } ?? AI.lines(from: words)
+                guard !lines.isEmpty else { throw TranscriptionEmpty() }
+                let lyrics = Lyrics(plain: plain ?? lines.map(\.text).joined(separator: "\n"), synced: lines,
+                                    source: plain == nil ? "Heard on this Mac" : "Synced on this Mac")
+                let cacheFile = cacheDir.appendingPathComponent(Self.cacheKey(q) + ".json")
+                if let d = try? JSONEncoder().encode(Cached(lyrics: lyrics, date: Date())) { try? d.write(to: cacheFile, options: .atomic) }
+                await MainActor.run {
+                    self.syncing = nil
+                    if r == self.request { self.state = .found(lyrics) }
+                }
+            } catch {
+                await MainActor.run {
+                    self.syncing = nil
+                    self.syncError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    struct TranscriptionEmpty: LocalizedError { var errorDescription: String? { "No singing could be recognised in this track." } }
 
     // MARK: Sources
 

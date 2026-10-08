@@ -5,7 +5,7 @@ import AppKit
 /// ~/Library/Application Support/MusicAmp/smart-playlists.json.
 struct SmartRule: Codable, Identifiable, Equatable {
     enum Field: String, Codable, CaseIterable, Identifiable {
-        case title, artist, album, albumArtist, genre, year, path, format, duration, rating, plays, skips, lastPlayed, added, bpm, key
+        case title, artist, album, albumArtist, genre, year, path, format, duration, rating, plays, skips, lastPlayed, added, bpm, key, mood, style
         var id: String { rawValue }
         var label: String {
             switch self {
@@ -17,6 +17,8 @@ struct SmartRule: Codable, Identifiable, Equatable {
             case .year: return "Year"
             case .bpm: return "BPM (Sonic Mix)"
             case .key: return "Key (Sonic Mix)"
+            case .mood: return "Mood (Sonic Mix)"
+            case .style: return "Instruments (Sonic Mix)"
             case .path: return "File Path"
             case .format: return "Format"
             case .duration: return "Length (min)"
@@ -30,14 +32,14 @@ struct SmartRule: Codable, Identifiable, Equatable {
         enum Kind { case text, number, date, key }
         var kind: Kind {
             switch self {
-            case .title, .artist, .album, .albumArtist, .genre, .path, .format: return .text
+            case .title, .artist, .album, .albumArtist, .genre, .path, .format, .mood, .style: return .text
             case .duration, .rating, .plays, .skips, .year, .bpm: return .number
             case .lastPlayed, .added: return .date
             case .key: return .key
             }
         }
         /// Needs the Sonic Mix analysis.
-        var sonic: Bool { self == .bpm || self == .key }
+        var sonic: Bool { self == .bpm || self == .key || self == .mood || self == .style }
     }
 
     enum Op: String, Codable, CaseIterable, Identifiable {
@@ -164,6 +166,8 @@ struct SmartItem: Identifiable, Hashable {
         case .album: return stats.album ?? ""
         case .albumArtist: return stats.albumArtist ?? stats.artist ?? ""
         case .genre: return stats.genre ?? ""
+        case .mood: return sonic?.mood ?? ""
+        case .style: return sonic?.style?.joined(separator: ", ") ?? ""
         case .path: return CueSheet.audioURL(url).path
         case .format: return CueSheet.audioURL(url).pathExtension
         default: return ""

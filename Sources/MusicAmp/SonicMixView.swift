@@ -61,6 +61,8 @@ final class SonicMixModel: ObservableObject {
     @Published var seed: URL? { didSet { if seed != oldValue { build() } } }
     @Published var destination: URL? { didSet { if destination != oldValue { build() } } }
     @Published var length = 25 { didSet { if length != oldValue { build() } } }
+    /// Radio and Similar keep only tracks of this mood ("" = any).
+    @Published var mood = "" { didSet { if mood != oldValue { build() } } }
     @Published private(set) var results: [(SonicSpace.Track, Float)] = []
     @Published private(set) var message: String?
     private var space = SonicSpace(items: [])
@@ -95,6 +97,7 @@ final class SonicMixModel: ObservableObject {
 
     func build() {
         space = SonicSpace(items: pool)
+        if !mood.isEmpty, mode != .journey { space = space.keeping { $0.f.mood == mood || $0.item.url == seed } }
         guard let s = seed else { results = []; message = "Play a track, or choose one in the playlist and pick “Sonic Radio from This Track”."; return }
         guard let st = space.track(s) else {
             results = []
@@ -140,6 +143,13 @@ struct SonicMixView: View {
                 Picker("", selection: $model.mode) { ForEach(SonicMixModel.Mode.allCases) { Text($0.rawValue).tag($0) } }
                     .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 420)
                 Spacer()
+                if model.mode != .journey {
+                    Picker("Mood", selection: $model.mood) {
+                        Text("Any mood").tag("")
+                        ForEach(SonicFeatures.moods, id: \.self) { Text($0).tag($0) }
+                    }
+                    .fixedSize()
+                }
                 Stepper("\(model.length) tracks", value: $model.length, in: 5...100, step: 5).fixedSize()
             }
             seedRow
@@ -158,6 +168,8 @@ struct SonicMixView: View {
                 TableColumn("Artist") { Text($0.artist).lineLimit(1) }
                 TableColumn("BPM") { Text($0.bpm).monospacedDigit() }.width(44)
                 TableColumn("Key") { Text($0.key) }.width(44)
+                TableColumn("Mood") { Text($0.mood).lineLimit(1) }.width(80)
+                TableColumn("Instruments") { Text($0.style).lineLimit(1).foregroundStyle(.secondary) }
                 TableColumn(model.mode == .journey ? "Step" : "Match") { r in
                     HStack(spacing: 4) {
                         ProgressView(value: Double(r.match), total: 100).frame(width: 50)
@@ -166,7 +178,7 @@ struct SonicMixView: View {
                 }.width(100)
             }
             HStack {
-                Text("Analysis runs on this Mac: timbre, harmony and key, tempo and energy of 45 s of each track.")
+                Text("Analysis on this Mac: timbre, key, tempo, energy, mood (estimated) and instruments of 45 s of each track.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if model.mode == .radio { Button("Shuffle Again") { model.reshuffle() } }
@@ -219,6 +231,8 @@ private struct SonicRow: Identifiable {
     let artist: String
     let bpm: String
     let key: String
+    let mood: String
+    let style: String
     let match: Int
 
     init(_ index: Int, _ t: SonicSpace.Track, _ d: Float) {
@@ -228,6 +242,8 @@ private struct SonicRow: Identifiable {
         artist = t.item.stats.artist ?? ""
         bpm = t.f.bpm > 0 ? "\(Int(t.f.bpm.rounded()))" : "—"
         key = t.f.keyName
+        mood = t.f.mood ?? ""
+        style = (t.f.style ?? []).joined(separator: ", ")
         match = SonicSpace.similarity(d)
     }
 }

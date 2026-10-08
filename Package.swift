@@ -11,7 +11,8 @@ func constValues(_ module: String) -> [SwiftSetting] {
 
 let package = Package(
     name: "MusicAmp",
-    platforms: [.macOS(.v14)],
+    // macOS 26 on Apple Silicon: on-device AI (Foundation Models, SpeechAnalyzer) is part of the app.
+    platforms: [.macOS("26.0")],
     targets: [
         .target(name: "MusicAmpShared", path: "Sources/MusicAmpShared"),
         .executableTarget(name: "MusicAmp", dependencies: ["MusicAmpShared"], path: "Sources/MusicAmp",

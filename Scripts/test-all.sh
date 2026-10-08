@@ -4,7 +4,7 @@
 #   Scripts/test-all.sh               debug build, all suites (network ones only when online)
 #   Scripts/test-all.sh --offline     skip the suites that need the internet
 #   Scripts/test-all.sh --release     test the optimised build (what ships)
-#   Scripts/test-all.sh --package     also check build/MusicAmp.app: architectures, signature, widget,
+#   Scripts/test-all.sh --package     also check build/MusicAmp.app: Apple Silicon/macOS 26, signature, widget,
 #                                     Shortcuts metadata, versions (run ./build-app.sh first)
 #   Scripts/test-all.sh --ui          also the window tests (they open MusicAmp windows for a few seconds)
 #   Scripts/test-all.sh suite …       only the named suites, e.g. `Scripts/test-all.sh sonic vocal`
@@ -47,6 +47,7 @@ SUITES=(
     "stats|--test-stats|none|60|play counts, skips, ratings, smart playlist rules (genre, year, BPM, key)"
     "schedule|--test-schedule|none|30|alarm times, fades, widget state, musicamp:// URLs"
     "dock|--test-dock|none|60|Dock mode: icon click plays/pauses, Dock menu, live icon, mini tile"
+    "ai|--test-ai|none|300|Apple Intelligence: podcast transcript/chapters/summary/ads, tag clean-up, playlists in words"
     "milkdrop|--test-milkdrop|none|300|NS-EEL, .milk parsing, HLSL→Metal shaders, offscreen renders"
     "karaoke|--karaoke-sweep|none|120|karaoke rendering: no flicker, no layout jumps|flickers 0"
     "tags|--test-tags|ffmpeg|180|tag writing: MP3 ID3v2.3/2.4, FLAC, M4A, ratings (POPM, RATING), playlist genre/year"
@@ -115,6 +116,12 @@ for entry in "${SUITES[@]}"; do
     esac
     code=$?
     secs=$(( $(date +%s) - start ))
+    # A suite that reports "SKIP …" (e.g. Apple Intelligence turned off) is skipped, not failed.
+    if grep -q "^SKIP" "$log" && [[ $code -eq 2 ]]; then
+        printf "%-13s ${yellow}%-8s${reset} %6ss  %s\n" "$name" "SKIP" "$secs" "$(grep -m1 '^SKIP' "$log" | cut -c6-)"
+        skipped=$((skipped + 1))
+        continue
+    fi
     # A suite passes only with a zero exit, its success line, and no FAIL line; a timeout is a failure.
     fails=$(grep -cE "^FAIL|FAILED|DRAG FAIL|Fatal error" "$log" || true)
     if [[ $code -eq 0 && $fails -eq 0 ]] && grep -qE "$marker" "$log"; then
@@ -139,16 +146,17 @@ if (( PACKAGE )); then
         if "$@" >/dev/null 2>&1; then printf "%-13s ${green}%-8s${reset} %7s  %s\n" "package" "PASS" "" "$what"; passed=$((passed + 1))
         else printf "%-13s ${red}%-8s${reset} %7s  %s\n" "package" "FAIL" "" "$what"; failed=$((failed + 1)); FAILED_NAMES+=("package: $what"); fi
     }
-    universal() { lipo -archs "$1" | grep -q arm64 && lipo -archs "$1" | grep -q x86_64; }
+    arm64only() { [[ $(lipo -archs "$1") == arm64 ]] && otool -l "$1" | grep -A3 LC_BUILD_VERSION | grep -q "minos 26"; }
     actions() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if len(d['actions']) >= int(sys.argv[2]) else 1)" "$1" "$2"; }
     plist() { /usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null; }
     if [[ ! -d "$APP" ]]; then
         printf "%-13s ${red}%-8s${reset} %7s  %s\n" "package" "FAIL" "" "$APP missing: run ./build-app.sh first"; failed=$((failed + 1)); FAILED_NAMES+=("package")
     else
         WX="$APP/Contents/PlugIns/MusicAmpWidget.appex"
-        check "app binary is universal (arm64 + x86_64)" universal "$APP/Contents/MacOS/MusicAmp"
-        check "widget binary is universal" universal "$WX/Contents/MacOS/MusicAmpWidget"
-        check "bundled ffmpeg and ffprobe are universal" bash -c "$(declare -f universal); universal '$APP/Contents/Helpers/ffmpeg' && universal '$APP/Contents/Helpers/ffprobe'"
+        check "app binary is Apple Silicon only, macOS 26" arm64only "$APP/Contents/MacOS/MusicAmp"
+        check "widget binary is Apple Silicon only, macOS 26" arm64only "$WX/Contents/MacOS/MusicAmpWidget"
+        check "bundled ffmpeg and ffprobe are Apple Silicon" bash -c "[[ \$(lipo -archs '$APP/Contents/Helpers/ffmpeg') == arm64 && \$(lipo -archs '$APP/Contents/Helpers/ffprobe') == arm64 ]]"
+        check "Info.plist requires macOS 26" bash -c "[[ \$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' '$APP/Contents/Info.plist') == 26.0 ]]"
         check "code signature valid (deep, strict)" codesign --verify --deep --strict "$APP"
         check "widget starts in NSExtensionMain" bash -c "nm -u '$WX/Contents/MacOS/MusicAmpWidget' | grep -q _NSExtensionMain"
         check "widget is sandboxed, reads only the widget folder" bash -c "codesign -d --entitlements - '$WX' 2>/dev/null | grep -q app-sandbox && codesign -d --entitlements - '$WX' 2>/dev/null | grep -q 'MusicAmp/Widget'"
@@ -157,7 +165,7 @@ if (( PACKAGE )); then
         check "app and widget versions match" bash -c "[[ '$(plist "$APP/Contents/Info.plist" CFBundleShortVersionString)' == '$(plist "$WX/Contents/Info.plist" CFBundleShortVersionString)' ]]"
         check "musicamp:// URL scheme declared" bash -c "/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' '$APP/Contents/Info.plist' | grep -qx musicamp"
         check "FFmpeg licence shipped" test -f "$APP/Contents/Resources/FFmpeg/LICENSE.txt"
-        check "Intel slice runs (Rosetta): --test-schedule" arch -x86_64 "$APP/Contents/MacOS/MusicAmp" --test-schedule
+        check "packaged binary runs: --test-schedule" "$APP/Contents/MacOS/MusicAmp" --test-schedule
     fi
 fi
 

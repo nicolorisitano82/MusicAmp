@@ -64,7 +64,7 @@
 	<key>CFBundleVersion</key>
 	<string>4</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>14.0</string>
+	<string>26.0</string>
 	<key>NSAppleMusicUsageDescription</key>
 	<string>MusicAmp reads your Music library so you can browse and play your local tracks.</string>
 	<key>NSHighResolutionCapable</key>

@@ -1,13 +1,14 @@
 import Accelerate
 import AVFoundation
 import CryptoKit
+import SoundAnalysis
 
 /// Sonic analysis: what a track sounds like, measured on this Mac from 45 seconds of its audio (from a quarter of
 /// the way in). Timbre (13 MFCCs), harmony (12-bin chroma and the key it suggests), tempo (BPM from the onset
 /// envelope) and energy (loudness, brightness, noisiness, dynamics, punch). Cached per file in
 /// ~/Library/Application Support/MusicAmp/sonic.json. Sonic Radio, Sonic Journey and "similar tracks" use it.
 struct SonicFeatures: Codable, Equatable {
-    static let version = 1
+    static let version = 2
     var mfcc: [Float]        // 13, mean over frames (c0 dropped later: loudness is measured separately)
     var chroma: [Float]      // 12, sums to 1
     var bpm: Float
@@ -20,6 +21,35 @@ struct SonicFeatures: Codable, Equatable {
     var dynamics: Float      // dB between loud and average frames
     var punch: Float         // mean onset strength
     var zcr: Float
+    /// Instruments and voices heard (macOS's sound classifier), most present first: "Vocals", "Electric Guitar"…
+    var style: [String]? = nil
+    /// 0 calm … 1 energetic, and 0 dark/sad … 1 bright/happy (estimated from the measurements above).
+    var arousal: Float? = nil
+    var valence: Float? = nil
+    var mood: String? = nil
+
+    static let moods = ["Energetic", "Intense", "Happy", "Chill", "Melancholic", "Calm", "Sad"]
+
+    /// Energy and positivity from loudness, punch, tempo, brightness and mode, scaled on a typical pop/rock
+    /// library (−20…−10 dB, 70…170 BPM); the mood is the quadrant they fall in.
+    mutating func estimateMood() {
+        func clamp(_ x: Float) -> Float { max(0, min(1, x)) }
+        let loud = clamp((loudness + 20) / 10), hit = clamp((punch - 90) / 150)
+        let tempo = clamp((bpm - 70) / 100), bright = clamp((centroid - 7.5) / 2)
+        let a = 0.35 * loud + 0.35 * hit + 0.2 * tempo + 0.1 * bright
+        let v = clamp(0.5 + (minor ? -0.25 : 0.2) * keyStrength + 0.25 * (bright - 0.5) + 0.15 * (tempo - 0.5))
+        arousal = a
+        valence = v
+        switch (a, v) {
+        case (0.6..., 0.5...): mood = "Energetic"
+        case (0.6..., _): mood = "Intense"
+        case (0.4..., 0.55...): mood = "Happy"
+        case (0.4..., ...0.4): mood = "Melancholic"
+        case (0.4..., _): mood = "Chill"
+        case (_, 0.5...): mood = "Calm"
+        default: mood = "Sad"
+        }
+    }
 
     static let keyNames = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"]
     var keyName: String { SonicFeatures.keyNames[key] + (minor ? "m" : "") }
@@ -84,8 +114,67 @@ enum SonicAnalyzer {
     // MARK: Features
 
     static func analyze(_ url: URL) -> SonicFeatures? {
-        guard let x = samples(url) else { return nil }
-        return features(x, sampleRate: rate)
+        guard let x = samples(url), var f = features(x, sampleRate: rate) else { return nil }
+        f.style = style(x, sampleRate: rate)
+        f.estimateMood()
+        return f
+    }
+
+    // MARK: Style (macOS sound classifier)
+
+    /// Classifier label → what the UI shows. Only musical labels count.
+    static let styleNames: [String: String] = [
+        "singing": "Vocals", "choir_singing": "Choir", "rapping": "Rap", "yodeling": "Yodel", "humming": "Humming", "whistling": "Whistling",
+        "electric_guitar": "Electric Guitar", "acoustic_guitar": "Acoustic Guitar", "bass_guitar": "Bass Guitar",
+        "steel_guitar_slide_guitar": "Slide Guitar", "banjo": "Banjo", "sitar": "Sitar", "mandolin": "Mandolin", "ukulele": "Ukulele",
+        "piano": "Piano", "electric_piano": "Electric Piano", "organ": "Organ", "hammond_organ": "Organ", "electronic_organ": "Organ",
+        "synthesizer": "Synth", "harpsichord": "Harpsichord", "drum_kit": "Drums", "tabla": "Tabla", "steelpan": "Steelpan",
+        "marimba_xylophone": "Marimba", "orchestra": "Orchestra", "brass_instrument": "Brass", "trumpet": "Brass", "trombone": "Brass",
+        "french_horn": "Brass", "violin_fiddle": "Strings", "bowed_string_instrument": "Strings", "cello": "Strings", "double_bass": "Strings",
+        "flute": "Woodwinds", "clarinet": "Woodwinds", "oboe": "Woodwinds", "bassoon": "Woodwinds", "saxophone": "Sax", "harp": "Harp",
+        "harmonica": "Harmonica", "accordion": "Accordion", "bagpipes": "Bagpipes", "disc_scratching": "Turntables", "speech": "Spoken",
+    ]
+
+    private final class StyleObserver: NSObject, SNResultsObserving {
+        var sums: [String: Double] = [:]
+        var windows = 0
+        let done = DispatchSemaphore(value: 0)
+        func request(_ request: SNRequest, didProduce result: SNResult) {
+            guard let r = result as? SNClassificationResult else { return }
+            windows += 1
+            for c in r.classifications where SonicAnalyzer.styleNames[c.identifier] != nil { sums[c.identifier, default: 0] += c.confidence }
+        }
+        func request(_ request: SNRequest, didFailWithError error: Error) { done.signal() }
+        func requestDidComplete(_ request: SNRequest) { done.signal() }
+    }
+
+    /// Up to four instruments/voices present in at least a fifth of the 45 s, strongest first.
+    static func style(_ x: [Float], sampleRate sr: Double) -> [String]? {
+        guard let fmt = AVAudioFormat(standardFormatWithSampleRate: sr, channels: 1),
+              let req = try? SNClassifySoundRequest(classifierIdentifier: .version1) else { return nil }
+        let analyzer = SNAudioStreamAnalyzer(format: fmt)
+        let obs = StyleObserver()
+        guard (try? analyzer.add(req, withObserver: obs)) != nil else { return nil }
+        let chunk = Int(sr)
+        var pos = 0
+        while pos < x.count {
+            let n = min(chunk, x.count - pos)
+            guard let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(n)) else { break }
+            buf.frameLength = AVAudioFrameCount(n)
+            x.withUnsafeBufferPointer { buf.floatChannelData![0].update(from: $0.baseAddress! + pos, count: n) }
+            analyzer.analyze(buf, atAudioFramePosition: AVAudioFramePosition(pos))
+            pos += n
+        }
+        analyzer.completeAnalysis()
+        _ = obs.done.wait(timeout: .now() + 20)
+        guard obs.windows > 0 else { return nil }
+        // Average confidence per display name (several labels map to one), kept when ≥ 0.2.
+        var byName: [String: Double] = [:]
+        for (label, sum) in obs.sums { byName[styleNames[label]!, default: 0] = max(byName[styleNames[label]!, default: 0], sum / Double(obs.windows)) }
+        // In songs the classifier also hears "speech" and "humming" in the singing: the vocals say it already.
+        if byName["Vocals"] != nil { byName["Spoken"] = nil; byName["Humming"] = nil }
+        let picked = byName.filter { $0.value >= 0.2 }.sorted { $0.value > $1.value }.prefix(4).map(\.key)
+        return picked.isEmpty ? [] : picked
     }
 
     static func features(_ x: [Float], sampleRate sr: Double) -> SonicFeatures? {
@@ -424,6 +513,10 @@ struct SonicSpace {
     static func artist(_ t: Track) -> String {
         PlaylistTree.mainArtist(t.item.stats.artist ?? "").lowercased()
     }
+
+    /// The same space restricted to some tracks (scaling unchanged).
+    func keeping(_ keep: (Track) -> Bool) -> SonicSpace { SonicSpace(tracks: tracks.filter(keep)) }
+    private init(tracks: [Track]) { self.tracks = tracks }
 
     func track(_ url: URL) -> Track? {
         guard let k = PlayStats.key(url) else { return nil }

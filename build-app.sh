@@ -1,32 +1,21 @@
 #!/bin/bash
-# Builds build/MusicAmp.app (release, universal arm64 + x86_64, ad-hoc signed, with a bundled LGPL FFmpeg)
+# Builds build/MusicAmp.app (release, Apple Silicon, macOS 26, ad-hoc signed, with a bundled LGPL FFmpeg)
 # and build/MusicAmp-<version>.dmg.
 # --no-dmg skips the disk image (faster when only the app is needed).
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# One release build per architecture (each one alone keeps the constant-values flags of Package.swift working;
-# a single multi-arch build drops them), copied aside and joined with lipo. Apple Silicon last: its
-# .build/<module>.swiftconstvalues feed the App Intents metadata below.
-ARCHDIR=.build/universal
-rm -rf "$ARCHDIR"
-# The constant values are written only when a module compiles: if one is missing, make it compile.
+# Apple Silicon only (macOS 26): one release build. The App Intents constant values
+# (.build/<module>.swiftconstvalues) are written when a module compiles: if one is missing, make it compile.
 for m in MusicAmp MusicAmpWidget; do
     [[ -f ".build/$m.swiftconstvalues" ]] || touch Sources/$m/*.swift
 done
-for arch in x86_64 arm64; do
-    swift build -c release --triple "$arch-apple-macosx14.0"
-    bin=$(swift build -c release --triple "$arch-apple-macosx14.0" --show-bin-path)
-    mkdir -p "$ARCHDIR/$arch"
-    cp "$bin/MusicAmp" "$bin/MusicAmpWidget" "$ARCHDIR/$arch/"
-done
-universal() {   # product, destination
-    lipo -create "$ARCHDIR/arm64/$1" "$ARCHDIR/x86_64/$1" -output "$2"
-}
+swift build -c release --triple arm64-apple-macosx26.0
+BIN=$(swift build -c release --triple arm64-apple-macosx26.0 --show-bin-path)
 APP=build/MusicAmp.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-universal MusicAmp "$APP/Contents/MacOS/MusicAmp"
+cp "$BIN/MusicAmp" "$APP/Contents/MacOS/MusicAmp"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
@@ -39,7 +28,7 @@ appintents() {   # module, destination Resources folder
     echo "$PWD/.build/$1.swiftconstvalues" > "$cv"
     xcrun appintentsmetadataprocessor --output "$out" --toolchain-dir "$(dirname "$(dirname "$(dirname "$(xcrun --find swiftc)")")")" \
         --module-name "$1" --sdk-root "$(xcrun --show-sdk-path)" --xcode-version "$(xcodebuild -version | awk '/Build version/{print $3}')" \
-        --platform-family macOS --deployment-target 14.0 --target-triple "$(uname -m)-apple-macos14.0" \
+        --platform-family macOS --deployment-target 26.0 --target-triple arm64-apple-macos26.0 \
         --source-file-list "$list" --swift-const-vals-list "$cv" --force --quiet-warnings 2>&1 | grep -iE "error|warning" >&2 || true
     cp -R "$out/Metadata.appintents" "$2/"
     rm -rf "$list" "$cv" "$out"
@@ -49,7 +38,7 @@ appintents MusicAmp "$APP/Contents/Resources"
 # Widget extension (WidgetKit, sandboxed).
 APPEX="$APP/Contents/PlugIns/MusicAmpWidget.appex"
 mkdir -p "$APPEX/Contents/MacOS" "$APPEX/Contents/Resources"
-universal MusicAmpWidget "$APPEX/Contents/MacOS/MusicAmpWidget"
+cp "$BIN/MusicAmpWidget" "$APPEX/Contents/MacOS/MusicAmpWidget"
 cp Resources/Widget/Info.plist "$APPEX/Contents/Info.plist"
 appintents MusicAmpWidget "$APPEX/Contents/Resources"
 codesign --force --sign - --entitlements Resources/Widget/Widget.entitlements "$APPEX" >/dev/null
@@ -57,7 +46,8 @@ codesign --force --sign - --entitlements Resources/Widget/Widget.entitlements "$
 # Bundled FFmpeg (LGPL, decode only): built once from ffmpeg.org sources into vendor/ffmpeg.
 Scripts/build-ffmpeg.sh
 mkdir -p "$APP/Contents/Helpers" "$APP/Contents/Resources/FFmpeg"
-cp vendor/ffmpeg/ffmpeg vendor/ffmpeg/ffprobe "$APP/Contents/Helpers/"
+# The vendored FFmpeg is universal: keep only the Apple Silicon slice.
+for tool in ffmpeg ffprobe; do lipo -thin arm64 "vendor/ffmpeg/$tool" -output "$APP/Contents/Helpers/$tool" 2>/dev/null || cp "vendor/ffmpeg/$tool" "$APP/Contents/Helpers/"; done
 cp vendor/ffmpeg/LICENSE.txt vendor/ffmpeg/SOURCE.txt "$APP/Contents/Resources/FFmpeg/"
 codesign --force --sign - "$APP/Contents/Helpers/ffmpeg" "$APP/Contents/Helpers/ffprobe" >/dev/null
 codesign --force --sign - "$APP" >/dev/null

@@ -607,13 +607,156 @@ if CommandLine.arguments.contains("--test-musicbrainz") {
     exit(failed == 0 ? 0 : 1)
 }
 
+/// Debug: `MusicAmp --test-ai`: the Apple Intelligence features end to end on generated material: a podcast spoken
+/// by macOS's speech synthesiser (with an ad read) transcribed, chaptered, summarised and its ad found; messy file
+/// names tidied; a playlist written from a description. Needs Apple Intelligence (exits 2 = skipped when off).
+if CommandLine.arguments.contains("--test-ai") {
+    var fails = 0
+    func check(_ ok: Bool, _ what: String) { print(ok ? "OK  " : "FAIL", what); if !ok { fails += 1 } }
+    guard AI.languageModelAvailable else { print("SKIP \(AI.unavailableReason ?? "Apple Intelligence unavailable")"); exit(2) }
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("musicamp-ai-\(getpid())")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let script = """
+        Welcome back to Garden Talk, the show about growing vegetables at home. Today we look at tomatoes and at \
+        composting. Tomatoes need at least six hours of sun a day. Water them deeply but not too often, and stake \
+        the plants early so the stems do not break. Pick the fruit when it is fully red and slightly soft. \
+        This episode is sponsored by Green Thumb Seeds. Go to green thumb seeds dot com slash garden and use the code \
+        GARDEN for twenty percent off your first order. Green Thumb Seeds, quality seeds delivered to your door. \
+        Now, composting. A good compost pile mixes green material like vegetable scraps with brown material like dry \
+        leaves. Turn the pile every week to bring in air, and keep it as damp as a wrung out sponge. In about two months \
+        you will have rich soil for next season. That is all for today. Thanks for listening to Garden Talk.
+        """
+    let txt = dir.appendingPathComponent("script.txt"), aiff = dir.appendingPathComponent("episode.aiff")
+    try? script.write(to: txt, atomically: true, encoding: .utf8)
+    let say = Process()
+    say.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+    say.arguments = ["-o", aiff.path, "-f", txt.path]
+    try? say.run(); say.waitUntilExit()
+    let sem = DispatchSemaphore(value: 0)
+    Task {
+        do {
+            let t0 = Date()
+            let words = try await AI.transcribe(aiff, locale: Locale(identifier: "en_US"))
+            let text = words.map(\.text).joined(separator: " ").lowercased()
+            check(words.count > 120 && text.contains("tomato") && text.contains("compost"), "podcast: transcribed \(words.count) words in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+            var ins = PodcastInsights(feedURL: "test", episodeID: "test", language: "en_US", sentences: PodcastInsightsStore.sentences(words))
+            check(ins.sentences.count >= 8, "podcast: \(ins.sentences.count) sentences with times")
+            try await PodcastInsightsStore.understand(&ins) { _, _ in }
+            try await PodcastInsightsStore.summarise(&ins)
+            let adStart = words.first { $0.text.lowercased().hasPrefix("sponsored") }?.start ?? -1
+            let adEnd = words.last { $0.text.lowercased().contains("door") }?.end ?? -1
+            let found = ins.ads.contains { $0.start <= adStart + 3 && $0.end >= adEnd - 3 }
+            check(found, String(format: "podcast: ad read found (%@; spoken %.0f–%.0f s)", ins.ads.map { String(format: "%.0f–%.0f s", $0.start, $0.end) }.joined(separator: ", "), adStart, adEnd))
+            check(!ins.ads.contains { $0.start < 5 }, "podcast: the show's intro isn't taken for an ad")
+            check(!ins.chapters.isEmpty && !ins.summary.isEmpty && ins.keyPoints.count >= 3, "podcast: \(ins.chapters.count) chapter(s), summary and \(ins.keyPoints.count) key points")
+            let sum = (ins.summary + ins.keyPoints.joined()).lowercased()
+            check(sum.contains("tomato") && sum.contains("compost"), "podcast: the summary covers both topics")
+        } catch { check(false, "podcast pipeline: \(error.localizedDescription)") }
+        // Tags.
+        do {
+            let f = dir.appendingPathComponent("04_the_beatles-here_comes_the_sun (remastered) [copy].mp3")
+            FileManager.default.createFile(atPath: f.path, contents: Data())
+            let g = try await TagFixModel.guess(f, current: TagSet())
+            check(g.track == "4" && g.artist.lowercased() == "the beatles" && g.title.lowercased().hasPrefix("here comes the sun"),
+                  "tags: “\(f.lastPathComponent)” → #\(g.track) \(g.artist) — \(g.title)")
+        } catch { check(false, "tags: \(error.localizedDescription)") }
+        // Playlist from words (on a made-up library).
+        do {
+            var e = PlayStats.Entry(); e.genre = "Rock"; e.year = 1985; e.artist = "X"; e.title = "Y"
+            let pool = [SmartItem(key: "/a", url: URL(fileURLWithPath: "/a"), stats: e)]
+            let p = try await SmartPlaylistAI.generate("80s rock", pool: pool)
+            let fields = Set(p.rules.map(\.field))
+            check(p.matchAll && fields.contains(.genre) && fields.contains(.year), "playlist: “80s rock” → " + SmartPlaylistAI.describe(p).replacingOccurrences(of: "\n", with: " "))
+        } catch { check(false, "playlist: \(error.localizedDescription)") }
+        sem.signal()
+    }
+    while sem.wait(timeout: .now()) == .timedOut { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+    try? FileManager.default.removeItem(at: dir)
+    print(fails == 0 ? "ALL OK" : "\(fails) FAILED")
+    exit(fails == 0 ? 0 : 1)
+}
+
+/// Debug: `MusicAmp --ai-lyrics-check file [locale]`: when LRCLIB has synced lyrics for a file, times its plain text
+/// from the audio (transcription + alignment) and compares with the real line times. Prints numbers, never lyrics.
+if let li = CommandLine.arguments.firstIndex(of: "--ai-lyrics-check"), CommandLine.arguments.count > li + 1 {
+    let sem = DispatchSemaphore(value: 0)
+    Task {
+        let url = URL(fileURLWithPath: CommandLine.arguments[li + 1])
+        let t = Track(url: url)
+        let tags = await TagIO.read(url)
+        t.artist = tags.artist; t.songTitle = tags.title
+        let dur = (try? AVAudioFile(forReading: url)).map { Double($0.length) / $0.processingFormat.sampleRate } ?? 0
+        guard let q = LyricsService.query(for: t, duration: dur), case .success(let l?) = await LyricsService.find(q, cacheDir: FileManager.default.temporaryDirectory, force: true),
+              let real = l.synced, let plain = l.plain ?? Optional(real.map(\.text).joined(separator: "\n")) else {
+            print("no synced lyrics on LRCLIB for this file"); sem.signal(); return
+        }
+        let locale = CommandLine.arguments.count > li + 2 ? Locale(identifier: CommandLine.arguments[li + 2]) : (AI.language(of: plain) ?? Locale(identifier: "en_US"))
+        let t0 = Date()
+        do {
+            let words = try await AI.transcribe(url, locale: locale)
+            let lines = AI.align(lyrics: plain, to: words)
+            // Compare lines in order (same text lines).
+            var errs: [Double] = []
+            var k = 0
+            for r in real where !r.text.trimmingCharacters(in: .whitespaces).isEmpty {
+                while k < lines.count, AI.fold(lines[k].text) != AI.fold(r.text) { k += 1 }
+                if k < lines.count { errs.append(abs(lines[k].time - r.time)); k += 1 }
+            }
+            errs.sort()
+            let med = errs.isEmpty ? 0 : errs[errs.count / 2]
+            let within = errs.filter { $0 < 1.0 }.count
+            print(String(format: "locale %@, %d words heard in %.1f s; %d/%d lines compared; median error %.2f s; %d within 1 s (%.0f%%)",
+                         locale.identifier, words.count, Date().timeIntervalSince(t0), errs.count, real.count, med, within, 100 * Double(within) / Double(max(1, errs.count))))
+        } catch { print("error: \(error.localizedDescription)") }
+        sem.signal()
+    }
+    while sem.wait(timeout: .now()) == .timedOut { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+    exit(0)
+}
+
+/// Debug: `MusicAmp --ai-playlist "description"` and `--ai-tags file …`: the Apple Intelligence features on real
+/// data (the library known to MusicAmp; the files' names and tags). Nothing is written.
+if let ai = CommandLine.arguments.firstIndex(where: { $0 == "--ai-playlist" || $0 == "--ai-tags" }) {
+    let sem = DispatchSemaphore(value: 0)
+    Task {
+        let args = Array(CommandLine.arguments[(ai + 1)...])
+        if CommandLine.arguments[ai] == "--ai-playlist" {
+            let pool = SmartPlaylistStore.pool()
+            // Mood/instrument rules need the current Sonic Mix analysis.
+            await withCheckedContinuation { (k: CheckedContinuation<Void, Never>) in
+                SonicStore.shared.analyze(pool.map(\.url).filter { FileManager.default.fileExists(atPath: CueSheet.audioURL($0).path) }) { k.resume() }
+            }
+            for d in args {
+                let t0 = Date()
+                do {
+                    let p = try await SmartPlaylistAI.generate(d, pool: pool)
+                    print("“\(d)” → \(p.name)  [\(p.evaluate(pool).count) tracks, \(String(format: "%.1f", Date().timeIntervalSince(t0))) s]")
+                    print("   " + SmartPlaylistAI.describe(p).replacingOccurrences(of: "\n", with: "\n   "))
+                } catch { print("“\(d)” → error: \(error.localizedDescription)") }
+            }
+        } else {
+            for f in args {
+                let u = URL(fileURLWithPath: f)
+                let cur = await TagIO.read(u)
+                do {
+                    let g = try await TagFixModel.guess(u, current: cur)
+                    print("\(u.lastPathComponent)\n   → #\(g.track)  \(g.artist) — \(g.title)  [\(g.album)]")
+                } catch { print("\(u.lastPathComponent) → error: \(error.localizedDescription)") }
+            }
+        }
+        sem.signal()
+    }
+    while sem.wait(timeout: .now()) == .timedOut { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+    exit(0)
+}
+
 /// Debug: `MusicAmp --sonic-analyze file …`: tempo, key, loudness and analysis time of each file.
 if let si = CommandLine.arguments.firstIndex(of: "--sonic-analyze") {
     for path in CommandLine.arguments[(si + 1)...] {
         let t0 = Date()
         if let f = SonicAnalyzer.analyze(URL(fileURLWithPath: path)) {
-            print(String(format: "%5.1f BPM  %-4@  %5.1f dB  bright %.1f  noisy %.2f  %.2f s  %@", f.bpm, f.keyName, f.loudness, f.centroid, f.flatness,
-                         Date().timeIntervalSince(t0), (path as NSString).lastPathComponent))
+            print(String(format: "%5.1f BPM  %-4@  %5.1f dB  %-11@ %@  %.2f s  %@", f.bpm, f.keyName, f.loudness, f.mood ?? "-",
+                         (f.style ?? []).joined(separator: ", "), Date().timeIntervalSince(t0), (path as NSString).lastPathComponent))
         } else {
             print("cannot analyse \(path)")
         }
@@ -716,6 +859,13 @@ if CommandLine.arguments.contains("--test-sonic") {
     check(feats["c"].map { $0.key == 9 && $0.minor } ?? false, "c: key A minor (\(feats["c"]?.keyName ?? "?"))")
     check(feats["d"].map { $0.key == 2 && !$0.minor } ?? false, "d: key D major (\(feats["d"]?.keyName ?? "?"))")
     check((feats["d"]?.flatness ?? 0) > (feats["a"]?.flatness ?? 1), "d noisier than a (spectral flatness)")
+    // Mood estimate (scaled on real music, so generated tones only test the direction): the fast noisy d is much
+    // more energetic than the slow minor c, and not in a calm mood.
+    var md = feats["d"]!, mc = feats["c"]!
+    md.estimateMood(); mc.estimateMood()
+    check(!["Calm", "Sad", "Melancholic"].contains(md.mood ?? "Calm") && (md.arousal ?? 0) > (mc.arousal ?? 1) + 0.2,
+          "mood: d \(md.mood ?? "-") (energy \(String(format: "%.2f", md.arousal ?? 0))), c \(mc.mood ?? "-") (energy \(String(format: "%.2f", mc.arousal ?? 0)))")
+    check((mc.valence ?? 1) < 0.5, "mood: A minor reads darker than neutral (positivity \(String(format: "%.2f", mc.valence ?? 0)))")
     let space = SonicSpace(items: items, store: store)
     func tr(_ n: String) -> SonicSpace.Track { space.track(URL(fileURLWithPath: "/tmp/sonic-\(n).wav"))! }
     let near = space.similar(to: tr("a"), count: 4).map { $0.0.item.stats.title ?? "" }
@@ -1224,6 +1374,9 @@ if CommandLine.arguments.contains("--test-stats") {
               "key names parsed (F♯m, Bb)")
         check(run2([SmartRule(field: .key, op: .keyCompatible, text: "E")]) == [], "E major doesn't mix with A minor, C major or D major")
     }
+    check(SmartPlaylistAI.yearRules("80s rock").map(\.number) == [1979, 1990] && SmartPlaylistAI.yearRules("pop anni '90").map(\.number) == [1989, 2000]
+          && SmartPlaylistAI.yearRules("canzoni del 2020").map(\.number) == [2020] && SmartPlaylistAI.yearRules("1960s soul").map(\.number) == [1959, 1970]
+          && SmartPlaylistAI.yearRules("chill music").isEmpty, "decades and years read from a description (80s, anni '90, 2020, 1960s)")
     check(SmartPlaylist.defaults.count == 7, "default smart playlists")
     let data = try? JSONEncoder().encode(SmartPlaylist.defaults)
     check(data.flatMap { try? JSONDecoder().decode([SmartPlaylist].self, from: $0) }?.count == 7, "smart playlists round-trip as JSON")

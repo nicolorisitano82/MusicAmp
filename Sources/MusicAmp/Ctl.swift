@@ -150,6 +150,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var tagEditorWindowRef: NSWindow?
     var smartWindowRef: NSWindow?
     var sonicWindowRef: NSWindow?
+    var insightsWindowRef: NSWindow?
     var milkdropController: MilkdropController?
     private var menuBar: MenuBarController?
     private var notifier: TrackNotifier?
@@ -620,6 +621,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         tickCount += 1
         let now = Date()
         let playing = audio.state == .playing
+        if playing, playlist.currentTrack?.isEpisode == true { MainActor.assumeIsolated { PodcastInsightsStore.shared.skipAdIfNeeded(self) } }
         PlayStats.shared.observe(track: playlist.currentTrack, playing: playing, position: audio.hasSource ? audio.currentTime : 0,
                                  duration: audio.hasSource ? audio.duration : 0, now: now)
         let showVis = visShown

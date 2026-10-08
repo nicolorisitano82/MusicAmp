@@ -22,6 +22,7 @@ struct SmartPlaylistsView: View {
     @ObservedObject var store: SmartPlaylistStore
     @ObservedObject var stats: PlayStats
     @State private var selection: SmartPlaylist.ID?
+    @State private var describing = false
 
     var body: some View {
         NavigationSplitView {
@@ -35,6 +36,8 @@ struct SmartPlaylistsView: View {
             .safeAreaInset(edge: .bottom) {
                 HStack(spacing: 4) {
                     Button { add() } label: { Image(systemName: "plus") }.help("New smart playlist")
+                    Button { describing = true } label: { Image(systemName: "apple.intelligence") }
+                        .help(AI.unavailableReason ?? "Describe a playlist in words (Apple Intelligence, on this Mac)")
                     Button { remove() } label: { Image(systemName: "minus") }.disabled(selection == nil).help("Delete")
                     Button { duplicate() } label: { Image(systemName: "plus.square.on.square") }.disabled(selection == nil).help("Duplicate")
                     Spacer()
@@ -56,6 +59,7 @@ struct SmartPlaylistsView: View {
             }
         }
         .onAppear { if selection == nil { selection = store.playlists.first?.id } }
+        .sheet(isPresented: $describing) { DescribePlaylistView(store: store, isPresented: $describing) { selection = $0.id } }
     }
 
     private func add() {

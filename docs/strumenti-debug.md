@@ -37,6 +37,7 @@ Le singole suite:
 | `--test-vocal` | Rimozione della voce su uno stereo generato: voce al centro a 440 Hz rimossa, strumento solo a sinistra e basso al centro conservati, forza al 50%, spenta = inalterato |
 | `--test-smart` | Transizioni intelligenti: misura del silenzio in testa e in coda, nessun buco tra album diversi, silenzio conservato nello stesso album e con l'opzione spenta |
 | `--test-sonic` | Analisi sonora su musica generata: tempo, tonalità, timbro; brani simili, Sonic Radio, viaggio sonoro e il suo riordino |
+| `--test-ai` | Apple Intelligence: podcast sintetico (trascrizione, capitoli, riassunto, pubblicità), riordino dei tag, playlist a parole; "SKIP" se Apple Intelligence è spento |
 | `--test-dock` | Modalità Dock a volume zero: il clic sull'icona suona e mette in pausa, menu del Dock, icona che avanza, esclusione con il Mini Tile, Show Player |
 | `--test-spoken` | Podcast: trova le pause lunghe e ignora quelle brevi, la posizione avanza più del tempo reale con i silenzi accorciati, Voice Boost alza la voce bassa più di quella forte senza saturare |
 | `--test-crossfeed` | Crossfeed: livello dei bassi passati all'altro canale per ogni preset, acuti quasi intatti, livello del mono invariato |
@@ -49,6 +50,9 @@ Le singole suite:
 | Comando | Uso |
 | --- | --- |
 | `--dock-snapshot out.png [copertina]` | Icona del Dock dinamica nei quattro stati: in riproduzione, in pausa, radio, senza copertina |
+| `--ai-playlist "testo" …` | Playlist intelligenti generate dalla descrizione sulla libreria vera (non salvate) |
+| `--ai-tags file …` | Tag proposti per file veri (non scritti) |
+| `--ai-lyrics-check file [lingua]` | Precisione dei testi sincronizzati dall'audio rispetto ai tempi veri di LRCLIB (solo numeri) |
 | `--sonic-analyze file …` | Tempo, tonalità, volume, luminosità e tempo di analisi di ogni file |
 | `--snapshot skin.wsz out.png` | Immagine di finestra principale, EQ e playlist (normali e ridotte) per una skin; con `-` usa la predefinita |
 | `--resolve-fonts "Nome" …` | Cerca dei font come fa la playlist e dice da dove arrivano |

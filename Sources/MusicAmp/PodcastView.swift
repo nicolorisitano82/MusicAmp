@@ -112,6 +112,8 @@ struct PodcastView: View {
                 Button("Play") { eps.first.map { ctl.playEpisode(f, $0) } }
                 Button("Add to Playlist") { eps.forEach { ctl.playEpisode(f, $0, play: false) } }
                 Divider()
+                Button("Transcribe, Summarise and Find Ads…") { eps.first.map { ctl.showInsights(f, $0) } }
+                Divider()
                 Button("Download") { eps.forEach { store.download(f, $0) } }
                 Button("Delete Download") { eps.forEach { store.deleteDownload(f, $0) } }
                 Divider()

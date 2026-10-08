@@ -28,6 +28,12 @@ Un player audio minimale e nativo per macOS, compatibile con le skin classiche d
   - preset `.milk` di Milkdrop 1 e 2;
   - gli shader HLSL di Milkdrop 2 sono tradotti in Metal: compila il 99,9% della raccolta "cream of the crop" di projectM.
 - **Playlist** piatta o ad albero artista → album → brano, con ricerca istantanea (⌘F), coda, Jump to file e libreria di Musica.
+- **Intelligenza artificiale sul Mac** (Apple Intelligence, niente esce dal computer):
+  - testi sincronizzati generati dall'audio per il karaoke;
+  - podcast trascritti, con capitoli, riassunto, pubblicità saltate da sole e ricerca nel parlato;
+  - playlist intelligenti descritte a parole;
+  - umore e strumenti di ogni brano in Sonic Mix;
+  - riordino dei tag disordinati. Vedi [docs/ai.md](docs/ai.md).
 - **Sonic Mix:** analisi sul Mac di timbro, tonalità, tempo ed energia, per una radio di brani simili o un viaggio graduale da un brano all'altro.
 - **Ascolti, voti e playlist intelligenti:** conteggio degli ascolti, voti a stelle salvati anche nei tag MP3/FLAC, playlist a regole come in iTunes, anche per genere, anno, BPM e tonalità compatibile.
 - **Editor dei tag** per uno o più file (MP3, FLAC, M4A): titolo, artista, album, anno, genere, traccia e disco, commento e copertina, con numerazione automatica e ricerca di tag e copertine su MusicBrainz / Cover Art Archive.
@@ -76,7 +82,7 @@ Opzionale (Impostazioni → Visualization): l'onda del brano è disegnata dentro
 
 ## Installazione
 
-Scarica il DMG dall'ultima [release](https://github.com/nicolorisitano82/MusicAmp/releases), aprilo e trascina **MusicAmp** in Applicazioni. Serve macOS 14 o successivo, su Mac con Apple Silicon o Intel (app universale).
+Scarica il DMG dall'ultima [release](https://github.com/nicolorisitano82/MusicAmp/releases), aprilo e trascina **MusicAmp** in Applicazioni. Serve **macOS 26** su un Mac con **Apple Silicon**. Le funzioni di intelligenza artificiale richiedono Apple Intelligence attivo.
 
 L'app non è ancora firmata con un Developer ID né notarizzata, quindi alla prima apertura macOS la blocca. Aprila col **tasto destro → Apri**, oppure da **Impostazioni di Sistema → Privacy e sicurezza → Apri comunque**.
 
@@ -97,7 +103,7 @@ Le skin non sono incluse: trascina un file `.wsz` sul player per caricarlo. I pr
 ./build-app.sh
 ```
 
-Crea `build/MusicAmp.app` (universale arm64 + x86_64) e `build/MusicAmp-<versione>.dmg`. Servono Swift 5.9, macOS 14 e Xcode installato (per i metadati di Comandi rapidi e widget); non c'è un progetto Xcode. La prima build scarica e compila FFmpeg dai sorgenti ufficiali (circa un minuto).
+Crea `build/MusicAmp.app` (Apple Silicon) e `build/MusicAmp-<versione>.dmg`. Servono Swift 6, macOS 26 e Xcode installato (per i metadati di Comandi rapidi e widget); non c'è un progetto Xcode. La prima build scarica e compila FFmpeg dai sorgenti ufficiali (circa un minuto).
 
 ## Test
 

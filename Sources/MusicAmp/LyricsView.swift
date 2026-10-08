@@ -369,6 +369,8 @@ struct LyricsView: View {
         .sheet(isPresented: $editing) { editSheet }
         .onAppear { cover.update(ctl.playlist.currentTrack?.url) }
         .onChange(of: service.query) { cover.update(ctl.playlist.currentTrack?.url) }
+        .onChange(of: service.state) { service.autoSyncIfUseful() }
+        .onAppear { service.autoSyncIfUseful() }
     }
 
     private var header: some View {
@@ -393,6 +395,23 @@ struct LyricsView: View {
         .padding(.bottom, 8)
     }
 
+    /// Times plain lyrics (or writes missing ones) from the audio, on this Mac.
+    @ViewBuilder private func syncControl(label: String) -> some View {
+        if let p = service.syncing {
+            HStack(spacing: 8) {
+                ProgressView(value: p).frame(width: 160).tint(.white)
+                Text("Listening to the track…").font(.caption).foregroundStyle(.white.opacity(0.7))
+            }
+        } else if service.canSync {
+            VStack(spacing: 4) {
+                Button { service.syncFromAudio() } label: { Label(label, systemImage: "waveform.badge.mic") }
+                    .buttonStyle(.bordered).tint(.white)
+                Text(service.syncError ?? "Speech recognition on this Mac times every line and word for the karaoke.")
+                    .font(.caption).foregroundStyle(service.syncError == nil ? .white.opacity(0.55) : .orange)
+            }
+        }
+    }
+
     @ViewBuilder
     private var content: some View {
         switch service.state {
@@ -402,7 +421,12 @@ struct LyricsView: View {
         case .loading:
             ProgressView().controlSize(.large).tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
         case .notFound:
-            message("text.magnifyingglass", "Lyrics Not Found", "Correct the artist and title from the menu, or add an .lrc file next to the track.")
+            VStack(spacing: 14) {
+                message("text.magnifyingglass", "Lyrics Not Found", "Correct the artist and title from the menu, or add an .lrc file next to the track.")
+                    .frame(maxHeight: 220)
+                syncControl(label: "Write Them from the Audio")
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .error(let e):
             message("wifi.exclamationmark", "Search Failed", e)
         case .found(let l):
@@ -412,6 +436,7 @@ struct LyricsView: View {
                 synced(l)
             } else {
                 ScrollView {
+                    if l.synced == nil { syncControl(label: "Sync with the Audio").padding(.top, 16) }
                     Text(l.plain ?? l.synced?.map(\.text).joined(separator: "\n") ?? "")
                         .font(.system(size: fontSize * 0.75, weight: .semibold, design: .rounded))
                         .foregroundStyle(.white.opacity(0.9))
@@ -506,6 +531,8 @@ struct LyricsView: View {
                     title = service.query?.title ?? ""
                     editing = true
                 }
+                Toggle("Sync Plain Lyrics Automatically", isOn: $service.autoSync)
+                if service.canSync { Button("Sync with the Audio") { service.syncFromAudio() } }
                 if case .found(let l) = service.state {
                     Button("Copy Lyrics") {
                         NSPasteboard.general.clearContents()
@@ -578,6 +605,8 @@ struct KaraokeView: View {
         .environment(\.colorScheme, .dark)
         .onAppear { cover.update(ctl.playlist.currentTrack?.url) }
         .onChange(of: service.query) { cover.update(ctl.playlist.currentTrack?.url) }
+        .onChange(of: service.state) { service.autoSyncIfUseful() }
+        .onAppear { service.autoSyncIfUseful() }
     }
 
     @ViewBuilder

@@ -193,6 +193,7 @@ struct TagEditorView: View {
     @ObservedObject var model: TagEditorModel
     @State private var dropping = false
     @State private var lookingUp = false
+    @State private var fixing: TagFixModel?
 
     static let genres = ["Alternative", "Ambient", "Blues", "Classical", "Soundtrack", "Country", "Dance", "Electronic", "Folk",
                          "Hip-Hop", "Indie", "Jazz", "Latin", "Metal", "Pop", "Punk", "R&B", "Rap", "Reggae", "Rock", "Singer-Songwriter",
@@ -220,6 +221,9 @@ struct TagEditorView: View {
         }
         .frame(minWidth: 270 + TagEditorView.formMinWidth, minHeight: 540)
         .sheet(isPresented: $lookingUp) { TagLookupView(editor: model) }
+        .sheet(isPresented: Binding(get: { fixing != nil }, set: { if !$0 { fixing = nil } })) {
+            if let f = fixing { TagFixView(fix: f, editor: model, isPresented: Binding(get: { fixing != nil }, set: { if !$0 { fixing = nil } })) }
+        }
     }
 
     // MARK: Files
@@ -310,6 +314,9 @@ struct TagEditorView: View {
                         Button("Number Tracks") { model.autoNumber() }
                             .help("Track 1…n and total for the included files, in the order shown on the left (drag to reorder)")
                         Button("Album Artist = Artist") { model.albumArtistFromArtist() }
+                        Button("Fix with Apple Intelligence…") { fixing = TagFixModel(files: model.included) }
+                            .disabled(model.included.isEmpty || !AI.languageModelAvailable)
+                            .help(AI.unavailableReason ?? "Proposes artist, title, album and track number from messy file names (on this Mac); review, then Save")
                         Button("Look Up Online…") { lookingUp = true }
                             .disabled(model.included.isEmpty)
                             .help("Find this album on MusicBrainz and fill in tags and cover (review, then Save)")

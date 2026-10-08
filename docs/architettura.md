@@ -16,6 +16,7 @@ MusicAmp è un eseguibile Swift (AppKit + SwiftUI + AVFoundation + Metal) con un
 | Contenuti | `Playlist.swift`, `Library.swift`, `RadioBrowser.swift`, `Podcasts.swift`, `PodcastView.swift`, `Lyrics.swift`, `LyricsView.swift` | Playlist, libreria Musica, catalogo radio, podcast, testi e karaoke |
 | Sistema | `NowPlaying.swift`, `MenuBarController.swift`, `TrackNotifier.swift`, `HotKeys.swift`, `Accessibility.swift`, `Artwork.swift` | Tasti multimediali, barra dei menu, notifiche, scorciatoie globali, VoiceOver, copertine |
 | Comandi rapidi e widget | `Intents.swift`, `WidgetBridge.swift`, `Sources/MusicAmpShared`, `Sources/MusicAmpWidget` | App Intents, stato e comandi del widget, URL `musicamp://`; vedi [sistema.md](sistema.md) |
+| Intelligenza artificiale | `AI.swift`, `TagFix.swift`, `SmartPlaylistAI.swift`, `PodcastInsights.swift` | Foundation Models e SpeechAnalyzer sul Mac; vedi [ai.md](ai.md) |
 | Barra a forma d'onda | `Waveform.swift` | Calcolo e cache dei livelli, disegno nella scanalatura di `posbar.bmp`; vedi [skin-classiche.md](skin-classiche.md#barra-di-avanzamento-a-forma-donda) |
 | Timer e statistiche | `SleepAlarm.swift`, `PlayStats.swift`, `SmartPlaylists.swift`, `SmartPlaylistView.swift` | Timer di spegnimento e sveglia, ascolti e voti, playlist intelligenti; vedi [playlist-intelligenti.md](playlist-intelligenti.md) |
 | Visualizzazione | `MilkdropEEL.swift`, `MilkdropPreset.swift`, `MilkdropRenderer.swift`, `MilkdropHLSL.swift`, `MilkdropView.swift`, `MilkdropBuiltins.swift` | Vedi [milkdrop.md](milkdrop.md) |
