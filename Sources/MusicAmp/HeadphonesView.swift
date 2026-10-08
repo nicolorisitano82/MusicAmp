@@ -48,6 +48,17 @@ struct HeadphonesTab: View {
                 Spacer()
             }
             filterTable
+            Divider()
+            HStack {
+                Picker("Crossfeed", selection: ctl.binding(\.crossfeed)) {
+                    ForEach(CrossfeedAU.Preset.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                .frame(maxWidth: 360)
+                Spacer()
+            }
+            Text("Crossfeed lets each ear hear a little of the other channel's lows, slightly later, as with speakers: old stereo records with instruments hard left or right stop sounding inside one ear.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Text("Headphone profiles: AutoEq by Jaakko Pasanen (MIT), measurements by oratory1990, crinacle and others. The parametric EQ runs after the Winamp equalizer.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

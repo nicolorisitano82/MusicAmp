@@ -29,6 +29,26 @@ final class AudioEngine {
     let eq = AVAudioUnitEQ(numberOfBands: 10)
     /// Parametric EQ after the graphic one: headphone correction (AutoEq) or the user's own bands.
     let peq = AVAudioUnitEQ(numberOfBands: PEQProfile.maxBands)
+    /// Vocal remover (karaoke), after speed/pitch and before the EQs; see VocalRemover.swift.
+    let vocal: AVAudioUnitEffect = {
+        VocalRemoverAU.register()
+        return AVAudioUnitEffect(audioComponentDescription: VocalRemoverAU.desc)
+    }()
+
+    /// Headphone crossfeed, last in the chain (after both EQs); see Crossfeed.swift.
+    let crossfeed: AVAudioUnitEffect = {
+        CrossfeedAU.register()
+        return AVAudioUnitEffect(audioComponentDescription: CrossfeedAU.desc)
+    }()
+
+    var crossfeedPreset: CrossfeedAU.Preset = .off {
+        didSet { (crossfeed.auAudioUnit as? CrossfeedAU)?.setPreset(crossfeedPreset) }
+    }
+
+    /// 0 = off, 1 = full vocal removal.
+    var vocalRemoval: Double = 0 {
+        didSet { (vocal.auAudioUnit as? VocalRemoverAU)?.state.pointee.amount = Float(max(0, min(1, vocalRemoval))) }
+    }
 
     // MARK: Bit-perfect output
 
@@ -81,12 +101,14 @@ final class AudioEngine {
             engine.connect(d.converter, to: d.gain, format: bus)
             engine.connect(d.gain, to: deckMixer, fromBus: 0, toBus: i, format: bus)
         }
-        for (a, b) in [(deckMixer as AVAudioNode, timePitch as AVAudioNode), (timePitch, eq), (eq, peq)] {
+        for (a, b) in [(deckMixer as AVAudioNode, timePitch as AVAudioNode), (timePitch, vocal), (vocal, eq), (eq, peq)] {
             engine.disconnectNodeOutput(a)
             engine.connect(a, to: b, format: bus)
         }
         engine.disconnectNodeOutput(peq)
-        engine.connect(peq, to: engine.mainMixerNode, format: bus)
+        engine.connect(peq, to: crossfeed, format: bus)
+        engine.disconnectNodeOutput(crossfeed)
+        engine.connect(crossfeed, to: engine.mainMixerNode, format: bus)
         engine.disconnectNodeOutput(engine.mainMixerNode)
         engine.connect(engine.mainMixerNode, to: engine.outputNode, format: nil)
     }
@@ -102,6 +124,8 @@ final class AudioEngine {
         if !peq.bypass { out.append("parametric EQ on") }
         if deck.gain.globalGain != 0 { out.append("ReplayGain adjusting the level") }
         if !timePitch.bypass { out.append("speed or pitch changed") }
+        if vocalRemoval > 0 { out.append("vocal remover on") }
+        if crossfeedPreset != .off { out.append("crossfeed on") }
         if decks.contains(where: { abs($0.player.pan) > 0.001 }) { out.append("balance not centered") }
         return out
     }
@@ -144,6 +168,11 @@ final class AudioEngine {
     var crossfadeSeconds: Double = 0
     /// Start the next track exactly when the current one ends (used when crossfade is off).
     var gapless = true
+    /// Smart transitions: between albums skip the silence at the end of a track and at the start of the next;
+    /// inside an album never crossfade or trim (gapless only), so live albums and intended pauses stay intact.
+    var smartTransitions = true
+    /// True when two tracks belong to the same album (asked before an automatic transition).
+    var sameAlbum: ((URL, URL) -> Bool)?
     /// Next track for an automatic transition, without side effects (queue/shuffle are resolved by the caller).
     var nextProvider: (() -> (index: Int, url: URL)?)?
     /// The automatic transition happened: the track at `index` is now current.
@@ -226,6 +255,8 @@ final class AudioEngine {
         engine.attach(timePitch)
         engine.attach(eq)
         engine.attach(peq)
+        engine.attach(vocal)
+        engine.attach(crossfeed)
         peq.bypass = true
         for (i, b) in eq.bands.enumerated() {
             b.filterType = .parametric
@@ -247,10 +278,12 @@ final class AudioEngine {
             engine.connect(d.gain, to: deckMixer, fromBus: 0, toBus: i, format: bus)
         }
         engine.connect(deckMixer, to: timePitch, format: bus)
-        engine.connect(timePitch, to: eq, format: bus)
+        engine.connect(timePitch, to: vocal, format: bus)
+        engine.connect(vocal, to: eq, format: bus)
         timePitch.bypass = true
         engine.connect(eq, to: peq, format: bus)
-        engine.connect(peq, to: engine.mainMixerNode, format: bus)
+        engine.connect(peq, to: crossfeed, format: bus)
+        engine.connect(crossfeed, to: engine.mainMixerNode, format: bus)
         // Analysis after both EQs but before the volume, like Winamp: the visualizer moves even at volume 0.
         peq.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buf, _ in
             self?.onTap?(buf)
@@ -652,44 +685,108 @@ final class AudioEngine {
         guard let next = nextProvider?(), next.url.isFileURL else { return }
         preparing = true
         let tokenAtStart = deck.token
+        let currentURL = deck.url
+        let same = currentURL.map { sameAlbum?($0, next.url) ?? false } ?? false
+        let trim = smartTransitions && !same
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let f = try? AVAudioFile(forReading: CueSheet.audioURL(next.url))
+            // Silence to skip: the head of the next track and the tail of this one (read from a separate
+            // handle: the player is reading the current file).
+            var lead: AVAudioFramePosition = 0, trail: AVAudioFramePosition = 0
+            if trim, let f {
+                lead = AudioEngine.silence(f, url: next.url, atEnd: false)
+                if let u = currentURL, let cf = try? AVAudioFile(forReading: CueSheet.audioURL(u)) {
+                    trail = AudioEngine.silence(cf, url: u, atEnd: true)
+                }
+            }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.preparing = false
                 guard let f, self.state == .playing, self.deck.token == tokenAtStart, !self.isStream else { return }
                 // Bit-perfect: a track at another rate needs the output restarted, so no gapless join.
                 if self.matchDeviceRate, abs(f.fileFormat.sampleRate - self.busRate) > 0.5 { return }
-                self.armOther(f, url: next.url, index: next.index)
+                self.armOther(f, url: next.url, index: next.index, lead: lead, trail: trail, sameAlbum: same)
             }
         }
     }
 
+    /// Frames of silence (below −60 dBFS) at the start or end of a track, looking at most 30 s in;
+    /// 0 when shorter than half a second (a natural pause, not dead air). 0.1 s of it is kept.
+    static func silence(_ f: AVAudioFile, url: URL, atEnd: Bool) -> AVAudioFramePosition {
+        let sr = f.processingFormat.sampleRate
+        var segStart: AVAudioFramePosition = 0, segEnd = f.length
+        if let seg = CueSheet.segment(url) {
+            segStart = max(0, min(f.length, AVAudioFramePosition(seg.start * sr)))
+            segEnd = seg.end.map { max(segStart, min(f.length, AVAudioFramePosition($0 * sr))) } ?? f.length
+        }
+        let maxScan = min(segEnd - segStart, AVAudioFramePosition(30 * sr))
+        let chunk: AVAudioFrameCount = 4096
+        guard maxScan > 0, let buf = AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: chunk) else { return 0 }
+        let threshold: Float = 0.001
+        let channels = Int(f.processingFormat.channelCount)
+        var scanned: AVAudioFramePosition = 0
+        while scanned < maxScan {
+            let n = AVAudioFrameCount(min(AVAudioFramePosition(chunk), maxScan - scanned))
+            f.framePosition = atEnd ? segEnd - scanned - AVAudioFramePosition(n) : segStart + scanned
+            buf.frameLength = 0
+            guard (try? f.read(into: buf, frameCount: n)) != nil, buf.frameLength > 0, let d = buf.floatChannelData else { break }
+            let len = Int(buf.frameLength)
+            // First loud sample from the scanning direction.
+            var hit: Int?
+            for c in 0..<channels {
+                let p = d[c]
+                if atEnd {
+                    var i = len - 1
+                    while i >= 0, abs(p[i]) < threshold { i -= 1 }
+                    if i >= 0 { hit = min(hit ?? (len - 1 - i), len - 1 - i) }
+                } else {
+                    var i = 0
+                    while i < len, abs(p[i]) < threshold { i += 1 }
+                    if i < len { hit = min(hit ?? i, i) }
+                }
+            }
+            if let h = hit {
+                let silent = scanned + AVAudioFramePosition(h)
+                return silent >= AVAudioFramePosition(0.5 * sr) ? silent - AVAudioFramePosition(0.1 * sr) : 0
+            }
+            scanned += AVAudioFramePosition(len)
+        }
+        return 0   // more than 30 s of silence (or unreadable): leave it alone
+    }
+
     /// Loads the next file on the idle deck and schedules its start: at the exact end (gapless) or
     /// `crossfadeSeconds` earlier (crossfade).
-    private func armOther(_ f: AVAudioFile, url: URL, index: Int) {
+    private func armOther(_ f: AVAudioFile, url: URL, index: Int, lead: AVAudioFramePosition = 0,
+                          trail: AVAudioFramePosition = 0, sameAlbum: Bool = false) {
         let o = other, oi = 1 - cur
         o.player.stop()
         o.file = f
         o.url = url
         o.index = index
         AudioEngine.setSegment(o, f, url)
+        // Smart transitions: start after the next track's leading silence.
+        o.startFrame = min(o.segEnd, o.segStart + lead)
         o.token &+= 1
         let t = o.token
         connect(oi, f.processingFormat)
         let dur = Double(o.segEnd - o.segStart) / f.processingFormat.sampleRate
         o.bitrate = AudioEngine.bitrate(f, url)
         applyGain(o)
-        o.player.scheduleSegment(f, startingFrame: o.segStart, frameCount: AVAudioFrameCount(o.segEnd - o.segStart), at: nil,
+        o.player.scheduleSegment(f, startingFrame: o.startFrame, frameCount: AVAudioFrameCount(o.segEnd - o.startFrame), at: nil,
                                  completionCallbackType: .dataPlayedBack) { [weak self] _ in
             DispatchQueue.main.async { self?.finished(oi, t) }
         }
         guard let nt = player.lastRenderTime, let pt = player.playerTime(forNodeTime: nt), file != nil else { return }
         let played = deck.startFrame + pt.sampleTime
-        let remaining = max(0, Double(deck.segEnd - played) / pt.sampleRate)
+        // Smart transitions: the current track "ends" where its trailing silence begins.
+        let remaining = max(0, Double(deck.segEnd - trail - played) / pt.sampleRate)
         // At speed `rate` the remaining source seconds pass `rate` times faster on the clock.
         let wallRemaining = remaining / max(0.25, rate)
-        let fade = min(crossfadeSeconds, wallRemaining, dur / 2)
+        // Inside an album (smart transitions) tracks join gaplessly; a trimmed tail still needs the
+        // outgoing deck stopped, which a very short fade does.
+        let wanted = smartTransitions && sameAlbum ? 0 : crossfadeSeconds
+        var fade = min(wanted, wallRemaining, dur / 2)
+        if fade <= 0, trail > 0 { fade = min(0.03, wallRemaining) }
         let startIn = max(0, wallRemaining - fade)
         let startHost = nt.hostTime + AVAudioTime.hostTime(forSeconds: startIn)
         o.player.volume = fade > 0 ? 0 : 1

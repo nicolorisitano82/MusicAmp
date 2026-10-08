@@ -50,6 +50,14 @@ L'intestazione "MUSICAMP" in verde Winamp mostra lo stato, il conto alla rovesci
 
 Il widget compare nella galleria (clic destro sulla scrivania → Modifica widget) dopo il primo avvio dell'app. `pluginkit -m -p com.apple.widgetkit-extension` deve elencare `com.genomeup.musicamp.widget`.
 
+## Icona del Dock dinamica
+
+`DockIcon.swift`: mentre un brano è caricato l'icona del Dock diventa la sua copertina, nella forma delle icone di macOS, con una barra di avanzamento verde in basso. Senza copertina resta l'icona dell'app con la barra. In pausa l'icona si scurisce e compare il simbolo di pausa; per le radio c'è "● LIVE" al posto della barra. Allo stop torna l'icona normale.
+
+- Si disegna con una vista come `NSDockTile.contentView`, aggiornata una volta al secondo solo durante la riproduzione, e ridisegnata solo quando cambia qualcosa di visibile.
+- Si spegne in Impostazioni → General → "Cover and progress in the Dock icon".
+- `--dock-snapshot out.png [copertina]` disegna i quattro stati per controllarli.
+
 ## URL `musicamp://`
 
 Utili da script, link o dall'azione "Apri URL":

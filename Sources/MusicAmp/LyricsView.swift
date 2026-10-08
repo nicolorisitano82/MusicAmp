@@ -662,6 +662,12 @@ struct KaraokeView: View {
                 Image(systemName: ctl.audio.state == .playing ? "pause.fill" : "play.fill").font(.title2)
             }
             .buttonStyle(.borderless)
+            Button { ctl.toggleVocalRemover() } label: {
+                Label(ctl.vocalRemoval > 0 ? "Restore Vocals" : "Remove Vocals", systemImage: ctl.vocalRemoval > 0 ? "mic.fill" : "mic.slash.fill")
+                    .font(.callout.weight(.medium))
+            }
+            .buttonStyle(.borderless)
+            .help("Remove the lead vocals (⌥⌘V)")
             Text("Press Esc to exit").font(.caption).foregroundStyle(.white.opacity(0.4))
         }
         .foregroundStyle(.white)

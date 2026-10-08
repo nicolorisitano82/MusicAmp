@@ -256,6 +256,26 @@ struct PlaySmartPlaylistIntent: AppIntent {
     }
 }
 
+struct PlaySonicRadioIntent: AppIntent {
+    static var title: LocalizedStringResource = "Play Sonic Radio"
+    static var description = IntentDescription("Plays a mix of tracks that sound like the current one (timbre, tempo, key, energy). Tracks not analysed yet are analysed first.")
+    @Parameter(title: "Tracks", default: 25, inclusiveRange: (5, 100)) var count: Int
+    static var parameterSummary: some ParameterSummary { Summary("Play \(\.$count) tracks that sound like the current one") }
+    @MainActor func perform() async throws -> some IntentResult & ReturnsValue<Int> {
+        let c = await readyCtl()
+        guard let t = c.playlist.currentTrack, !t.isStream else { throw MusicAmpIntentError.message("Play a local track first.") }
+        let model = SonicMixModel.shared
+        let items = model.pool
+        await withCheckedContinuation { (k: CheckedContinuation<Void, Never>) in SonicStore.shared.analyze(items.map(\.url)) { k.resume() } }
+        let space = SonicSpace(items: items)
+        guard let seed = space.track(t.url) else { throw MusicAmpIntentError.message("This track can't be analysed.") }
+        let urls = space.radio(from: seed, count: count).map(\.item.url)
+        guard urls.count > 1 else { throw MusicAmpIntentError.message("Not enough analysed tracks for a mix.") }
+        c.startMix(urls, title: "Sonic Radio")   // the current track keeps playing; the mix follows it
+        return .result(value: urls.count)
+    }
+}
+
 enum MusicAmpIntentError: Error, CustomLocalizedStringResourceConvertible {
     case message(String)
     var localizedStringResource: LocalizedStringResource {
@@ -276,6 +296,8 @@ struct MusicAmpShortcuts: AppShortcutsProvider {
                     shortTitle: "Sleep Timer", systemImageName: "moon.zzz.fill")
         AppShortcut(intent: SetAlarmIntent(), phrases: ["Set a \(.applicationName) alarm"],
                     shortTitle: "Alarm", systemImageName: "alarm.fill")
+        AppShortcut(intent: PlaySonicRadioIntent(), phrases: ["Play something like this in \(.applicationName)", "Start \(.applicationName) sonic radio"],
+                    shortTitle: "Sonic Radio", systemImageName: "waveform.circle.fill")
         AppShortcut(intent: PlaySmartPlaylistIntent(), phrases: ["Play \(\.$playlist) in \(.applicationName)", "Play a smart playlist in \(.applicationName)"],
                     shortTitle: "Smart Playlist", systemImageName: "gearshape.2.fill")
     }

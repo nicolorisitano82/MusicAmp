@@ -87,8 +87,9 @@ private struct GeneralTab: View {
             Section("Startup") {
                 Toggle("Resume playback at launch", isOn: ctl.binding(\.resumeOnLaunch))
             }
-            Section("Menu Bar and Notifications") {
+            Section("Menu Bar, Dock and Notifications") {
                 Toggle("Mini player in the menu bar", isOn: ctl.binding(\.menuBarEnabled))
+                Toggle("Cover and progress in the Dock icon", isOn: ctl.binding(\.dockIconLive))
                 Toggle("Notify on track change", isOn: ctl.binding(\.notifyTrackChange))
                 Toggle("Only when MusicAmp is in the background", isOn: ctl.binding(\.notifyOnlyInBackground))
                     .disabled(!ctl.notifyTrackChange)
@@ -127,7 +128,20 @@ private struct AudioTab: View {
                     Text("\(Int(ctl.crossfadeSeconds)) s").monospacedDigit().frame(width: 36, alignment: .trailing)
                 }
                 .disabled(!ctl.crossfadeOn)
+                Toggle("Smart transitions", isOn: ctl.binding(\.smartTransitions))
+                Text("Between albums, skips the silence at the end of a track and at the start of the next. Inside an album, tracks always join gaplessly: no crossfade, no trimming.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Text("Transitions apply when advancing automatically to the next track; Next and Previous switch immediately.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Karaoke") {
+                Toggle("Remove vocals (⌥⌘V)", isOn: Binding(get: { ctl.vocalRemoval > 0 }, set: { ctl.vocalRemoval = $0 ? ctl.vocalStrength : 0 }))
+                HStack {
+                    Text("Strength")
+                    Slider(value: ctl.binding(\.vocalStrength), in: 0.3...1)
+                    Text("\(Int(ctl.vocalStrength * 100))%").monospacedDigit().frame(width: 44, alignment: .trailing)
+                }
+                Text("Cancels what is mixed in the centre, where lead vocals usually are; bass stays. Works best on studio stereo mixes, not on mono or live recordings. Not remembered after quitting.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("ReplayGain (Volume Leveling)") {

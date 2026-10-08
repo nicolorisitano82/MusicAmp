@@ -185,6 +185,7 @@ extension Ctl {
             Artwork.forget(t.url)
             playlist.reloadMetadata(t)
         }
+        DockIcon.shared.coverChanged(urls)
     }
 }
 

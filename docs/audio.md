@@ -25,6 +25,30 @@ deck B: AVAudioPlayerNode → converter (AVAudioMixerNode) → gain (AVAudioUnit
 - **Gapless:** il brano successivo viene programmato sull'altro deck all'host time esatto della fine del corrente (`armOther`, `swapToOther`).
 - **Crossfade:** dissolvenza a potenza costante guidata da un timer (`tickTransition`). La durata si sceglie nelle preferenze.
 - `nextProvider`/`onAdvance` chiedono al controller qual è il prossimo brano, rispettando coda, shuffle e ripetizione.
+- **Transizioni intelligenti** (Impostazioni → Audio, attive di default):
+  - Tra brani di album diversi si salta il silenzio: quello in coda al brano corrente e quello in testa al successivo. Conta come silenzio ciò che sta sotto −60 dBFS, solo se dura almeno mezzo secondo; se ne lasciano 0,1 s. Lo misura `AudioEngine.silence`, guardando al massimo 30 s, mentre prepara il brano successivo e da un handle separato del file.
+  - Il crossfade, se attivo, parte dove finisce la musica e non dove finisce il file. Senza crossfade, un taglio di 30 ms ferma la coda silenziosa.
+  - Dentro lo stesso album non si taglia e non si sfuma mai: l'unione è sempre gapless, così le pause volute e gli album dal vivo restano intatti. "Stesso album" vuol dire una di queste cose: tracce dello stesso `.cue`; stesso tag album con lo stesso artista dell'album; oppure, senza artista dell'album, stesso tag album nella stessa cartella (`Ctl.sameAlbum`).
+
+## Crossfeed per le cuffie
+
+`Crossfeed.swift`: un `AUAudioUnit` registrato nel processo, ultimo della catena (dopo i due EQ e il punto di analisi). Imposta in Impostazioni → Headphones.
+
+- Ogni orecchio riceve anche i bassi dell'altro canale, sotto la frequenza di taglio e con circa 0,3 ms di ritardo, come accade ascoltando le casse. È la stessa idea di Bauer usata da bs2b, Roon e foobar2000.
+- Formula: out_L = L − g·LP(L) + g·LP(R ritardato), con g = c/(1+c) e c = 10^(−feed/20). Così il mono resta allo stesso livello, un basso solo a sinistra arriva a destra `feed` dB più basso e gli acuti restano separati.
+- Preset: Light (700 Hz, 9,5 dB), Medium (700 Hz, 6 dB), Strong (650 Hz, 4,5 dB).
+- Misure con `--test-crossfeed`: −10,1, −6,7 e −5,4 dB a 200 Hz; acuti 18 dB sotto; mono −0,5 dB.
+- Le linee di ritardo sono allocate una volta sola: nel thread audio non si alloca nulla.
+
+## Rimozione della voce (karaoke)
+
+`VocalRemover.swift`: un `AUAudioUnit` registrato nel processo e inserito dopo velocità/intonazione, prima degli EQ.
+
+- La voce principale di solito è mixata al centro. L'uscita è il segnale laterale (L − R, a 0,7 per lasciare margine) più il centro filtrato sotto i 120 Hz (Butterworth del 4° ordine), così basso e cassa restano.
+- La forza (30–100%) mescola il risultato con l'originale.
+- Si attiva con ⌥⌘V, con il pulsante nel karaoke a schermo intero, o da Impostazioni → Audio → Karaoke. Non viene ricordata all'uscita.
+- Misure con `--test-vocal`: voce al centro −45 dB, strumento solo a sinistra −3 dB, basso al centro −0,5 dB.
+- Funziona sui mix stereo da studio; con brani mono o dal vivo toglie poco o troppo.
 
 ## Bit-perfect
 

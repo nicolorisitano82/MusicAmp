@@ -45,3 +45,26 @@ I voti stanno nel database di MusicAmp, non nei tag dei file.
 - Le playlist sono salvate in `smart-playlists.json`. I nomi sono disponibili anche a Siri e Comandi rapidi ("Play Top Rated in MusicAmp").
 
 Test: `--test-stats` (archivio in memoria, non tocca `stats.json`).
+
+## Mix per somiglianza sonora (Sonic Mix)
+
+**Vista → Sonic Mix (⌥⌘X)**, oppure clic destro su un brano della playlist → **Sonic Radio from This Track** / **Sonic Journey to This Track**, oppure l'azione di Comandi rapidi **Play Sonic Radio** ("Play something like this in MusicAmp").
+
+**Analisi** (`Sonic.swift`), sul Mac, di 45 s di ogni brano a partire da un quarto della durata: circa 0,07 s a brano nella build release, tre brani alla volta. Misura:
+- il timbro: 13 coefficienti MFCC da 26 bande mel tra 60 Hz e 8 kHz;
+- l'armonia: cromagramma a 12 note e la tonalità più probabile (profili di Krumhansl);
+- il tempo in BPM: autocorrelazione dell'andamento degli attacchi, tra 60 e 200 BPM, con preferenza intorno a 120;
+- volume, luminosità (baricentro spettrale), rumorosità (spectral flatness), dinamica, forza degli attacchi.
+
+I risultati restano in `sonic.json` e si ricalcolano se il file cambia. Si analizza tutto ciò che MusicAmp conosce: i brani delle statistiche, la libreria di Musica caricata e la playlist.
+
+**Distanza tra due brani:** timbro ed energia, ciascuno normalizzato su tutta la libreria, con lo stesso peso. Poi il tempo: un brano a metà o doppio tempo conta come vicino. Infine la tonalità sul circolo delle quinte, pesata per quanto è sicura la stima.
+
+**Modi:**
+- **Sonic Radio:** ogni brano è vicino al precedente e resta vicino a quello di partenza. Non ripete lo stesso artista due volte di fila e sceglie un po' a caso tra i tre più vicini ("Shuffle Again" ne crea un'altra).
+- **Sonic Journey:** dal brano A al brano B, attraverso punti intermedi distribuiti in modo uniforme tra i due (il tempo su scala logaritmica). Per ogni punto prende il brano più vicino non ancora usato. Alla fine una passata 2-opt riordina i brani per evitare il percorso a zig-zag.
+- **Similar Tracks:** i più vicini, con la percentuale di somiglianza.
+
+**Play** sostituisce la playlist. Se il mix parte dal brano già in ascolto, quel brano continua senza interruzioni e gli altri lo seguono.
+
+Test: `--test-sonic` (tempo ±3%, tonalità, somiglianze, radio, viaggio, riordino); `--sonic-analyze file …` per provarlo su file veri.

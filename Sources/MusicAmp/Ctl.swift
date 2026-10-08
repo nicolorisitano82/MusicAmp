@@ -31,6 +31,14 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     /// Bit-perfect: the output device follows each track's sample rate (Settings → Audio → Output).
     var bitPerfect = false { didSet { audio.matchDeviceRate = bitPerfect; notify() } }
     var crossfadeOn = false { didSet { applyTransitionSettings(); notify() } }
+    /// Skip silence between albums, never crossfade inside an album.
+    var smartTransitions = true { didSet { applyTransitionSettings(); notify() } }
+    /// Vocal remover for karaoke, 0…1 (not saved: a forgotten one would sound like a broken file next time).
+    var vocalRemoval: Double = 0 { didSet { audio.vocalRemoval = vocalRemoval; notify() } }
+    /// Headphone crossfeed preset (CrossfeedAU.Preset raw value).
+    var crossfeed = 0 { didSet { audio.crossfeedPreset = CrossfeedAU.Preset(rawValue: crossfeed) ?? .off; notify() } }
+    /// Strength used when the remover is switched on from the menu or the karaoke window.
+    var vocalStrength: Double = 1 { didSet { if vocalRemoval > 0 { vocalRemoval = vocalStrength }; notify() } }
     var crossfadeSeconds: Double = 5 { didSet { applyTransitionSettings(); notify() } }
     var rgMode = 1 { didSet { applyTransitionSettings(); notify() } }   // 0 off, 1 track, 2 album
     var rgPreamp: Double = 0 { didSet { applyTransitionSettings(); notify() } }
@@ -79,6 +87,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var plShowRatings = true { didSet { notify(); plView.needsDisplay = true } }
     /// Waveform in the position bar (off by default: classic skins look exactly as designed).
     var waveSeekBar = false { didSet { notify(); mainView.needsDisplay = true } }
+    /// The Dock icon shows the cover and progress while playing.
+    var dockIconLive = true { didSet { notify(); DockIcon.shared.update() } }
     var plUseSkinFont = true { didSet { notify() } }
     var ffmpegEnabled = true { didSet { FFmpeg.enabled = ffmpegEnabled; notify() } }
     /// Seconds of radio audio buffered before playback starts (and after an underrun).
@@ -112,6 +122,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var albumArtWindowRef: NSWindow?
     var tagEditorWindowRef: NSWindow?
     var smartWindowRef: NSWindow?
+    var sonicWindowRef: NSWindow?
     var milkdropController: MilkdropController?
     private var menuBar: MenuBarController?
     private var notifier: TrackNotifier?
@@ -188,10 +199,11 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         audio.nextProvider = { [weak self] in self?.peekNext() }
         audio.onAdvance = { [weak self] i in self?.didAdvance(to: i) }
         audio.gainProvider = { ReplayGain.shared.gain(for: CueSheet.audioURL($0)) }   // cue tracks: the file's tags
+        audio.sameAlbum = { [weak self] a, b in self?.sameAlbum(a, b) ?? false }
         ReplayGain.shared.onUpdate = { [weak self] u in self?.audio.refreshGain(for: u) }
         applyTransitionSettings()
         nowPlaying = NowPlaying(ctl: self)
-        playlist.onCurrentMetadata = { [weak self] in self?.nowPlaying?.update(); WidgetBridge.shared.setNeedsUpdate() }
+        playlist.onCurrentMetadata = { [weak self] in self?.nowPlaying?.update(); WidgetBridge.shared.setNeedsUpdate(); DockIcon.shared.update() }
         loadAutoEQ()
         mainWindow = SkinWindow(view: mainView)
         eqWindow = SkinWindow(view: eqView)
@@ -255,7 +267,9 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             let tabs: [String: PrefsTab] = ["general": .general, "audio": .audio, "headphones": .headphones, "vis": .vis,
                                             "playlist": .playlist, "timer": .timer, "shortcuts": .shortcuts, "skins": .skins]
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                if tab == "smart" { self.showSmartPlaylists() } else { self.openPreferences(tab: tabs[tab] ?? .general) }
+                if tab == "sonic" {
+                    self.openSonicMix(seed: SonicMixModel.shared.pool.map(\.url).sorted { $0.path < $1.path }.first, destination: nil)
+                } else if tab == "smart" { self.showSmartPlaylists() } else { self.openPreferences(tab: tabs[tab] ?? .general) }
             }
         }
         if ProcessInfo.processInfo.environment["MUSICAMP_TEST_DRAG"] != nil {
@@ -278,6 +292,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             self.notify()
         }
         WidgetBridge.shared.start(ctl: self)
+        DockIcon.shared.start(ctl: self)
         started = true
     }
 
@@ -335,6 +350,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         }
         nowPlaying?.update()
         WidgetBridge.shared.setNeedsUpdate()
+        DockIcon.shared.update()
         notifier?.transportChanged()
         menuBar?.update()
         notify()
@@ -540,6 +556,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     func applyTransitionSettings() {
         audio.crossfadeSeconds = crossfadeOn ? crossfadeSeconds : 0
         audio.gapless = gapless
+        audio.smartTransitions = smartTransitions
         let rg = ReplayGain.shared
         rg.mode = ReplayGain.Mode(rawValue: rgMode) ?? .track
         rg.preamp = rgPreamp
@@ -1384,6 +1401,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         rate.submenu = ratingMenu(#selector(rateCurrent(_:)), current: playlist.currentTrack.map { PlayStats.shared.rating($0.url) }, keys: false)
         m.addItem(rate)
         item(m, "Smart Playlists…", #selector(showSmartPlaylists))
+        item(m, "Sonic Mix…", #selector(showSonicMix))
         m.addItem(.separator())
         let q = NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         m.addItem(q)
@@ -1463,6 +1481,24 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         plView.beginSearch()
     }
     @objc func toggleWaveSeekBar() { waveSeekBar.toggle() }
+
+    @objc func toggleVocalRemover() {
+        vocalRemoval = vocalRemoval > 0 ? 0 : vocalStrength
+        flashMarquee(vocalRemoval > 0 ? "VOCAL REMOVER ON" : "VOCAL REMOVER OFF")
+    }
+
+    /// Two playlist tracks of the same album: tracks of one cue sheet, or the same album tag (and album artist,
+    /// when both have one). Smart transitions keep such tracks gapless, without trimming or crossfading.
+    func sameAlbum(_ a: URL, _ b: URL) -> Bool {
+        if CueSheet.isCueTrack(a), CueSheet.isCueTrack(b) { return CueSheet.cueFile(a) == CueSheet.cueFile(b) }
+        guard let ta = playlist.tracks.first(where: { $0.url == a }), let tb = playlist.tracks.first(where: { $0.url == b }),
+              let la = ta.album?.trimmingCharacters(in: .whitespaces), !la.isEmpty,
+              let lb = tb.album?.trimmingCharacters(in: .whitespaces), la.caseInsensitiveCompare(lb) == .orderedSame else { return false }
+        let fold = { (s: String?) in s?.trimmingCharacters(in: .whitespaces).lowercased() }
+        if let x = fold(ta.albumArtist), let y = fold(tb.albumArtist), !x.isEmpty, !y.isEmpty { return x == y }
+        // No album-artist tags: the same folder is a good sign of the same album (compilations included).
+        return CueSheet.audioURL(a).deletingLastPathComponent() == CueSheet.audioURL(b).deletingLastPathComponent()
+    }
     @objc func togglePlTree() { plTree.toggle(); plView.clampScroll() }
     @objc func toggleShuffle() { shuffle.toggle() }
 
@@ -1498,6 +1534,9 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         play.target = self
         play.tag = i
         item(m, "Queue / Dequeue", #selector(queueSelected))
+        m.addItem(.separator())
+        item(m, "Sonic Radio from This Track", #selector(sonicRadioFromSelection))
+        if playlist.currentTrack != nil, playlist.current != i { item(m, "Sonic Journey to This Track", #selector(sonicJourneyToSelection)) }
         m.addItem(.separator())
         let ratings = Set(playlist.selection.compactMap { playlist.tracks.indices.contains($0) ? PlayStats.shared.rating(playlist.tracks[$0].url) : nil })
         let r = NSMenuItem(title: "Rating", action: nil, keyEquivalent: "")
@@ -1574,6 +1613,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         case #selector(toggleDoubleSize): on(doubleSize)
         case #selector(togglePlTree): on(plTree)
         case #selector(toggleWaveSeekBar): on(waveSeekBar)
+        case #selector(toggleVocalRemover): on(vocalRemoval > 0)
         case #selector(toggleAlwaysOnTop): on(alwaysOnTop)
         case #selector(toggleTimeRemaining): on(timeRemaining)
         case #selector(toggleShuffle): on(shuffle)
@@ -1694,6 +1734,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         plTree = bool("plTree", false)
         plShowRatings = bool("plShowRatings", true)
         waveSeekBar = bool("waveSeekBar", false)
+        dockIconLive = bool("dockIconLive", true)
         plUseSkinFont = bool("plUseSkinFont", true)
         radioBuffer = dbl("radioBuffer", 2)
         musicSpeed = dbl("musicSpeed", 1)
@@ -1703,6 +1744,9 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         bitPerfect = bool("bitPerfect", false)
         ffmpegEnabled = bool("ffmpegEnabled", true)
         crossfadeOn = bool("crossfadeOn", false)
+        smartTransitions = bool("smartTransitions", true)
+        crossfeed = int("crossfeed", 0)
+        vocalStrength = dbl("vocalStrength", 1)
         crossfadeSeconds = dbl("crossfadeSeconds", 5)
         rgMode = int("rgMode", 1)
         rgPreamp = dbl("rgPreamp", 0)
@@ -1725,7 +1769,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             "snapEnabled": snapEnabled, "snapDistance": snapDistance, "marqueeScroll": marqueeScroll,
             "resumeOnLaunch": resumeOnLaunch, "visThinBands": visThinBands, "visPeaksOn": visPeaksOn,
             "visFalloff": visFalloff, "peakFalloff": peakFalloff, "oscStyle": oscStyle, "plFontSize": plFontSize,
-            "plShowNumbers": plShowNumbers, "plTree": plTree, "plShowRatings": plShowRatings, "waveSeekBar": waveSeekBar, "plUseSkinFont": plUseSkinFont, "autoDownloadFonts": autoDownloadFonts,
+            "plShowNumbers": plShowNumbers, "plTree": plTree, "plShowRatings": plShowRatings, "waveSeekBar": waveSeekBar, "dockIconLive": dockIconLive, "plUseSkinFont": plUseSkinFont, "autoDownloadFonts": autoDownloadFonts,
             "menuBarEnabled": menuBarEnabled, "notifyTrackChange": notifyTrackChange,
             "notifyOnlyInBackground": notifyOnlyInBackground,
             // Plain files as paths; cue tracks keep their "#track=N" fragment, so they are saved as URLs.
@@ -1733,7 +1777,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             "streamTitles": Dictionary(playlist.tracks.filter(\.isStream).map { ($0.url.absoluteString, $0.title) },
                                        uniquingKeysWith: { a, _ in a }),
             "radioBuffer": radioBuffer, "ffmpegEnabled": ffmpegEnabled, "musicSpeed": musicSpeed,
-            "podcastSpeed": podcastSpeed, "pitchSemitones": pitchSemitones, "gapless": gapless, "bitPerfect": bitPerfect, "crossfadeOn": crossfadeOn,
+            "podcastSpeed": podcastSpeed, "pitchSemitones": pitchSemitones, "gapless": gapless, "bitPerfect": bitPerfect, "crossfadeOn": crossfadeOn, "smartTransitions": smartTransitions, "crossfeed": crossfeed, "vocalStrength": vocalStrength,
             "crossfadeSeconds": crossfadeSeconds, "rgMode": rgMode, "rgPreamp": rgPreamp, "rgAnalyze": rgAnalyze,
             "rgPreventClip": rgPreventClip,
             "current": playlist.current ?? -1,

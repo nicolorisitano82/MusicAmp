@@ -4,6 +4,22 @@ L'eseguibile (`.build/debug/MusicAmp`, `.build/release/MusicAmp` o `MusicAmp.app
 
 ## Suite di test
 
+Tutte insieme, con un riepilogo e codice d'uscita 1 se qualcosa fallisce:
+
+```bash
+Scripts/test-all.sh
+```
+
+- `--offline` salta le suite che usano internet (AutoEq, LRCLIB, podcast, MusicBrainz).
+- `--release` prova la build ottimizzata.
+- `--package` controlla anche `build/MusicAmp.app` (dopo `./build-app.sh`): app, widget e FFmpeg universali, firma, avvio del widget da `NSExtensionMain`, sandbox del widget, le 19 azioni di Comandi rapidi, versioni allineate, schema `musicamp://`, licenza FFmpeg, versione Intel eseguita con Rosetta.
+- `--ui` aggiunge la prova del trascinamento delle finestre, che apre MusicAmp per qualche secondo.
+- Con dei nomi (`Scripts/test-all.sh sonic vocal`) esegue solo quelle suite.
+- Ogni suite ha un tempo massimo. Fallisce con un codice d'uscita diverso da 0, una riga `FAIL` o il superamento del tempo. I log restano in una cartella temporanea.
+- Le suite audio suonano a volume 0 e non cambiano mai la frequenza del dispositivo di uscita. Quelle che devono creare file di prova (tag, FFmpeg) richiedono l'ffmpeg di Homebrew, altrimenti vengono saltate. `MUSICAMP_TEST_RADIO_URL` aggiunge una radio vera.
+
+Le singole suite:
+
 | Comando | Cosa verifica |
 | --- | --- |
 | `--self-test [preset.eqf …]` | Preset EQ `.eqf`/`.q1`, coda, inserimento al punto di rilascio, skin Retina (bitmap e cursori `@2x`, Scale2x), playlist ad albero |
@@ -18,6 +34,10 @@ L'eseguibile (`.build/debug/MusicAmp`, `.build/release/MusicAmp` o `MusicAmp.app
 | `--test-bitperfect` | Scelta della frequenza del dispositivo, grafo ricostruito a un'altra frequenza, diagnosi; non cambia la frequenza del dispositivo |
 | `--test-musicbrainz` | Escape delle query, associazione file/tracce, ricerche reali su MusicBrainz e Cover Art Archive |
 | `--test-schedule` | Orari della sveglia (giorni, una volta, ora legale), curve di dissolvenza, stato del widget, URL `musicamp://` |
+| `--test-vocal` | Rimozione della voce su uno stereo generato: voce al centro a 440 Hz rimossa, strumento solo a sinistra e basso al centro conservati, forza al 50%, spenta = inalterato |
+| `--test-smart` | Transizioni intelligenti: misura del silenzio in testa e in coda, nessun buco tra album diversi, silenzio conservato nello stesso album e con l'opzione spenta |
+| `--test-sonic` | Analisi sonora su musica generata: tempo, tonalità, timbro; brani simili, Sonic Radio, viaggio sonoro e il suo riordino |
+| `--test-crossfeed` | Crossfeed: livello dei bassi passati all'altro canale per ogni preset, acuti quasi intatti, livello del mono invariato |
 | `--test-waveform [cartella]` | Barra a forma d'onda: livelli di un file generato, segmento `.cue`, FFmpeg contro nativo, cache, render della barra (spenta = pixel identici, accesa = solo la scanalatura); con `MUSICAMP_WAVE_SKIN` e `MUSICAMP_WAVE_FILE` usa una skin e un brano veri e salva i PNG nella cartella |
 | `--test-stats` | Conteggio degli ascolti (soglia, salti, ricerche, pausa), voti, regole e ordinamenti delle playlist intelligenti |
 | `--test-milkdrop [cartella]` | Equazioni NS-EEL, parsing dei `.milk`, traduzione e compilazione degli shader MD2, render offscreen dei preset inclusi (con PNG nella cartella, se indicata) |
@@ -26,6 +46,8 @@ L'eseguibile (`.build/debug/MusicAmp`, `.build/release/MusicAmp` o `MusicAmp.app
 
 | Comando | Uso |
 | --- | --- |
+| `--dock-snapshot out.png [copertina]` | Icona del Dock dinamica nei quattro stati: in riproduzione, in pausa, radio, senza copertina |
+| `--sonic-analyze file …` | Tempo, tonalità, volume, luminosità e tempo di analisi di ogni file |
 | `--snapshot skin.wsz out.png` | Immagine di finestra principale, EQ e playlist (normali e ridotte) per una skin; con `-` usa la predefinita |
 | `--resolve-fonts "Nome" …` | Cerca dei font come fa la playlist e dice da dove arrivano |
 | `--parse-cursor file.ani` | Fotogrammi, tempi e hotspot di un cursore |

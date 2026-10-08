@@ -117,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.item(play, "Repeat (R)", #selector(Ctl.toggleRepeat))
         c.item(play, "Time Remaining", #selector(Ctl.toggleTimeRemaining))
         play.addItem(.separator())
+        c.item(play, "Remove Vocals (Karaoke)", #selector(Ctl.toggleVocalRemover), "v", [.command, .option])
         let rate = NSMenuItem(title: "Rate Current Track", action: nil, keyEquivalent: "")
         rate.submenu = c.ratingMenu(#selector(Ctl.rateCurrent(_:)), current: nil, keys: true)
         play.addItem(rate)
@@ -136,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.item(view, "Lyrics", #selector(Ctl.showLyrics), "t", [.command, .option])
         c.item(view, "Album Art", #selector(Ctl.showAlbumArt), "a", [.command, .option])
         c.item(view, "Smart Playlists", #selector(Ctl.showSmartPlaylists), "s", [.command, .option])
+        c.item(view, "Sonic Mix", #selector(Ctl.showSonicMix), "x", [.command, .option])
         c.item(view, "Full-Screen Karaoke", #selector(Ctl.showKaraoke), "k", [.command, .option])
         c.item(view, "Milkdrop", #selector(Ctl.showMilkdrop), "m", [.command, .option])
         view.addItem(.separator())
@@ -562,6 +564,287 @@ if CommandLine.arguments.contains("--test-musicbrainz") {
     let failed = results!.filter { !$0.0 }.count
     print(failed == 0 ? "ALL PASSED" : "\(failed) FAILED")
     exit(failed == 0 ? 0 : 1)
+}
+
+/// Debug: `MusicAmp --sonic-analyze file …`: tempo, key, loudness and analysis time of each file.
+if let si = CommandLine.arguments.firstIndex(of: "--sonic-analyze") {
+    for path in CommandLine.arguments[(si + 1)...] {
+        let t0 = Date()
+        if let f = SonicAnalyzer.analyze(URL(fileURLWithPath: path)) {
+            print(String(format: "%5.1f BPM  %-4@  %5.1f dB  bright %.1f  noisy %.2f  %.2f s  %@", f.bpm, f.keyName, f.loudness, f.centroid, f.flatness,
+                         Date().timeIntervalSince(t0), (path as NSString).lastPathComponent))
+        } else {
+            print("cannot analyse \(path)")
+        }
+    }
+    exit(0)
+}
+
+/// Debug: `MusicAmp --test-sonic`: sonic analysis of generated music (tempo, key, timbre) and the mixes built on it.
+if CommandLine.arguments.contains("--test-sonic") {
+    var fails = 0
+    func check(_ ok: Bool, _ what: String) { print(ok ? "OK  " : "FAIL", what); if !ok { fails += 1 } }
+    let sr = 22050.0
+    var seed: UInt64 = 7
+    func rnd() -> Float { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return Float(seed >> 40) / Float(1 << 24) * 2 - 1 }
+    /// 40 s of a beat at `bpm`: a kick on every beat, a chord pad (MIDI notes), optional bright noise hats.
+    func song(bpm: Double, chord: [Int], hats: Float, pad: Float = 0.25) -> [Float] {
+        let n = Int(40 * sr)
+        var x = [Float](repeating: 0, count: n)
+        let beat = 60 / bpm
+        for i in 0..<n {
+            let t = Double(i) / sr
+            let ph = t.truncatingRemainder(dividingBy: beat)
+            var v = Float(exp(-ph * 18) * sin(2 * .pi * 55 * ph)) * 0.6                          // kick
+            for m in chord { v += pad * Float(sin(2 * .pi * 440 * pow(2, Double(m - 69) / 12) * t)) / Float(chord.count) }
+            let hph = (t + beat / 2).truncatingRemainder(dividingBy: beat)
+            v += hats * rnd() * Float(exp(-hph * 60))                                           // off-beat hat
+            x[i] = v
+        }
+        return x
+    }
+    let specs: [(String, Double, [Int], Float)] = [
+        ("a", 120, [60, 64, 67, 72], 0.05),   // C major, kick + pad
+        ("b", 123, [60, 64, 67, 72], 0.07),   // almost the same
+        ("c", 92, [57, 60, 64, 69], 0.5),     // A minor, slower, bright hats
+        ("d", 140, [62, 66, 69, 74], 0.9),    // D major, fast, very noisy
+        ("e", 100, [57, 60, 64, 69], 0.35),   // A minor, in between c and a
+    ]
+    let store = SonicStore(load: false)
+    var items: [SmartItem] = []
+    var feats: [String: SonicFeatures] = [:]
+    for (name, bpm, chord, hats) in specs {
+        guard let f = SonicAnalyzer.features(song(bpm: bpm, chord: chord, hats: hats), sampleRate: sr) else { check(false, "\(name): analysed"); continue }
+        feats[name] = f
+        let ratio = f.bpm / Float(bpm)
+        check(abs(ratio - 1) < 0.03 || abs(ratio - 2) < 0.06 || abs(ratio - 0.5) < 0.02, String(format: "%@: tempo %.1f BPM (true %.0f)", name, f.bpm, bpm))
+        let key = "/tmp/sonic-\(name).wav"
+        store.remember(f, key: key)
+        var e = PlayStats.Entry(); e.title = name; e.artist = "Artist " + name
+        items.append(SmartItem(key: key, url: URL(fileURLWithPath: key), stats: e))
+    }
+    check(feats["a"].map { $0.key == 0 && !$0.minor } ?? false, "a: key C major (\(feats["a"]?.keyName ?? "?"))")
+    check(feats["c"].map { $0.key == 9 && $0.minor } ?? false, "c: key A minor (\(feats["c"]?.keyName ?? "?"))")
+    check(feats["d"].map { $0.key == 2 && !$0.minor } ?? false, "d: key D major (\(feats["d"]?.keyName ?? "?"))")
+    check((feats["d"]?.flatness ?? 0) > (feats["a"]?.flatness ?? 1), "d noisier than a (spectral flatness)")
+    let space = SonicSpace(items: items, store: store)
+    func tr(_ n: String) -> SonicSpace.Track { space.track(URL(fileURLWithPath: "/tmp/sonic-\(n).wav"))! }
+    let near = space.similar(to: tr("a"), count: 4).map { $0.0.item.stats.title ?? "" }
+    check(near.first == "b", "closest to a is its near twin b (order \(near.joined()))")
+    check(near.last == "d", "furthest from a is the fast noisy d")
+    let radio = space.radio(from: tr("a"), count: 4, randomness: 0).map { $0.item.stats.title ?? "" }
+    check(radio.count == 5 && radio[0] == "a" && radio[1] == "b" && Set(radio).count == 5, "radio from a: a, b, … all different (\(radio.joined()))")
+    let path = space.journey(from: tr("a"), to: tr("d"), steps: 3)
+    let journey = path.map { $0.item.stats.title ?? "" }
+    let steps = zip(path, path.dropFirst()).map { SonicSpace.distance($0, $1) }
+    check(journey.first == "a" && journey.last == "d" && journey.count == 5 && Set(journey).count == 5,
+          "journey a → d uses every in-between track once (\(journey.joined(separator: " → ")))")
+    _ = steps
+    // Smoothing: tracks on a line in feature space, given zig-zag, come back in order.
+    let flat = feats["a"]!
+    func point(_ x: Float) -> SonicSpace.Track {
+        var e = PlayStats.Entry(); e.title = String(Int(x))
+        return SonicSpace.Track(item: SmartItem(key: "p\(x)", url: URL(fileURLWithPath: "/tmp/p\(x)"), stats: e), f: flat, v: [x, 0])
+    }
+    let zigzag = [0, 4, 1, 3, 2, 5].map { point(Float($0)) }
+    let smoothed = SonicSpace.smooth(zigzag).map { $0.item.stats.title ?? "" }
+    check(smoothed == ["0", "1", "2", "3", "4", "5"], "journey smoothing untangles a zig-zag (\(smoothed.joined(separator: " ")))")
+    check(SonicSpace.tempoDistance(120, 60) < SonicSpace.tempoDistance(120, 90), "half time counts as closer than a different tempo")
+    // The same song in two files (and a featuring) never appears twice; the main artist doesn't repeat.
+    do {
+        var e1 = PlayStats.Entry(); e1.title = "Song’s Title"; e1.artist = "Alpha"
+        var e2 = PlayStats.Entry(); e2.title = "song's  title"; e2.artist = "Alpha, Beta"
+        let x = SonicSpace.Track(item: SmartItem(key: "x", url: URL(fileURLWithPath: "/tmp/x"), stats: e1), f: feats["a"]!, v: [0])
+        let y = SonicSpace.Track(item: SmartItem(key: "y", url: URL(fileURLWithPath: "/tmp/y"), stats: e2), f: feats["a"]!, v: [0])
+        check(SonicSpace.songKey(x) == SonicSpace.songKey(y), "duplicate song detected across files, apostrophes and featurings")
+        var e3 = PlayStats.Entry(); e3.title = "Song’s Title (2)"; e3.artist = "Alpha"
+        let z = SonicSpace.Track(item: SmartItem(key: "z", url: URL(fileURLWithPath: "/tmp/z"), stats: e3), f: feats["a"]!, v: [0])
+        check(SonicSpace.songKey(x) == SonicSpace.songKey(z), "a Finder copy (\"… (2)\") is the same song")
+    }
+    print(fails == 0 ? "ALL OK" : "\(fails) FAILED")
+    exit(fails == 0 ? 0 : 1)
+}
+
+/// Debug: `MusicAmp --test-vocal`: the vocal remover on generated stereo (muted): a centred 440 Hz "voice" must
+/// drop, a left-only 1 kHz "guitar" and a centred 60 Hz bass must stay; off must leave the signal untouched.
+/// `MusicAmp --test-smart`: smart transitions between generated tracks with dead air (gap measured at the tap),
+/// and gapless with no trimming inside an album.
+if CommandLine.arguments.contains("--test-vocal") || CommandLine.arguments.contains("--test-smart") || CommandLine.arguments.contains("--test-crossfeed") {
+    var fails = 0
+    func check(_ ok: Bool, _ what: String) { print(ok ? "OK  " : "FAIL", what); if !ok { fails += 1 } }
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("musicamp-vs-\(getpid())")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    func write(_ name: String, seconds: Double, _ gen: (Double) -> (Float, Float)) -> URL {
+        let url = dir.appendingPathComponent(name)
+        let fmt = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)!
+        let n = Int(44100 * seconds)
+        let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(n))!
+        buf.frameLength = AVAudioFrameCount(n)
+        for i in 0..<n { let (l, r) = gen(Double(i) / 44100); buf.floatChannelData![0][i] = l; buf.floatChannelData![1][i] = r }
+        do { let f = try AVAudioFile(forWriting: url, settings: fmt.settings); try f.write(from: buf) } catch { print("write failed: \(error)") }
+        return url
+    }
+    func wait(_ s: Double) { let end = Date().addingTimeInterval(s); while Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) } }
+
+    if CommandLine.arguments.contains("--test-vocal") {
+        let url = write("mix.wav", seconds: 6) { t in
+            let voice = Float(0.3 * sin(2 * .pi * 440 * t)), guitar = Float(0.3 * sin(2 * .pi * 1000 * t)), bass = Float(0.3 * sin(2 * .pi * 60 * t))
+            return (voice + guitar + bass, voice + bass)
+        }
+        let e = AudioEngine()
+        e.setVolume(0)
+        // Goertzel power of a frequency over the left channel of the tapped blocks.
+        var acc: [Double: Double] = [:]
+        let lock = NSLock()
+        e.onTap = { buf in
+            guard let d = buf.floatChannelData else { return }
+            let n = Int(buf.frameLength), sr = buf.format.sampleRate
+            var local: [Double: Double] = [:]
+            for f in [60.0, 440, 1000] {
+                let k = 2 * cos(2 * .pi * f / sr)
+                var s1 = 0.0, s2 = 0.0
+                for i in 0..<n { let s0 = Double(d[0][i]) + k * s1 - s2; s2 = s1; s1 = s0 }
+                local[f] = (s1 * s1 + s2 * s2 - k * s1 * s2) / Double(n * n)
+            }
+            lock.lock(); for (f, v) in local { acc[f, default: 0] += v }; lock.unlock()
+        }
+        func measure(_ amount: Double) -> [Double: Double] {
+            e.vocalRemoval = amount
+            wait(0.4)   // let the effect settle
+            lock.lock(); acc = [:]; lock.unlock()
+            wait(1.0)
+            lock.lock(); defer { lock.unlock() }; return acc
+        }
+        e.use(try! AVAudioFile(forReading: url), url: url)
+        e.play()
+        let off = measure(0), on = measure(1), half = measure(0.5)
+        e.vocalRemoval = 0
+        e.stop()
+        func db(_ a: Double?, _ b: Double?) -> Double { 10 * log10(max(1e-12, a ?? 0) / max(1e-12, b ?? 0)) }
+        let voice = db(on[440], off[440]), guitar = db(on[1000], off[1000]), bass = db(on[60], off[60]), voiceHalf = db(half[440], off[440])
+        check(voice < -30, String(format: "centred voice removed (%.1f dB)", voice))
+        check(abs(guitar) < 7, String(format: "left-only guitar kept (%.1f dB)", guitar))
+        check(bass > -6, String(format: "centred bass kept (%.1f dB)", bass))
+        check(voiceHalf < -3 && voiceHalf > -12, String(format: "50%% strength: voice partly removed (%.1f dB)", voiceHalf))
+        check(e.bitPerfectIssues.contains("vocal remover on") == false, "off again: not listed among bit-perfect issues")
+    }
+
+    if CommandLine.arguments.contains("--test-crossfeed") {
+        // Left only: a 200 Hz low and a 6 kHz high; then the same low in both channels (mono).
+        let side = write("left.wav", seconds: 4) { t in (Float(0.3 * sin(2 * .pi * 200 * t) + 0.3 * sin(2 * .pi * 6000 * t)), 0) }
+        let mono = write("mono.wav", seconds: 4) { t in let v = Float(0.3 * sin(2 * .pi * 200 * t)); return (v, v) }
+        func goertzel(_ p: UnsafePointer<Float>, _ n: Int, _ f: Double, _ sr: Double) -> Double {
+            let k = 2 * cos(2 * .pi * f / sr); var s1 = 0.0, s2 = 0.0
+            for i in 0..<n { let s0 = Double(p[i]) + k * s1 - s2; s2 = s1; s1 = s0 }
+            return (s1 * s1 + s2 * s2 - k * s1 * s2) / Double(n * n)
+        }
+        /// Power of 200 Hz and 6 kHz in each output channel, after the crossfeed node.
+        func measure(_ url: URL, _ preset: CrossfeedAU.Preset) -> (l200: Double, r200: Double, r6k: Double) {
+            let e = AudioEngine()
+            e.setVolume(0)
+            e.crossfeedPreset = preset
+            var acc = (0.0, 0.0, 0.0)
+            let lock = NSLock()
+            var counting = false
+            e.crossfeed.installTap(onBus: 0, bufferSize: 4096, format: nil) { buf, _ in
+                guard let d = buf.floatChannelData, buf.format.channelCount >= 2 else { return }
+                let n = Int(buf.frameLength), sr = buf.format.sampleRate
+                let a = goertzel(d[0], n, 200, sr), b = goertzel(d[1], n, 200, sr), c = goertzel(d[1], n, 6000, sr)
+                lock.lock(); if counting { acc.0 += a; acc.1 += b; acc.2 += c }; lock.unlock()
+            }
+            e.use(try! AVAudioFile(forReading: url), url: url)
+            e.play()
+            wait(0.5); lock.lock(); counting = true; lock.unlock(); wait(1.5)
+            e.stop()
+            e.crossfeed.removeTap(onBus: 0)
+            lock.lock(); defer { lock.unlock() }; return acc
+        }
+        func db(_ a: Double, _ b: Double) -> Double { 10 * log10(max(1e-14, a) / max(1e-14, b)) }
+        let off = measure(side, .off)
+        check(db(off.r200, off.l200) < -60, "off: nothing reaches the right ear")
+        for (preset, feed) in [(CrossfeedAU.Preset.light, 9.5), (.medium, 6.0), (.strong, 4.5)] {
+            let m = measure(side, preset)
+            // 200 Hz is below the cut, so it is fed at nearly the full level (a one-pole filter is −0.3 dB there).
+            let cross = db(m.r200, m.l200)
+            check(abs(cross + feed) < 1.5, String(format: "%@: a hard-left 200 Hz reaches the right ear at %.1f dB (target −%.1f)", preset.label, cross, feed))
+            check(db(m.r6k, m.r200) < -12, String(format: "%@: the 6 kHz high is barely fed (%.1f dB below the low)", preset.label, db(m.r6k, m.r200)))
+        }
+        let monoOff = measure(mono, .off), monoOn = measure(mono, .strong)
+        check(abs(db(monoOn.l200, monoOff.l200)) < 0.5, String(format: "mono content keeps its level (%.2f dB)", db(monoOn.l200, monoOff.l200)))
+    }
+
+    if CommandLine.arguments.contains("--test-smart") {
+        // A: 2 s tone then 3 s of silence. B: 1.5 s of silence then a tone.
+        let a = write("a.wav", seconds: 5) { t in t < 2 ? (Float(0.4 * sin(2 * .pi * 500 * t)), Float(0.4 * sin(2 * .pi * 500 * t))) : (0, 0) }
+        let b = write("b.wav", seconds: 4) { t in t >= 1.5 ? (Float(0.4 * sin(2 * .pi * 800 * t)), Float(0.4 * sin(2 * .pi * 800 * t))) : (0, 0) }
+        check(abs(Double(AudioEngine.silence(try! AVAudioFile(forReading: a), url: a, atEnd: true)) / 44100 - 2.9) < 0.05, "trailing silence of A: 3 s, 0.1 s kept")
+        check(abs(Double(AudioEngine.silence(try! AVAudioFile(forReading: b), url: b, atEnd: false)) / 44100 - 1.4) < 0.05, "leading silence of B: 1.5 s, 0.1 s kept")
+        /// Longest stretch of silence (in seconds) between the first and the last loud block at the tap.
+        func gap(smart: Bool, sameAlbum: Bool) -> Double {
+            let e = AudioEngine()
+            e.setVolume(0)
+            e.gapless = true
+            e.smartTransitions = smart
+            e.sameAlbum = { _, _ in sameAlbum }
+            var given = false
+            e.nextProvider = { given ? nil : (1, b) }
+            e.onAdvance = { _ in given = true }
+            let lock = NSLock()
+            var started = false, silentRun = 0.0, longest = 0.0
+            e.onTap = { buf in
+                guard let d = buf.floatChannelData else { return }
+                var peak: Float = 0
+                for i in 0..<Int(buf.frameLength) { peak = max(peak, abs(d[0][i])) }
+                let secs = Double(buf.frameLength) / buf.format.sampleRate
+                lock.lock()
+                if peak > 0.01 { if started { longest = max(longest, silentRun) }; started = true; silentRun = 0 } else if started { silentRun += secs }
+                lock.unlock()
+            }
+            e.use(try! AVAudioFile(forReading: a), url: a, index: 0)
+            e.play()
+            wait(smart && !sameAlbum ? 4.5 : 8.5)
+            e.stop()
+            lock.lock(); defer { lock.unlock() }
+            return longest
+        }
+        let smartGap = gap(smart: true, sameAlbum: false)
+        check(smartGap < 0.5, String(format: "smart, different albums: dead air skipped (gap %.2f s)", smartGap))
+        let albumGap = gap(smart: true, sameAlbum: true)
+        check(albumGap > 4.2, String(format: "smart, same album: silence kept, gapless join (gap %.2f s)", albumGap))
+        let plainGap = gap(smart: false, sameAlbum: false)
+        check(plainGap > 4.2, String(format: "smart off: plain gapless keeps the silence (gap %.2f s)", plainGap))
+    }
+    try? FileManager.default.removeItem(at: dir)
+    print(fails == 0 ? "ALL OK" : "\(fails) FAILED")
+    exit(fails == 0 ? 0 : 1)
+}
+
+/// Debug: `MusicAmp --dock-snapshot out.png [cover.jpg]`: the dynamic Dock icon in its four states (playing with a
+/// cover, paused, radio, no cover), side by side at 256 px.
+if let di = CommandLine.arguments.firstIndex(of: "--dock-snapshot"), CommandLine.arguments.count > di + 1 {
+    _ = NSApplication.shared
+    let cover = CommandLine.arguments.count > di + 2 ? NSImage(contentsOfFile: CommandLine.arguments[di + 2]) : nil
+    let states: [(NSImage?, Double?, Bool, Bool)] = [(cover, 0.42, false, false), (cover, 0.42, true, false), (cover, nil, false, true), (nil, 0.7, false, false)]
+    let side = 256
+    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: side * 4, pixelsHigh: side, bitsPerSample: 8, samplesPerPixel: 4,
+                               hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    NSColor(calibratedWhite: 0.82, alpha: 1).setFill()
+    NSRect(x: 0, y: 0, width: side * 4, height: side).fill()
+    for (i, st) in states.enumerated() {
+        let v = DockTileView(frame: NSRect(x: 0, y: 0, width: side, height: side))
+        (v.cover, v.progress, v.paused, v.isStream) = st
+        let ctx = NSGraphicsContext.current!.cgContext
+        ctx.saveGState()
+        ctx.translateBy(x: CGFloat(i * side), y: 0)
+        v.draw(v.bounds)
+        ctx.restoreGState()
+    }
+    NSGraphicsContext.restoreGraphicsState()
+    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: CommandLine.arguments[di + 1]))
+    print("dock snapshot written")
+    exit(0)
 }
 
 /// Debug: `MusicAmp --test-waveform [out-dir]`: peaks of a generated file (silence, ramp, loud), a cue segment,

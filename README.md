@@ -13,7 +13,9 @@ Un player audio minimale e nativo per macOS, compatibile con le skin classiche d
   - barra di avanzamento a forma d'onda opzionale, disegnata nella barra della skin con i suoi colori.
 - **Audio:**
   - gapless, crossfade, ReplayGain (dai tag o misurato con EBU R128);
-  - EQ a 10 bande con i preset Winamp `.eqf`/`.q1`, più EQ parametrico con i profili [AutoEq](https://github.com/jaakkopasanen/AutoEq) di circa 8.850 cuffie;
+  - transizioni intelligenti: saltano i silenzi tra album diversi e non sfumano mai dentro un album;
+  - rimozione della voce per il karaoke (⌥⌘V), che tiene bassi e strumenti;
+  - EQ a 10 bande con i preset Winamp `.eqf`/`.q1`, più EQ parametrico con i profili [AutoEq](https://github.com/jaakkopasanen/AutoEq) di circa 8.850 cuffie e crossfeed per le cuffie;
   - uscita bit-perfect, con il dispositivo portato alla frequenza di ogni brano;
   - album in un solo file con `.cue`, divisi in tracce;
   - timer di spegnimento e sveglia, con dissolvenze;
@@ -26,11 +28,13 @@ Un player audio minimale e nativo per macOS, compatibile con le skin classiche d
   - preset `.milk` di Milkdrop 1 e 2;
   - gli shader HLSL di Milkdrop 2 sono tradotti in Metal: compila il 99,9% della raccolta "cream of the crop" di projectM.
 - **Playlist** piatta o ad albero artista → album → brano, con ricerca istantanea (⌘F), coda, Jump to file e libreria di Musica.
+- **Sonic Mix:** analisi sul Mac di timbro, tonalità, tempo ed energia, per una radio di brani simili o un viaggio graduale da un brano all'altro.
 - **Ascolti, voti e playlist intelligenti:** conteggio degli ascolti, voti a stelle, playlist a regole come in iTunes (più ascoltati, aggiunti di recente, preferiti dimenticati…).
 - **Editor dei tag** per uno o più file (MP3, FLAC, M4A): titolo, artista, album, anno, genere, traccia e disco, commento e copertina, con numerazione automatica e ricerca di tag e copertine su MusicBrainz / Cover Art Archive.
 - **Vista copertina** grande con comandi e la striscia degli album della playlist, anche a schermo intero.
 - **macOS:**
   - tasti multimediali e "In riproduzione", mini controller nella barra dei menu, notifiche;
+  - icona del Dock dinamica: durante l'ascolto mostra la copertina con la barra di avanzamento;
   - VoiceOver e scorciatoie globali;
   - azioni per Comandi rapidi e Siri, widget "Now Playing" per scrivania e Centro Notifiche, URL `musicamp://`;
   - finestre agganciate viste come una sola in Mission Control.
@@ -92,6 +96,14 @@ Le skin non sono incluse: trascina un file `.wsz` sul player per caricarlo. I pr
 ```
 
 Crea `build/MusicAmp.app` (universale arm64 + x86_64) e `build/MusicAmp-<versione>.dmg`. Servono Swift 5.9, macOS 14 e Xcode installato (per i metadati di Comandi rapidi e widget); non c'è un progetto Xcode. La prima build scarica e compila FFmpeg dai sorgenti ufficiali (circa un minuto).
+
+## Test
+
+```bash
+Scripts/test-all.sh
+```
+
+Esegue tutte le suite (audio a volume zero, rete solo se disponibile) e stampa un riepilogo. Con `--package` controlla anche l'app pacchettizzata. Dettagli in [docs/strumenti-debug.md](docs/strumenti-debug.md).
 
 ## Documentazione
 
