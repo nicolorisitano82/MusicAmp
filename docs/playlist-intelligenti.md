@@ -23,7 +23,13 @@ Il controller chiama `PlayStats.observe` a ogni tick. Il file si salva 2 s dopo 
 - Le stelle compaiono nella riga della playlist prima della durata, nel colore della skin, solo per i brani votati. Si possono nascondere in Impostazioni → Playlist.
 - Nella finestra delle playlist intelligenti si vota cliccando le stelle.
 
-I voti stanno nel database di MusicAmp, non nei tag dei file.
+I voti stanno nel database di MusicAmp e, di default, anche nei tag dei file, così li vedono anche gli altri player. Si disattiva in Impostazioni → Playlist → "Save ratings in MP3 and FLAC tags".
+
+- **MP3:** frame `POPM` con il proprietario "Windows Media Player 9 Series", letto da foobar2000, MusicBee, MediaMonkey e Mp3tag. Scala: 1★ = 1, 2★ = 64, 3★ = 128, 4★ = 196, 5★ = 255. In lettura vale un `POPM` di qualsiasi proprietario, con gli intervalli consueti. Scrivendo, gli altri `POPM` vengono tolti, perché un file deve avere un voto solo.
+- **FLAC:** `RATING` da 0 a 100 (20 per stella, come MusicBee e Kodi). In lettura accetta anche la scala 1–5 di foobar2000.
+- **M4A e tracce di un `.cue`:** il voto resta solo nel database. Per M4A non esiste un campo standard per le stelle; le tracce di un `.cue` condividono un unico file.
+- Quando un brano entra in playlist, il voto trovato nel file viene adottato solo se MusicAmp non ne ha già uno: il voto dato in MusicAmp prevale.
+- La scrittura avviene in background, sul posto quando c'è spazio nel tag.
 
 ## Playlist intelligenti (`SmartPlaylists.swift`, `SmartPlaylistView.swift`)
 
@@ -34,11 +40,14 @@ I voti stanno nel database di MusicAmp, non nei tag dei file.
 
 | Tipo | Campi | Condizioni |
 | --- | --- | --- |
-| Testo | titolo, artista, album, artista album, percorso, formato | contiene, non contiene, è, non è, inizia con, finisce con (senza distinguere maiuscole e accenti) |
-| Numero | durata (minuti), voto, ascolti, salti | è, non è, maggiore di, minore di |
+| Testo | titolo, artista, album, artista album, genere, percorso, formato | contiene, non contiene, è, non è, inizia con, finisce con (senza distinguere maiuscole e accenti) |
+| Numero | durata (minuti), voto, ascolti, salti, anno, BPM | è, non è, maggiore di, minore di |
+| Tonalità | tonalità (es. `Am`, `F#`, `Bb`) | si mixa bene con, è, non è |
 | Data | ultimo ascolto, data di aggiunta | negli ultimi N giorni, non negli ultimi N giorni (mai = non negli ultimi) |
 
-- **Limite** a N brani, con un ordine: casuale, più o meno ascoltati, voto più alto o più basso, ascoltati di recente o da più tempo, aggiunti di recente, album, artista, titolo.
+- **Genere e anno** vengono dai tag. MP3 e FLAC li legge MusicAmp stesso, M4A AVFoundation, gli altri formati ffprobe, i `.cue` le righe `REM GENRE`/`REM DATE`. Un brano senza anno non soddisfa nessuna regola sull'anno, tranne "non è".
+- **BPM e tonalità** vengono dall'analisi di Sonic Mix. Se una playlist li usa, l'editor analizza da solo i brani che mancano e mostra l'avanzamento. "Si mixa bene con" segue la ruota di Camelot: la stessa tonalità, la relativa maggiore/minore, oppure una quinta sopra o sotto nello stesso modo.
+- **Limite** a N brani, con un ordine (anche anno e BPM): casuale, più o meno ascoltati, voto più alto o più basso, ascoltati di recente o da più tempo, aggiunti di recente, album, artista, titolo.
 - Con "Only files that exist" i file spariti vengono nascosti. Il menu "…" ha "Forget Tracks Whose Files Are Gone".
 - **Play** sostituisce la playlist e la avvia; **Add to Playlist** aggiunge in coda. Doppio clic su un brano lo suona.
 - **Playlist predefinite:** Top 25 Most Played, Recently Played (14 giorni), Recently Added (30 giorni), Top Rated (4–5 stelle), Never Played (50 a caso), Forgotten Favorites (4–5 stelle non ascoltate da 60 giorni), Often Skipped.

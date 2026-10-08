@@ -10,6 +10,8 @@ import Foundation
 struct TagSet: Equatable {
     var title = "", artist = "", album = "", albumArtist = "", year = "", genre = "", comment = ""
     var track = "", trackTotal = "", disc = "", discTotal = ""
+    /// Star rating "1"…"5" ("" = none). MP3: POPM frame; FLAC: RATING (0–100). MP4 has no standard star tag.
+    var rating = ""
     var artwork: Data?
 
     static let fields: [(String, WritableKeyPath<TagSet, String>)] = [
@@ -286,10 +288,38 @@ enum ID3 {
             case "TPOS": (t.disc, t.discTotal) = TagIO.splitNumber(text(f))
             case "COMM": if let c = commentParts(f), c.desc.isEmpty, t.comment.isEmpty { t.comment = c.text }
             case "APIC": if let p = pictureParts(f), t.artwork == nil || p.type == 3 { t.artwork = p.data }
+            case "POPM": if let s = popmStars(f), t.rating.isEmpty || popmEmail(f) == popmOwner { t.rating = s > 0 ? String(s) : "" }
             default: break
             }
         }
         return t
+    }
+
+    /// The POPM owner MusicAmp writes: Windows Media Player's, which most players (foobar2000, MusicBee,
+    /// MediaMonkey, Mp3tag) read.
+    static let popmOwner = "Windows Media Player 9 Series"
+
+    static func popmEmail(_ f: Frame) -> String? {
+        guard let z = f.data.firstIndex(of: 0) else { return nil }
+        return String(decoding: f.data[..<z], as: UTF8.self)
+    }
+
+    /// POPM rating byte → stars, with the usual ranges (1 = 1★, 64 = 2★, 128 = 3★, 196 = 4★, 255 = 5★).
+    static func popmStars(_ f: Frame) -> Int? {
+        guard let z = f.data.firstIndex(of: 0), z + 1 < f.data.count else { return nil }
+        switch f.data[z + 1] {
+        case 0: return 0
+        case 1...31: return 1
+        case 32...95: return 2
+        case 96...159: return 3
+        case 160...223: return 4
+        default: return 5
+        }
+    }
+
+    static func popmFrame(stars: Int) -> Frame {
+        let byte: [UInt8] = [0, 1, 64, 128, 196, 255]
+        return Frame(id: "POPM", data: Array(popmOwner.utf8) + [0, byte[max(0, min(5, stars))]])
     }
 
     /// "(17)" or "17" (ID3v1 genre numbers in v2) → name.
@@ -327,6 +357,10 @@ enum ID3 {
             case \TagSet.albumArtist: setText("TPE2", new.albumArtist)
             case \TagSet.year: setText(v == 4 ? "TDRC" : "TYER", new.year, also: ["TYER", "TDRC", "TDAT", "TIME"])
             case \TagSet.genre: setText("TCON", new.genre)
+            case \TagSet.rating:
+                // One rating per file: other players' POPM frames would contradict ours.
+                frames.removeAll { $0.id == "POPM" }
+                if let s = Int(new.rating), s > 0 { frames.append(popmFrame(stars: s)) }
             case \TagSet.track, \TagSet.trackTotal: setText("TRCK", TagIO.joinNumber(new.track, new.trackTotal))
             case \TagSet.disc, \TagSet.discTotal: setText("TPOS", TagIO.joinNumber(new.disc, new.discTotal))
             case \TagSet.comment:
@@ -507,6 +541,11 @@ enum FLACTags {
                     if k == "DESCRIPTION", t.comment.isEmpty { t.comment = v }
                     if k == "TOTALTRACKS", t.trackTotal.isEmpty { t.trackTotal = v }
                     if k == "TOTALDISCS", t.discTotal.isEmpty { t.discTotal = v }
+                    if k == "RATING", let n = Double(v.replacingOccurrences(of: ",", with: ".")) {
+                        // 0–100 (MusicBee, Kodi, MediaMonkey) or 1–5 (foobar2000).
+                        let stars = n <= 5 ? Int(n.rounded()) : Int((n / 20).rounded())
+                        t.rating = stars > 0 ? String(min(5, stars)) : ""
+                    }
                 }
             } else if bl.type == 6, let p = picture(bl.data), t.artwork == nil || p.type == 3 {
                 t.artwork = p.data
@@ -529,6 +568,10 @@ enum FLACTags {
         let vc: (vendor: [UInt8], entries: [String]) = old.first { $0.type == 4 }.map { comments($0.data) } ?? (Array("MusicAmp".utf8), [])
         var entries = vc.entries
         let changed = Set(update.fields.keys)
+        if changed.contains(\TagSet.rating) {
+            entries.removeAll { $0.uppercased().hasPrefix("RATING=") }
+            if let s = Int(new.rating), s > 0 { entries.append("RATING=\(min(5, s) * 20)") }
+        }
         for (key, path) in keys where changed.contains(path) {
             entries.removeAll { $0.uppercased().hasPrefix(key + "=") }
             if key == "COMMENT" { entries.removeAll { $0.uppercased().hasPrefix("DESCRIPTION=") } }

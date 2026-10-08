@@ -11,6 +11,8 @@ final class Track {
     var albumArtist: String?
     /// Live "StreamTitle" of a radio track.
     var streamTitle: String?
+    var genre: String?
+    var year: Int?
 
     /// http(s) URLs are internet radio streams (or remote playlists that resolve to one),
     /// except podcast episodes, which are seekable remote files.
@@ -183,6 +185,8 @@ final class Playlist {
             t.artist = e.performer ?? sheet.performer
             t.album = sheet.title
             t.albumArtist = sheet.performer
+            t.genre = sheet.genre
+            t.year = sheet.date.flatMap { Int($0.prefix(4)) }
             t.title = t.artist.map { "\($0) - \(t.songTitle!)" } ?? t.songTitle!
             if let end = e.end { t.duration = end - e.start }
             version &+= 1
@@ -213,6 +217,8 @@ final class Playlist {
                     t.songTitle = p.title
                     t.album = p.album
                     t.albumArtist = p.albumArtist
+                    t.genre = p.genre
+                    t.year = p.year
                     self.version &+= 1
                     PlayStats.shared.remember(t)
                     if t === self.currentTrack { self.onCurrentMetadata?() }
@@ -238,20 +244,43 @@ final class Playlist {
                 [.iTunesMetadataAlbumArtist, .id3MetadataBand].contains(item.identifier) {
                 albumArtist = try? await item.load(.stringValue)
             }
+            // Genre, year and the star rating: our own readers for MP3 and FLAC (AVFoundation doesn't expose
+            // Vorbis comments or POPM), AVFoundation for the MP4 family.
+            var genre: String?, year: Int?, rating = 0
+            switch TagIO.kind(t.url) {
+            case .id3, .flac:
+                let tags = TagIO.kind(t.url) == .id3 ? try? ID3.read(t.url) : try? FLACTags.read(t.url)
+                genre = tags.map(\.genre).flatMap { $0.isEmpty ? nil : $0 }
+                year = tags.flatMap { Int($0.year.prefix(4)) }
+                rating = tags.flatMap { Int($0.rating) } ?? 0
+            default:
+                for item in (try? await asset.load(.metadata)) ?? [] {
+                    switch item.identifier {
+                    case .iTunesMetadataUserGenre, .id3MetadataContentType, .quickTimeMetadataGenre:
+                        if genre == nil { genre = try? await item.load(.stringValue) }
+                    case .iTunesMetadataReleaseDate, .id3MetadataYear, .id3MetadataRecordingTime, .quickTimeMetadataYear:
+                        if year == nil, let s = try? await item.load(.stringValue) { year = Int(s.prefix(4)) }
+                    default: break
+                    }
+                }
+            }
             var display: String?
             if let title, !title.isEmpty {
                 display = (artist?.isEmpty == false) ? "\(artist!) - \(title)" : title
             }
             let seconds = dur?.seconds
-            await MainActor.run { [display, artist, title, album, albumArtist] in
+            await MainActor.run { [display, artist, title, album, albumArtist, genre, year, rating] in
                 if let d = seconds, d.isFinite, d > 0 { t.duration = d }
                 if let display { t.title = display }
                 t.artist = artist
                 t.songTitle = title
                 t.album = album
                 t.albumArtist = albumArtist
+                t.genre = genre
+                t.year = year
                 self.version &+= 1
                 PlayStats.shared.remember(t)
+                if rating > 0 { PlayStats.shared.importRating(t.url, rating) }
                 if t === self.currentTrack { self.onCurrentMetadata?() }
             }
         }

@@ -21,6 +21,8 @@ final class PlayStats: ObservableObject {
         var album: String?
         var albumArtist: String?
         var duration: Double?
+        var genre: String?
+        var year: Int?
     }
 
     @Published private(set) var entries: [String: Entry] = [:]
@@ -79,11 +81,36 @@ final class PlayStats: ObservableObject {
             if t.album != nil { e.album = t.album }
             if t.albumArtist != nil { e.albumArtist = t.albumArtist }
             if let d = t.duration { e.duration = d }
+            if let g = t.genre { e.genre = g }
+            if let y = t.year { e.year = y }
         }
     }
 
+    /// Save ratings in the files' tags too (MP3 POPM, FLAC RATING), so other players see them.
+    var writeToTags = true
+
     func setRating(_ url: URL, _ stars: Int) {
+        let s = max(0, min(5, stars))
+        update(url) { $0.rating = s }
+        guard writeToTags, !inMemory else { return }
+        PlayStats.writeRatingTag(url, s)
+    }
+
+    /// A rating found in a file's tags, adopted only when MusicAmp has none (the user's own rating wins).
+    func importRating(_ url: URL, _ stars: Int) {
+        guard stars > 0, (entry(url)?.rating ?? 0) == 0 else { return }
         update(url) { $0.rating = max(0, min(5, stars)) }
+    }
+
+    /// Writes the rating into MP3/FLAC tags in the background. Cue tracks share one file (no per-track tag),
+    /// and MP4 has no standard star field (and would need the whole file rewritten), so those are skipped.
+    static func writeRatingTag(_ url: URL, _ stars: Int) {
+        guard url.isFileURL, !CueSheet.isCueTrack(url), [.id3, .flac].contains(TagIO.kind(url)) else { return }
+        Task.detached(priority: .utility) {
+            var u = TagUpdate()
+            u.fields[\TagSet.rating] = stars > 0 ? String(stars) : ""
+            do { try await TagIO.write(url, u) } catch { NSLog("MusicAmp: rating not saved in \(url.lastPathComponent): \(error.localizedDescription)") }
+        }
     }
 
     /// Forget tracks whose files are gone (Smart Playlists → Clean Up).

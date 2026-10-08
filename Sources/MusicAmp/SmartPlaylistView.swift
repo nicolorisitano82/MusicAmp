@@ -89,6 +89,7 @@ private struct SmartPlaylistEditor: View {
     @Binding var playlist: SmartPlaylist
     let store: SmartPlaylistStore
     @ObservedObject var stats: PlayStats
+    @ObservedObject private var sonic = SonicStore.shared
     @State private var results: [SmartItem] = []
     @State private var tableSelection = Set<SmartItem.ID>()
 
@@ -131,6 +132,8 @@ private struct SmartPlaylistEditor: View {
                 TableColumn("Title") { Text($0.title).lineLimit(1) }
                 TableColumn("Artist") { Text($0.stats.artist ?? "").lineLimit(1) }
                 TableColumn("Album") { Text($0.stats.album ?? "").lineLimit(1) }
+                TableColumn("Genre") { Text($0.stats.genre ?? "").lineLimit(1) }.width(min: 60, ideal: 90)
+                TableColumn("Year") { Text($0.stats.year.map(String.init) ?? "").monospacedDigit() }.width(40)
                 TableColumn("Rating") { it in StarsView(rating: stats.rating(it.url)) { stats.setRating(it.url, $0); refresh() } }
                     .width(86)
                 TableColumn("Plays") { Text("\($0.stats.plays)").monospacedDigit() }.width(42)
@@ -140,6 +143,12 @@ private struct SmartPlaylistEditor: View {
                 Button("Play") { play(ids) }
                 Button("Add to Playlist") { add(ids) }
             } primaryAction: { ids in play(ids) }
+            if usesSonic, sonic.analyzing {
+                HStack {
+                    ProgressView(value: Double(sonic.progress.done), total: Double(max(1, sonic.progress.total))).frame(width: 160)
+                    Text("BPM and key rules: analysing \(sonic.progress.done)/\(sonic.progress.total) tracks…").font(.caption).foregroundStyle(.secondary)
+                }
+            }
             HStack {
                 Text("\(results.count) tracks · \(Ctl.hmmss(results.reduce(0) { $0 + ($1.stats.duration ?? 0) }))")
                     .foregroundStyle(.secondary).monospacedDigit()
@@ -154,7 +163,16 @@ private struct SmartPlaylistEditor: View {
         .onChange(of: playlist) { refresh() }
     }
 
-    private func refresh() { results = store.tracks(playlist) }
+    private var usesSonic: Bool { playlist.rules.contains { $0.field.sonic } || playlist.order == .bpm }
+
+    private func refresh() {
+        results = store.tracks(playlist)
+        // BPM/key rules need the Sonic Mix analysis: analyse what's missing, then refresh.
+        if usesSonic, !sonic.analyzing {
+            let urls = SmartPlaylistStore.pool().map(\.url).filter { SonicStore.shared.needsAnalysis($0) && FileManager.default.fileExists(atPath: CueSheet.audioURL($0).path) }
+            if !urls.isEmpty { SonicStore.shared.analyze(urls) { results = store.tracks(playlist) } }
+        }
+    }
 
     private func urls(_ ids: Set<SmartItem.ID>) -> [URL] { results.filter { ids.contains($0.id) }.map(\.url) }
     private func play(_ ids: Set<SmartItem.ID>) { let u = urls(ids); if !u.isEmpty { Ctl.shared.replacePlaylist(u, play: true) } }
@@ -178,6 +196,7 @@ private struct RuleRow: View {
             .labelsHidden().frame(width: 180)
             switch rule.field.kind {
             case .text: TextField("", text: $rule.text)
+            case .key: TextField("e.g. Am, F#, Bb", text: $rule.text).frame(width: 120)
             case .number, .date: TextField("", value: $rule.number, format: .number.locale(HeadphonesTab.numbers)).frame(width: 80)
             }
             Spacer(minLength: 0)

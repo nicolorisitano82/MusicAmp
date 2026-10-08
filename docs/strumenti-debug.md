@@ -37,6 +37,7 @@ Le singole suite:
 | `--test-vocal` | Rimozione della voce su uno stereo generato: voce al centro a 440 Hz rimossa, strumento solo a sinistra e basso al centro conservati, forza al 50%, spenta = inalterato |
 | `--test-smart` | Transizioni intelligenti: misura del silenzio in testa e in coda, nessun buco tra album diversi, silenzio conservato nello stesso album e con l'opzione spenta |
 | `--test-sonic` | Analisi sonora su musica generata: tempo, tonalità, timbro; brani simili, Sonic Radio, viaggio sonoro e il suo riordino |
+| `--test-spoken` | Podcast: trova le pause lunghe e ignora quelle brevi, la posizione avanza più del tempo reale con i silenzi accorciati, Voice Boost alza la voce bassa più di quella forte senza saturare |
 | `--test-crossfeed` | Crossfeed: livello dei bassi passati all'altro canale per ogni preset, acuti quasi intatti, livello del mono invariato |
 | `--test-waveform [cartella]` | Barra a forma d'onda: livelli di un file generato, segmento `.cue`, FFmpeg contro nativo, cache, render della barra (spenta = pixel identici, accesa = solo la scanalatura); con `MUSICAMP_WAVE_SKIN` e `MUSICAMP_WAVE_FILE` usa una skin e un brano veri e salva i PNG nella cartella |
 | `--test-stats` | Conteggio degli ascolti (soglia, salti, ricerche, pausa), voti, regole e ordinamenti delle playlist intelligenti |
@@ -76,6 +77,8 @@ Le singole suite:
 | `MUSICAMP_TAG_DEMO=cartella` | Apre l'editor dei tag sui file audio di quella cartella (per prove e screenshot) |
 | `MUSICAMP_DEBUG_HOTKEYS=1` | Registra le scorciatoie globali ricevute |
 | `MUSICAMP_PREFS=timer` | Apre le impostazioni su una scheda (`general`, `audio`, `headphones`, `vis`, `playlist`, `timer`, `shortcuts`, `skins`); `smart` apre le playlist intelligenti |
+| `MUSICAMP_DEMO=1` | `--snapshot` usa una playlist dimostrativa (artisti e album inventati) per gli screenshot del README |
+| `MUSICAMP_SNAPSHOT_PARTS=cartella` | `--snapshot` salva anche ogni finestra in un PNG separato (`main`, `eq`, `playlist`, `file-info`…) |
 | `MUSICAMP_HEADPHONES_DEMO=1` | Apre la scheda Cuffie in una finestra con un profilo AutoEq di esempio |
 
 ## Esempio: verifica di una raccolta di preset

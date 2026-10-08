@@ -134,6 +134,15 @@ private struct AudioTab: View {
                 Text("Transitions apply when advancing automatically to the next track; Next and Previous switch immediately.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("Podcasts and Audiobooks") {
+                Toggle("Voice Boost: clearer, evener speech", isOn: ctl.binding(\.voiceBoost))
+                Toggle("Shorten silences", isOn: ctl.binding(\.shortenSilences))
+                Text("Voice Boost cuts rumble, adds presence and evens out loud and quiet voices. Shorten Silences plays pauses 4× faster, keeping a short natural gap; it needs the episode downloaded. Music is never affected.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if ctl.audio.timeSaved >= 60 {
+                    LabeledContent("Time saved so far", value: Ctl.hmmss(ctl.audio.timeSaved))
+                }
+            }
             Section("Karaoke") {
                 Toggle("Remove vocals (⌥⌘V)", isOn: Binding(get: { ctl.vocalRemoval > 0 }, set: { ctl.vocalRemoval = $0 ? ctl.vocalStrength : 0 }))
                 HStack {
@@ -251,6 +260,8 @@ private struct PlaylistTab: View {
                 Toggle("Find missing fonts online (Google Fonts)", isOn: ctl.binding(\.autoDownloadFonts))
                 Toggle("Show track numbers", isOn: ctl.binding(\.plShowNumbers))
                 Toggle("Group by Artist and Album (tree)", isOn: ctl.binding(\.plTree))
+                Toggle("Show ratings", isOn: ctl.binding(\.plShowRatings))
+                Toggle("Save ratings in MP3 and FLAC tags (seen by other players)", isOn: ctl.binding(\.ratingsInTags))
                 Toggle("Playlist windowshade mode", isOn: ctl.toggleBinding(\.plShade) { ctl.togglePLShade() })
             }
             SkinFontSection(ctl: ctl, fonts: FontResolver.shared)

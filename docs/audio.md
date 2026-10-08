@@ -30,6 +30,22 @@ deck B: AVAudioPlayerNode → converter (AVAudioMixerNode) → gain (AVAudioUnit
   - Il crossfade, se attivo, parte dove finisce la musica e non dove finisce il file. Senza crossfade, un taglio di 30 ms ferma la coda silenziosa.
   - Dentro lo stesso album non si taglia e non si sfuma mai: l'unione è sempre gapless, così le pause volute e gli album dal vivo restano intatti. "Stesso album" vuol dire una di queste cose: tracce dello stesso `.cue`; stesso tag album con lo stesso artista dell'album; oppure, senza artista dell'album, stesso tag album nella stessa cartella (`Ctl.sameAlbum`).
 
+## Podcast e audiolibri: Voice Boost e silenzi accorciati
+
+`SpokenWord.swift`. Riguarda solo episodi di podcast e audiolibri (`m4b`, `aa`, `aax`), mai la musica. Si attiva in Impostazioni → Audio → Podcasts and Audiobooks, oppure in Controlli → Speed and Pitch.
+
+- **Voice Boost:** dopo velocità e intonazione ci sono un EQ per il parlato e il dynamics processor di Apple.
+  - EQ: passa-alto a 80 Hz, −2 dB a 250 Hz, +4 dB a 3 kHz.
+  - Compressore: soglia −30 dB, headroom 8 dB, attacco 4 ms, rilascio 120 ms, +9 dB di guadagno.
+  - Misure con `--test-spoken`: una voce bassa sale di circa 10 dB, una voce forte scende di circa 6 dB, senza saturare. I volumi si livellano.
+  - Vale anche per gli episodi in streaming, perché passano dal motore.
+- **Silenzi accorciati:** in background si calcola la mappa delle pause del file.
+  - Livello ogni 50 ms. Una pausa è un tratto di almeno 0,6 s sotto una soglia posta tra il rumore di fondo (10° percentile) e il livello tipico del parlato.
+  - La mappa resta in cache in `Application Support/MusicAmp/Silences`.
+  - Durante una pausa il motore suona 4 volte più veloce, lasciando 0,25 s di pausa naturale per lato.
+  - Il tempo risparmiato si accumula e compare nelle impostazioni.
+  - Serve l'episodio scaricato: in streaming non c'è un file da mappare.
+
 ## Crossfeed per le cuffie
 
 `Crossfeed.swift`: un `AUAudioUnit` registrato nel processo, ultimo della catena (dopo i due EQ e il punto di analisi). Imposta in Impostazioni → Headphones.

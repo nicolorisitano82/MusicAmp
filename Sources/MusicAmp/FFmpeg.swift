@@ -43,6 +43,8 @@ enum FFmpeg {
         var artist: String?
         var album: String?
         var albumArtist: String?
+        var genre: String?
+        var year: Int?
     }
 
     /// ffprobe: format, first audio stream and tags (JSON).
@@ -68,6 +70,8 @@ enum FFmpeg {
         r.artist = tags["artist"] ?? tags["album_artist"]
         r.album = tags["album"]
         r.albumArtist = tags["album_artist"] ?? tags["albumartist"] ?? tags["album artist"]
+        r.genre = tags["genre"]
+        r.year = (tags["date"] ?? tags["year"] ?? tags["originaldate"]).flatMap { Int($0.prefix(4)) }
         return r
     }
 

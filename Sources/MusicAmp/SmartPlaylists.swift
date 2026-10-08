@@ -5,7 +5,7 @@ import AppKit
 /// ~/Library/Application Support/MusicAmp/smart-playlists.json.
 struct SmartRule: Codable, Identifiable, Equatable {
     enum Field: String, Codable, CaseIterable, Identifiable {
-        case title, artist, album, albumArtist, path, format, duration, rating, plays, skips, lastPlayed, added
+        case title, artist, album, albumArtist, genre, year, path, format, duration, rating, plays, skips, lastPlayed, added, bpm, key
         var id: String { rawValue }
         var label: String {
             switch self {
@@ -13,6 +13,10 @@ struct SmartRule: Codable, Identifiable, Equatable {
             case .artist: return "Artist"
             case .album: return "Album"
             case .albumArtist: return "Album Artist"
+            case .genre: return "Genre"
+            case .year: return "Year"
+            case .bpm: return "BPM (Sonic Mix)"
+            case .key: return "Key (Sonic Mix)"
             case .path: return "File Path"
             case .format: return "Format"
             case .duration: return "Length (min)"
@@ -23,20 +27,24 @@ struct SmartRule: Codable, Identifiable, Equatable {
             case .added: return "Date Added"
             }
         }
-        enum Kind { case text, number, date }
+        enum Kind { case text, number, date, key }
         var kind: Kind {
             switch self {
-            case .title, .artist, .album, .albumArtist, .path, .format: return .text
-            case .duration, .rating, .plays, .skips: return .number
+            case .title, .artist, .album, .albumArtist, .genre, .path, .format: return .text
+            case .duration, .rating, .plays, .skips, .year, .bpm: return .number
             case .lastPlayed, .added: return .date
+            case .key: return .key
             }
         }
+        /// Needs the Sonic Mix analysis.
+        var sonic: Bool { self == .bpm || self == .key }
     }
 
     enum Op: String, Codable, CaseIterable, Identifiable {
         case contains, notContains, equals, notEquals, startsWith, endsWith   // text
         case numEquals, numNotEquals, greater, less                       // numbers
         case inLast, notInLast                                            // dates, in days
+        case keyIs, keyIsNot, keyCompatible                               // keys
         var id: String { rawValue }
         var label: String {
             switch self {
@@ -50,6 +58,9 @@ struct SmartRule: Codable, Identifiable, Equatable {
             case .less: return "is less than"
             case .inLast: return "is in the last (days)"
             case .notInLast: return "is not in the last (days)"
+            case .keyIs: return "is"
+            case .keyIsNot: return "is not"
+            case .keyCompatible: return "mixes well with"
             }
         }
         static func ops(for k: Field.Kind) -> [Op] {
@@ -57,6 +68,7 @@ struct SmartRule: Codable, Identifiable, Equatable {
             case .text: return [.contains, .notContains, .equals, .notEquals, .startsWith, .endsWith]
             case .number: return [.numEquals, .numNotEquals, .greater, .less]
             case .date: return [.inLast, .notInLast]
+            case .key: return [.keyCompatible, .keyIs, .keyIsNot]
             }
         }
     }
@@ -88,7 +100,8 @@ struct SmartRule: Codable, Identifiable, Equatable {
             default: return false
             }
         case .number:
-            let v = it.number(field)
+            // Unknown values (no year tag, track not analysed) match nothing, not "0".
+            guard let v = it.number(field) else { return op == .numNotEquals }
             switch op {
             case .numEquals: return abs(v - number) < 0.001
             case .numNotEquals: return abs(v - number) >= 0.001
@@ -100,8 +113,34 @@ struct SmartRule: Codable, Identifiable, Equatable {
             let since = now.addingTimeInterval(-number * 86400)
             let inside = it.date(field).map { $0 >= since } ?? false
             return op == .inLast ? inside : !inside
+        case .key:
+            guard let f = it.sonic, let want = SmartRule.parseKey(text) else { return op == .keyIsNot }
+            let same = f.key == want.key && f.minor == want.minor
+            switch op {
+            case .keyIs: return same
+            case .keyIsNot: return !same
+            default:
+                // Harmonic mixing (Camelot wheel): same key, relative major/minor, or one fifth away.
+                let a = f.fifths, b = SmartRule.fifths(want.key, want.minor)
+                let d = abs(a - b) % 12
+                return min(d, 12 - d) <= 1 && (f.minor == want.minor || a == b)
+            }
         }
     }
+
+    /// "Am", "C#", "F♯m", "Bb", "e minor" → pitch class and mode.
+    static func parseKey(_ s: String) -> (key: Int, minor: Bool)? {
+        var t = s.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "♯", with: "#").replacingOccurrences(of: "♭", with: "b")
+        guard let first = t.first?.uppercased(), let base = ["C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11][first] else { return nil }
+        t.removeFirst()
+        var k = base
+        if t.hasPrefix("#") { k += 1; t.removeFirst() } else if t.hasPrefix("b") { k -= 1; t.removeFirst() }
+        let rest = t.lowercased().trimmingCharacters(in: .whitespaces)
+        let minor = rest.hasPrefix("m") && !rest.hasPrefix("maj")
+        return ((k + 12) % 12, minor)
+    }
+
+    static func fifths(_ key: Int, _ minor: Bool) -> Int { ((minor ? (key + 3) % 12 : key) * 7) % 12 }
 
     static func fold(_ s: String) -> String { s.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil) }
 }
@@ -124,21 +163,27 @@ struct SmartItem: Identifiable, Hashable {
         case .artist: return stats.artist ?? ""
         case .album: return stats.album ?? ""
         case .albumArtist: return stats.albumArtist ?? stats.artist ?? ""
+        case .genre: return stats.genre ?? ""
         case .path: return CueSheet.audioURL(url).path
         case .format: return CueSheet.audioURL(url).pathExtension
         default: return ""
         }
     }
 
-    func number(_ f: SmartRule.Field) -> Double {
+    func number(_ f: SmartRule.Field) -> Double? {
         switch f {
         case .duration: return (stats.duration ?? 0) / 60
         case .rating: return Double(stats.rating)
         case .plays: return Double(stats.plays)
         case .skips: return Double(stats.skips)
-        default: return 0
+        case .year: return stats.year.map(Double.init)
+        case .bpm: return sonic.flatMap { $0.bpm > 0 ? Double($0.bpm) : nil }
+        default: return nil
         }
     }
+
+    /// Sonic Mix analysis, when done.
+    var sonic: SonicFeatures? { SonicStore.shared.features[key] }
 
     func date(_ f: SmartRule.Field) -> Date? {
         switch f {
@@ -151,7 +196,7 @@ struct SmartItem: Identifiable, Hashable {
 
 struct SmartPlaylist: Codable, Identifiable, Equatable {
     enum Order: String, Codable, CaseIterable, Identifiable {
-        case random, mostPlayed, leastPlayed, highestRated, lowestRated, recentlyPlayed, leastRecentlyPlayed, recentlyAdded, album, artist, title
+        case random, mostPlayed, leastPlayed, highestRated, lowestRated, recentlyPlayed, leastRecentlyPlayed, recentlyAdded, album, artist, title, year, bpm
         var id: String { rawValue }
         var label: String {
             switch self {
@@ -166,6 +211,8 @@ struct SmartPlaylist: Codable, Identifiable, Equatable {
             case .album: return "Album"
             case .artist: return "Artist"
             case .title: return "Title"
+            case .year: return "Year"
+            case .bpm: return "BPM"
             }
         }
     }
@@ -203,6 +250,8 @@ struct SmartPlaylist: Codable, Identifiable, Equatable {
         case .album: out.sort(by: byAlbum)
         case .artist: out.sort { (SmartRule.fold($0.text(.artist)), SmartRule.fold($0.text(.album)), $0.url.absoluteString) < (SmartRule.fold($1.text(.artist)), SmartRule.fold($1.text(.album)), $1.url.absoluteString) }
         case .title: out.sort { SmartRule.fold($0.title) < SmartRule.fold($1.title) }
+        case .year: out.sort { ($0.stats.year ?? Int.max) < ($1.stats.year ?? Int.max) }
+        case .bpm: out.sort { ($0.sonic?.bpm ?? .infinity) < ($1.sonic?.bpm ?? .infinity) }
         }
         if limit > 0, out.count > limit { out = Array(out.prefix(limit)) }
         return out

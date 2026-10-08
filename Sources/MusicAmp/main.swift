@@ -3,6 +3,7 @@ import SwiftUI
 import Metal
 import CommonCrypto
 import AVFoundation
+import Accelerate
 import MusicAmpShared
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -155,6 +156,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+// Test runs never touch the real play statistics (stats.json).
+if CommandLine.arguments.contains(where: { $0.hasPrefix("--test-") || $0 == "--self-test" }) { PlayStats.shared.inMemory = true }
+
 /// Debug: `MusicAmp --snapshot <skin.wsz|-> <out.png>` renders main/EQ/playlist stacked, then exits.
 func snapshot(_ args: [String]) -> Never {
     let c = Ctl.shared
@@ -169,13 +173,32 @@ func snapshot(_ args: [String]) -> Never {
         return t
     }
     c.playlist.selection = [1]
+    if ProcessInfo.processInfo.environment["MUSICAMP_DEMO"] != nil {
+        // README screenshots: a believable (made-up) playlist, the third track playing.
+        let demo: [(String, String, String, Double)] = [
+            ("The Skin Collectors", "Pixel Perfect", "Bitmap Hearts", 214), ("The Skin Collectors", "Region.txt", "Bitmap Hearts", 188),
+            ("The Skin Collectors", "Ten Bands of Gold", "Bitmap Hearts", 233), ("Pixel Orchestra", "Midnight Visualizer", "Shader Bloom", 251),
+            ("Pixel Orchestra", "Chroma Tunnel", "Shader Bloom", 302), ("Pixel Orchestra", "Equal Power", "Crossfade Suite", 246),
+            ("Pixel Orchestra", "No Pause Between Us", "Crossfade Suite", 197), ("Retina Twins", "Double Pixels", "@2x", 221),
+            ("Retina Twins", "Nearest Neighbour", "@2x", 205), ("Retina Twins", "Journey from A to B", "@2x", 279),
+        ]
+        c.playlist.tracks = demo.map { a, s, al, d in
+            let t = Track(url: URL(fileURLWithPath: "/tmp/\(a) - \(s).mp3"), title: "\(a) - \(s)")
+            t.artist = a; t.songTitle = s; t.duration = d; t.album = al
+            return t
+        }
+        c.playlist.currentTrack = c.playlist.tracks[3]
+        c.playlist.selection = [3]
+    }
     if let q = ProcessInfo.processInfo.environment["MUSICAMP_SEARCH"] {
         c.plView.setSearch(q)
         print("search \"\(q)\": \(c.plView.searchMatches.count) results \(c.plView.searchMatches)")
     }
     if ProcessInfo.processInfo.environment["MUSICAMP_TREE"] != nil {
-        // Grouped view sample: two albums of one artist.
-        for (i, t) in c.playlist.tracks.enumerated() { t.artist = "Artist"; t.album = i == 0 ? "First Album" : "Second Album"; t.songTitle = ["First Song", "Second Song"][i] }
+        // Grouped view sample: two albums of one artist (the demo playlist has its own artists and albums).
+        if ProcessInfo.processInfo.environment["MUSICAMP_DEMO"] == nil {
+            for (i, t) in c.playlist.tracks.enumerated() { t.artist = "Artist"; t.album = i == 0 ? "First Album" : "Second Album"; t.songTitle = ["First Song", "Second Song"][i] }
+        }
         c.plTree = true
     }
     let views: [SkinView] = [c.mainView, c.eqView, c.plView]
@@ -205,6 +228,14 @@ func snapshot(_ args: [String]) -> Never {
     if let r = Renderer(width: Int(info.size.width), height: Int(info.size.height), skin: c.skin, pixelScale: k) {
         info.render(r)
         if let img = r.image() { images.append(img) }
+    }
+    // MUSICAMP_SNAPSHOT_PARTS=dir: every window also as its own PNG (README screenshots).
+    if let dir = ProcessInfo.processInfo.environment["MUSICAMP_SNAPSHOT_PARTS"] {
+        let names = ["main", "eq", "playlist", "main-shade", "eq-shade", "playlist-wide", "playlist-shade", "file-info"]
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        for (img, name) in zip(images, names) {
+            try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "\(dir)/\(name).png"))
+        }
     }
     let w = (images.map(\.width).max() ?? 1) / k, h = images.reduce(0) { $0 + $1.height } / k
     let ctx = CGContext(data: nil, width: w * 2, height: h * 2, bitsPerComponent: 8, bytesPerRow: 0,
@@ -669,7 +700,7 @@ if CommandLine.arguments.contains("--test-sonic") {
 /// drop, a left-only 1 kHz "guitar" and a centred 60 Hz bass must stay; off must leave the signal untouched.
 /// `MusicAmp --test-smart`: smart transitions between generated tracks with dead air (gap measured at the tap),
 /// and gapless with no trimming inside an album.
-if CommandLine.arguments.contains("--test-vocal") || CommandLine.arguments.contains("--test-smart") || CommandLine.arguments.contains("--test-crossfeed") {
+if ["--test-vocal", "--test-smart", "--test-crossfeed", "--test-spoken"].contains(where: CommandLine.arguments.contains) {
     var fails = 0
     func check(_ ok: Bool, _ what: String) { print(ok ? "OK  " : "FAIL", what); if !ok { fails += 1 } }
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("musicamp-vs-\(getpid())")
@@ -771,6 +802,71 @@ if CommandLine.arguments.contains("--test-vocal") || CommandLine.arguments.conta
         }
         let monoOff = measure(mono, .off), monoOn = measure(mono, .strong)
         check(abs(db(monoOn.l200, monoOff.l200)) < 0.5, String(format: "mono content keeps its level (%.2f dB)", db(monoOn.l200, monoOff.l200)))
+    }
+
+    if CommandLine.arguments.contains("--test-spoken") {
+        // "Speech": 1.5 s bursts of modulated noise; pauses of 1.2 s and 0.3 s alternate; a faint room noise
+        // under everything (−60 dB).
+        var seed: UInt64 = 3
+        func rnd() -> Float { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return Float(seed >> 40) / Float(1 << 24) * 2 - 1 }
+        func speech(level: Float) -> (Double) -> (Float, Float) {
+            { t in
+                let cycle = t.truncatingRemainder(dividingBy: 4.5)   // 1.5 talk, 1.2 pause, 1.5 talk, 0.3 pause
+                let talking = cycle < 1.5 || (cycle >= 2.7 && cycle < 4.2)
+                let syllables = Float(0.6 + 0.4 * sin(2 * .pi * 4 * t))
+                let v = (talking ? level * syllables * rnd() : 0) + 0.001 * rnd()
+                return (v, v)
+            }
+        }
+        let talk = write("talk.wav", seconds: 45, speech(level: 0.3))
+        let pauses = SpokenWord.find(talk) ?? []
+        let long = pauses.filter { $0.end - $0.start > 0.9 }
+        check(pauses.count == 10 && long.count == 10, "pauses: the ten 1.2 s pauses found, the 0.3 s ones ignored (\(pauses.count) found)")
+        check(pauses.allSatisfy { abs(($0.end - $0.start) - 1.2) < 0.15 }, String(format: "pause lengths ≈ 1.2 s (%.2f–%.2f)", pauses.map { $0.end - $0.start }.min() ?? 0, pauses.map { $0.end - $0.start }.max() ?? 0))
+        // Playback: with the map, 10 s of listening covers more of the file.
+        func advance(_ map: [SpokenWord.Pause]) -> Double {
+            let e = AudioEngine()
+            e.setVolume(0)
+            e.use(try! AVAudioFile(forReading: talk), url: talk)
+            e.pauses = map
+            e.play()
+            wait(9)
+            let t = e.currentTime
+            e.stop()
+            return t
+        }
+        let plain = advance([]), shortened = advance(pauses)
+        // 9 s hold two 1.2 s pauses of which 0.7 s run at 4×: about 9 + 2×0.7×3/4 ≈ 10 s... measured loosely.
+        check(abs(plain - 9) < 0.6, String(format: "without the map: 9 s of listening = %.1f s of the file", plain))
+        check(shortened - plain > 0.8, String(format: "shortened silences: %.1f s of the file in the same 9 s (+%.1f s)", shortened, shortened - plain))
+        // Voice Boost: a quiet voice gets louder, a loud one doesn't clip.
+        func level(_ url: URL, boost: Bool) -> (rms: Float, peak: Float) {
+            let e = AudioEngine()
+            e.setVolume(0)
+            e.voiceBoost = boost
+            var sum: Float = 0, n = 0, peak: Float = 0
+            let lock = NSLock()
+            var counting = false
+            e.onTap = { buf in
+                guard let d = buf.floatChannelData else { return }
+                var r: Float = 0, p: Float = 0
+                vDSP_rmsqv(d[0], 1, &r, vDSP_Length(buf.frameLength))
+                vDSP_maxmgv(d[0], 1, &p, vDSP_Length(buf.frameLength))
+                lock.lock(); if counting { sum += r * r; n += 1; peak = max(peak, p) }; lock.unlock()
+            }
+            e.use(try! AVAudioFile(forReading: url), url: url)
+            e.play()
+            wait(0.5); lock.lock(); counting = true; lock.unlock(); wait(3)
+            e.stop()
+            lock.lock(); defer { lock.unlock() }
+            return ((sum / Float(max(1, n))).squareRoot(), peak)
+        }
+        let quiet = write("quiet.wav", seconds: 5, speech(level: 0.02)), loud = write("loud.wav", seconds: 5, speech(level: 0.6))
+        let q0 = level(quiet, boost: false), q1 = level(quiet, boost: true), l1 = level(loud, boost: true), l0 = level(loud, boost: false)
+        let gainQuiet = 20 * log10(q1.rms / max(1e-9, q0.rms)), gainLoud = 20 * log10(l1.rms / max(1e-9, l0.rms))
+        check(gainQuiet > 6, String(format: "voice boost: a quiet voice +%.1f dB", gainQuiet))
+        check(gainLoud < gainQuiet - 4, String(format: "voice boost: a loud voice raised less (+%.1f dB): levels even out", gainLoud))
+        check(l1.peak <= 1.0, String(format: "voice boost: no clipping on a loud voice (peak %.2f)", l1.peak))
     }
 
     if CommandLine.arguments.contains("--test-smart") {
@@ -1033,6 +1129,33 @@ if CommandLine.arguments.contains("--test-stats") {
     try? FileManager.default.removeItem(at: dir.appendingPathComponent("a.mp3"))
     p.limit = 0; p.onlyExisting = true
     check(!run(p).contains("a.mp3"), "missing files hidden")
+    // Genre, year, BPM and key rules (BPM/key from the Sonic Mix analysis).
+    do {
+        func item(_ key: String, genre: String?, year: Int?) -> SmartItem {
+            var e = PlayStats.Entry(); e.genre = genre; e.year = year; e.title = key
+            return SmartItem(key: key, url: URL(fileURLWithPath: key), stats: e)
+        }
+        func feat(_ bpm: Float, _ key: Int, _ minor: Bool) -> SonicFeatures {
+            SonicFeatures(mfcc: Array(repeating: 0, count: 13), chroma: Array(repeating: 1 / 12, count: 12), bpm: bpm, key: key, minor: minor,
+                          keyStrength: 0.8, loudness: -14, centroid: 10, flatness: 0.1, dynamics: 6, punch: 1, zcr: 1000)
+        }
+        let pool2 = [item("/r1", genre: "Rock", year: 1985), item("/r2", genre: "Indie Rock", year: 2019), item("/j1", genre: "Jazz", year: 1959),
+                     item("/x1", genre: nil, year: nil)]
+        SonicStore.shared.remember(feat(124, 9, true), key: "/r1")    // A minor
+        SonicStore.shared.remember(feat(128, 0, false), key: "/r2")   // C major (relative of A minor)
+        SonicStore.shared.remember(feat(92, 2, false), key: "/j1")    // D major
+        func run2(_ rules: [SmartRule], all: Bool = true) -> [String] {
+            SmartPlaylist(name: "t", matchAll: all, rules: rules, order: .title, onlyExisting: false).evaluate(pool2).map(\.key)
+        }
+        check(run2([SmartRule(field: .genre, op: .contains, text: "rock")]) == ["/r1", "/r2"], "genre contains “rock”")
+        check(run2([SmartRule(field: .year, op: .less, number: 1990)]) == ["/j1", "/r1"], "year before 1990 (no year tag never matches)")
+        check(run2([SmartRule(field: .bpm, op: .greater, number: 120), SmartRule(field: .bpm, op: .less, number: 126)]) == ["/r1"], "BPM between 120 and 126")
+        check(run2([SmartRule(field: .key, op: .keyCompatible, text: "Am")]) == ["/r1", "/r2"], "mixes well with Am: A minor and its relative C major")
+        check(run2([SmartRule(field: .key, op: .keyIs, text: "D")]) == ["/j1"], "key is D")
+        check(SmartRule.parseKey("F♯m").map { $0.key == 6 && $0.minor } == true && SmartRule.parseKey("Bb").map { $0.key == 10 && !$0.minor } == true,
+              "key names parsed (F♯m, Bb)")
+        check(run2([SmartRule(field: .key, op: .keyCompatible, text: "E")]) == [], "E major doesn't mix with A minor, C major or D major")
+    }
     check(SmartPlaylist.defaults.count == 7, "default smart playlists")
     let data = try? JSONEncoder().encode(SmartPlaylist.defaults)
     check(data.flatMap { try? JSONDecoder().decode([SmartPlaylist].self, from: $0) }?.count == 7, "smart playlists round-trip as JSON")
@@ -1291,6 +1414,19 @@ if CommandLine.arguments.contains("--test-tags") {
             let head = String(decoding: raw.prefix(4096), as: UTF8.self)
             check(head.contains("custom") || head.contains("TXXX"), "\(label): unknown frames preserved (TXXX)")
         }
+        // Star rating: POPM (MP3) or RATING (FLAC); MP4 has no standard star tag.
+        if TagIO.kind(u) != .mp4 {
+            for stars in [4, 1, 5, 0] {
+                var ur = TagUpdate(); ur.fields = [\.rating: stars > 0 ? String(stars) : ""]
+                _ = wait { try await TagIO.write(u, ur) }
+                let tr = (try? wait { await TagIO.read(u) }.get()) ?? TagSet()
+                check(tr.rating == (stars > 0 ? String(stars) : "") && tr.title == t1.title && frames(u) == before,
+                      "\(label): rating \(stars)★ written and read back, rest intact")
+            }
+            if let out = FFmpeg.run(ff.replacingOccurrences(of: "ffmpeg", with: "ffprobe"), ["-v", "quiet", "-show_entries", "format_tags", "-of", "json", u.path]) {
+                check(!out.lowercased().contains("rating=") || TagIO.kind(u) == .id3, "\(label): rating cleared (no RATING left)")
+            }
+        }
         if label.contains("v1") {
             let raw = [UInt8]((try? Data(contentsOf: u)) ?? Data())
             let v1 = raw.suffix(128)
@@ -1298,6 +1434,29 @@ if CommandLine.arguments.contains("--test-tags") {
         }
     }
     check(!TagIO.canWrite(URL(fileURLWithPath: "/x/a.ogg")) && TagIO.canWrite(URL(fileURLWithPath: "/x/a.flac")), "non-writable formats detected")
+    // The playlist reads genre, year and the file's rating (adopted when MusicAmp has none). In-memory stats:
+    // the real stats.json is never touched by tests.
+    PlayStats.shared.inMemory = true
+    if let flac = files.first(where: { $0.0 == "FLAC" })?.1 {
+        var ur = TagUpdate(); ur.fields = [\.rating: "3", \.year: "1999"]
+        _ = wait { try await TagIO.write(flac, ur) }
+        let pl = Playlist()
+        pl.add([flac])
+        let t0 = Date()
+        while pl.tracks.first?.year == nil, Date().timeIntervalSince(t0) < 5 { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        let t = pl.tracks.first
+        check(t?.genre == "Rock" && t?.year == 1999, "playlist track: genre and year from the tags (\(t?.genre ?? "-"), \(t?.year.map(String.init) ?? "-"))")
+        check(PlayStats.shared.rating(flac) == 3, "playlist track: the file's 3★ rating adopted")
+    }
+    // Ratings written by other players: POPM bytes from any owner, FLAC RATING on a 1–5 scale.
+    do {
+        let popm = { (b: UInt8) in ID3.Frame(id: "POPM", data: Array("someone@example.com".utf8) + [0, b]) }
+        check([1, 64, 128, 196, 255, 30, 100, 230].map { ID3.popmStars(popm($0)) ?? -1 } == [1, 2, 3, 4, 5, 1, 3, 5], "POPM bytes map to stars like other players")
+        let vc = FLACTags.le32Bytes(4) + Array("test".utf8) + FLACTags.le32Bytes(1) + FLACTags.le32Bytes(8) + Array("RATING=4".utf8)
+        check(FLACTags.tagSet([FLACTags.Block(type: 4, data: vc)]).rating == "4", "FLAC RATING on a 1–5 scale (foobar2000) read as stars")
+        let vc100 = FLACTags.le32Bytes(4) + Array("test".utf8) + FLACTags.le32Bytes(1) + FLACTags.le32Bytes(9) + Array("RATING=60".utf8)
+        check(FLACTags.tagSet([FLACTags.Block(type: 4, data: vc100)]).rating == "3", "FLAC RATING on a 0–100 scale (MusicBee) read as stars")
+    }
     // The editor's model, used like the window does: shared value, numbering, artwork, one file left out.
     let batch = (1...3).map { make("batch\($0).mp3", ["-c:a", "libmp3lame"]) }
     MainActor.assumeIsolated {

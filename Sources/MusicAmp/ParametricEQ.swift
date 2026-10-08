@@ -167,7 +167,7 @@ final class AutoEqCatalog: ObservableObject {
         if text == nil || age > 7 * 86400 {
             do {
                 var req = URLRequest(url: URL(string: AutoEqCatalog.base + "INDEX.md")!)
-                req.setValue("MusicAmp/0.3", forHTTPHeaderField: "User-Agent")
+                req.setValue("MusicAmp/0.4", forHTTPHeaderField: "User-Agent")
                 let (data, resp) = try await URLSession.shared.data(for: req)
                 guard (resp as? HTTPURLResponse)?.statusCode == 200, let t = String(data: data, encoding: .utf8) else { throw URLError(.badServerResponse) }
                 try? data.write(to: cache)
@@ -213,7 +213,7 @@ final class AutoEqCatalog: ObservableObject {
         let enc = file.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? file
         guard let url = URL(string: AutoEqCatalog.base + e.path + "/" + enc) else { throw URLError(.badURL) }
         var req = URLRequest(url: url)
-        req.setValue("MusicAmp/0.3", forHTTPHeaderField: "User-Agent")
+        req.setValue("MusicAmp/0.4", forHTTPHeaderField: "User-Agent")
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard (resp as? HTTPURLResponse)?.statusCode == 200, let t = String(data: data, encoding: .utf8),
               let p = PEQProfile.parse(t, name: e.name) else { throw URLError(.cannotParseResponse) }

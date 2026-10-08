@@ -45,6 +45,56 @@ final class AudioEngine {
         didSet { (crossfeed.auAudioUnit as? CrossfeedAU)?.setPreset(crossfeedPreset) }
     }
 
+    /// Podcasts and audiobooks: speech EQ + compressor (see SpokenWord.swift), after speed/pitch.
+    let voiceEQ = SpokenWord.makeVoiceEQ()
+    let compressor = SpokenWord.makeCompressor()
+    var voiceBoost = false {
+        didSet { voiceEQ.bypass = !voiceBoost; compressor.bypass = !voiceBoost }
+    }
+
+    /// Shorten silences: pauses of the current file (seconds) played `silenceSpeed` times faster, keeping
+    /// `pauseMargin` of natural pause at each end. Set by the controller for spoken-word files.
+    var pauses: [SpokenWord.Pause] = [] { didSet { pauseIndex = 0; updateSilenceMonitor() } }
+    var silenceSpeed = 4.0
+    static let pauseMargin = 0.25
+    /// Listening time saved by shortened silences (seconds), for the settings.
+    private(set) var timeSaved: Double = UserDefaults.standard.double(forKey: "timeSaved")
+    private var inPause = false
+    private var pauseIndex = 0
+    private var silenceTimer: Timer?
+    private var lastSilenceTick: Date?
+
+    private func updateSilenceMonitor() {
+        let want = !pauses.isEmpty && state == .playing && remote == nil && !isStream
+        if want, silenceTimer == nil {
+            lastSilenceTick = nil
+            let t = Timer(timeInterval: 0.04, repeats: true) { [weak self] _ in self?.silenceTick() }
+            RunLoop.main.add(t, forMode: .common)
+            silenceTimer = t
+        } else if !want {
+            silenceTimer?.invalidate()
+            silenceTimer = nil
+            if inPause { inPause = false; applyRate() }
+        }
+    }
+
+    private func silenceTick() {
+        let now = Date()
+        let dt = lastSilenceTick.map { now.timeIntervalSince($0) } ?? 0
+        lastSilenceTick = now
+        let t = currentTime, m = AudioEngine.pauseMargin
+        // Pauses are in order: move the cursor forward (or back after a seek) to the one around t.
+        if pauseIndex >= pauses.count || (pauseIndex > 0 && pauses[pauseIndex - 1].end > t) { pauseIndex = 0 }
+        while pauseIndex < pauses.count, pauses[pauseIndex].end - m <= t { pauseIndex += 1 }
+        let inside = pauseIndex < pauses.count && t >= pauses[pauseIndex].start + m && t < pauses[pauseIndex].end - m
+        if inside { timeSaved += dt * (silenceSpeed - 1) / max(0.5, rate) }
+        if inside != inPause {
+            inPause = inside
+            applyRate()
+            if !inside { UserDefaults.standard.set(timeSaved, forKey: "timeSaved") }
+        }
+    }
+
     /// 0 = off, 1 = full vocal removal.
     var vocalRemoval: Double = 0 {
         didSet { (vocal.auAudioUnit as? VocalRemoverAU)?.state.pointee.amount = Float(max(0, min(1, vocalRemoval))) }
@@ -101,7 +151,7 @@ final class AudioEngine {
             engine.connect(d.converter, to: d.gain, format: bus)
             engine.connect(d.gain, to: deckMixer, fromBus: 0, toBus: i, format: bus)
         }
-        for (a, b) in [(deckMixer as AVAudioNode, timePitch as AVAudioNode), (timePitch, vocal), (vocal, eq), (eq, peq)] {
+        for (a, b) in [(deckMixer as AVAudioNode, timePitch as AVAudioNode), (timePitch, voiceEQ), (voiceEQ, compressor), (compressor, vocal), (vocal, eq), (eq, peq)] {
             engine.disconnectNodeOutput(a)
             engine.connect(a, to: b, format: bus)
         }
@@ -124,6 +174,7 @@ final class AudioEngine {
         if !peq.bypass { out.append("parametric EQ on") }
         if deck.gain.globalGain != 0 { out.append("ReplayGain adjusting the level") }
         if !timePitch.bypass { out.append("speed or pitch changed") }
+        if voiceBoost { out.append("voice boost on") }
         if vocalRemoval > 0 { out.append("vocal remover on") }
         if crossfeedPreset != .off { out.append("crossfeed on") }
         if decks.contains(where: { abs($0.player.pan) > 0.001 }) { out.append("balance not centered") }
@@ -160,7 +211,7 @@ final class AudioEngine {
     var bitrate: Int { isStream ? streamBitrate : deck.bitrate }
     private var streamBitrate = 0
 
-    private(set) var state: State = .stopped
+    private(set) var state: State = .stopped { didSet { if state != oldValue { updateSilenceMonitor() } } }
 
     // MARK: Transitions (gapless / crossfade) and ReplayGain
 
@@ -257,6 +308,8 @@ final class AudioEngine {
         engine.attach(peq)
         engine.attach(vocal)
         engine.attach(crossfeed)
+        engine.attach(voiceEQ)
+        engine.attach(compressor)
         peq.bypass = true
         for (i, b) in eq.bands.enumerated() {
             b.filterType = .parametric
@@ -278,7 +331,9 @@ final class AudioEngine {
             engine.connect(d.gain, to: deckMixer, fromBus: 0, toBus: i, format: bus)
         }
         engine.connect(deckMixer, to: timePitch, format: bus)
-        engine.connect(timePitch, to: vocal, format: bus)
+        engine.connect(timePitch, to: voiceEQ, format: bus)
+        engine.connect(voiceEQ, to: compressor, format: bus)
+        engine.connect(compressor, to: vocal, format: bus)
         engine.connect(vocal, to: eq, format: bus)
         timePitch.bypass = true
         engine.connect(eq, to: peq, format: bus)
@@ -905,9 +960,11 @@ final class AudioEngine {
             timePitch.pitch = Float(p)
             timePitch.bypass = abs(p) < 0.5
         } else {
-            timePitch.rate = Float(r)
+            // Inside a pause (shorten silences) the time-stretcher runs `silenceSpeed` times faster.
+            let m = inPause ? silenceSpeed : 1
+            timePitch.rate = Float(min(32, r * m))
             timePitch.pitch = Float(p)
-            timePitch.bypass = abs(r - 1) < 0.001 && abs(p) < 0.5
+            timePitch.bypass = abs(r * m - 1) < 0.001 && abs(p) < 0.5
         }
         if let rp = remote, state == .playing { rp.rate = Float(r) }
     }

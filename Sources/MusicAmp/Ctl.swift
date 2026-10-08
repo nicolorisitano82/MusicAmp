@@ -35,6 +35,27 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var smartTransitions = true { didSet { applyTransitionSettings(); notify() } }
     /// Vocal remover for karaoke, 0…1 (not saved: a forgotten one would sound like a broken file next time).
     var vocalRemoval: Double = 0 { didSet { audio.vocalRemoval = vocalRemoval; notify() } }
+    /// Podcasts and audiobooks: speech EQ and compression.
+    var voiceBoost = false { didSet { applySpokenWord(); notify() } }
+    /// Podcasts and audiobooks: play pauses faster.
+    var shortenSilences = false { didSet { applySpokenWord(); notify() } }
+
+    /// Voice Boost and Shorten Silences follow the current track: only episodes and audiobooks get them.
+    func applySpokenWord() {
+        let t = playlist.currentTrack
+        let spoken = t.map(SpokenWord.isSpoken) ?? false
+        audio.voiceBoost = voiceBoost && spoken
+        guard shortenSilences, spoken, let url = t?.url, url.isFileURL else { audio.pauses = []; return }
+        if let p = SpokenWord.pauses(url, ready: { [weak self] p in
+            guard let self, self.shortenSilences, self.playlist.currentTrack?.url == url else { return }
+            self.audio.pauses = p
+        }) {
+            audio.pauses = p
+        } else {
+            audio.pauses = []
+        }
+    }
+
     /// Headphone crossfeed preset (CrossfeedAU.Preset raw value).
     var crossfeed = 0 { didSet { audio.crossfeedPreset = CrossfeedAU.Preset(rawValue: crossfeed) ?? .off; notify() } }
     /// Strength used when the remover is switched on from the menu or the karaoke window.
@@ -85,6 +106,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     /// Playlist grouped artist → album → track instead of the flat list.
     var plTree = false { didSet { notify(); plView.needsDisplay = true } }
     var plShowRatings = true { didSet { notify(); plView.needsDisplay = true } }
+    /// Ratings also go into MP3/FLAC tags.
+    var ratingsInTags = true { didSet { PlayStats.shared.writeToTags = ratingsInTags; notify() } }
     /// Waveform in the position bar (off by default: classic skins look exactly as designed).
     var waveSeekBar = false { didSet { notify(); mainView.needsDisplay = true } }
     /// The Dock icon shows the cover and progress while playing.
@@ -347,6 +370,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             lastTrack = playlist.currentTrack
             applyAutoEQ(announce: true)
             refreshLyrics()
+            applySpokenWord()
         }
         nowPlaying?.update()
         WidgetBridge.shared.setNeedsUpdate()
@@ -505,6 +529,9 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         item(m, "Pitch +1 Semitone", #selector(pitchUp), "]", [.command, .option])
         item(m, "Pitch −1 Semitone", #selector(pitchDown), "[", [.command, .option])
         item(m, "Original Pitch", #selector(pitchReset))
+        m.addItem(.separator())
+        item(m, "Voice Boost (Podcasts)", #selector(toggleVoiceBoost))
+        item(m, "Shorten Silences (Podcasts)", #selector(toggleShortenSilences))
         return m
     }
 
@@ -1482,6 +1509,9 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     }
     @objc func toggleWaveSeekBar() { waveSeekBar.toggle() }
 
+    @objc func toggleVoiceBoost() { voiceBoost.toggle(); flashMarquee(voiceBoost ? "VOICE BOOST ON" : "VOICE BOOST OFF") }
+    @objc func toggleShortenSilences() { shortenSilences.toggle(); flashMarquee(shortenSilences ? "SHORTEN SILENCES ON" : "SHORTEN SILENCES OFF") }
+
     @objc func toggleVocalRemover() {
         vocalRemoval = vocalRemoval > 0 ? 0 : vocalStrength
         flashMarquee(vocalRemoval > 0 ? "VOCAL REMOVER ON" : "VOCAL REMOVER OFF")
@@ -1614,6 +1644,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         case #selector(togglePlTree): on(plTree)
         case #selector(toggleWaveSeekBar): on(waveSeekBar)
         case #selector(toggleVocalRemover): on(vocalRemoval > 0)
+        case #selector(toggleVoiceBoost): on(voiceBoost)
+        case #selector(toggleShortenSilences): on(shortenSilences)
         case #selector(toggleAlwaysOnTop): on(alwaysOnTop)
         case #selector(toggleTimeRemaining): on(timeRemaining)
         case #selector(toggleShuffle): on(shuffle)
@@ -1733,6 +1765,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         plShowNumbers = bool("plShowNumbers", true)
         plTree = bool("plTree", false)
         plShowRatings = bool("plShowRatings", true)
+        ratingsInTags = bool("ratingsInTags", true)
         waveSeekBar = bool("waveSeekBar", false)
         dockIconLive = bool("dockIconLive", true)
         plUseSkinFont = bool("plUseSkinFont", true)
@@ -1746,6 +1779,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         crossfadeOn = bool("crossfadeOn", false)
         smartTransitions = bool("smartTransitions", true)
         crossfeed = int("crossfeed", 0)
+        voiceBoost = bool("voiceBoost", false)
+        shortenSilences = bool("shortenSilences", false)
         vocalStrength = dbl("vocalStrength", 1)
         crossfadeSeconds = dbl("crossfadeSeconds", 5)
         rgMode = int("rgMode", 1)
@@ -1769,7 +1804,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             "snapEnabled": snapEnabled, "snapDistance": snapDistance, "marqueeScroll": marqueeScroll,
             "resumeOnLaunch": resumeOnLaunch, "visThinBands": visThinBands, "visPeaksOn": visPeaksOn,
             "visFalloff": visFalloff, "peakFalloff": peakFalloff, "oscStyle": oscStyle, "plFontSize": plFontSize,
-            "plShowNumbers": plShowNumbers, "plTree": plTree, "plShowRatings": plShowRatings, "waveSeekBar": waveSeekBar, "dockIconLive": dockIconLive, "plUseSkinFont": plUseSkinFont, "autoDownloadFonts": autoDownloadFonts,
+            "plShowNumbers": plShowNumbers, "plTree": plTree, "plShowRatings": plShowRatings, "ratingsInTags": ratingsInTags, "waveSeekBar": waveSeekBar, "dockIconLive": dockIconLive, "plUseSkinFont": plUseSkinFont, "autoDownloadFonts": autoDownloadFonts,
             "menuBarEnabled": menuBarEnabled, "notifyTrackChange": notifyTrackChange,
             "notifyOnlyInBackground": notifyOnlyInBackground,
             // Plain files as paths; cue tracks keep their "#track=N" fragment, so they are saved as URLs.
@@ -1777,7 +1812,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             "streamTitles": Dictionary(playlist.tracks.filter(\.isStream).map { ($0.url.absoluteString, $0.title) },
                                        uniquingKeysWith: { a, _ in a }),
             "radioBuffer": radioBuffer, "ffmpegEnabled": ffmpegEnabled, "musicSpeed": musicSpeed,
-            "podcastSpeed": podcastSpeed, "pitchSemitones": pitchSemitones, "gapless": gapless, "bitPerfect": bitPerfect, "crossfadeOn": crossfadeOn, "smartTransitions": smartTransitions, "crossfeed": crossfeed, "vocalStrength": vocalStrength,
+            "podcastSpeed": podcastSpeed, "pitchSemitones": pitchSemitones, "gapless": gapless, "bitPerfect": bitPerfect, "crossfadeOn": crossfadeOn, "smartTransitions": smartTransitions, "crossfeed": crossfeed, "voiceBoost": voiceBoost, "shortenSilences": shortenSilences, "vocalStrength": vocalStrength,
             "crossfadeSeconds": crossfadeSeconds, "rgMode": rgMode, "rgPreamp": rgPreamp, "rgAnalyze": rgAnalyze,
             "rgPreventClip": rgPreventClip,
             "current": playlist.current ?? -1,

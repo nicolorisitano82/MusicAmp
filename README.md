@@ -22,14 +22,14 @@ Un player audio minimale e nativo per macOS, compatibile con le skin classiche d
   - formati extra (Ogg, Opus, APE, WavPack, Musepack, WMA, DSD…) con FFmpeg già incluso;
   - AirPlay e scelta dell'uscita.
 - **Radio internet** Icecast/SHOUTcast e HLS, con client nativo e catalogo radio-browser.info.
-- **Podcast:** ricerca, RSS, OPML, download, velocità e intonazione, ripresa dal punto salvato negli audiolibri.
+- **Podcast:** ricerca, RSS, OPML, download, velocità e intonazione, Voice Boost e silenzi accorciati, ripresa dal punto salvato negli audiolibri.
 - **Testi** sincronizzati (LRCLIB, `.lrc`, tag) e **karaoke** a schermo intero con le parole evidenziate una alla volta.
 - **Milkdrop** su Metal:
   - preset `.milk` di Milkdrop 1 e 2;
   - gli shader HLSL di Milkdrop 2 sono tradotti in Metal: compila il 99,9% della raccolta "cream of the crop" di projectM.
 - **Playlist** piatta o ad albero artista → album → brano, con ricerca istantanea (⌘F), coda, Jump to file e libreria di Musica.
 - **Sonic Mix:** analisi sul Mac di timbro, tonalità, tempo ed energia, per una radio di brani simili o un viaggio graduale da un brano all'altro.
-- **Ascolti, voti e playlist intelligenti:** conteggio degli ascolti, voti a stelle, playlist a regole come in iTunes (più ascoltati, aggiunti di recente, preferiti dimenticati…).
+- **Ascolti, voti e playlist intelligenti:** conteggio degli ascolti, voti a stelle salvati anche nei tag MP3/FLAC, playlist a regole come in iTunes, anche per genere, anno, BPM e tonalità compatibile.
 - **Editor dei tag** per uno o più file (MP3, FLAC, M4A): titolo, artista, album, anno, genere, traccia e disco, commento e copertina, con numerazione automatica e ricerca di tag e copertine su MusicBrainz / Cover Art Archive.
 - **Vista copertina** grande con comandi e la striscia degli album della playlist, anche a schermo intero.
 - **macOS:**
