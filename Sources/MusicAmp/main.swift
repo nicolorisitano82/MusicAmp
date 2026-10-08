@@ -12,6 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.mainMenu = buildMenu()
+        // Launched by a widget while closed (musicamp://play?dock=1): start hidden in the Dock, no windows.
+        Ctl.shared.startInDock = pendingCommands.contains { ($0.query ?? "").contains("dock=1") }
         Ctl.shared.start()
         started = true
         if !pending.isEmpty { Ctl.shared.handleDrop(pending, toPlaylist: false) }
@@ -38,7 +40,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { false }
 
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? { DockMode.shared.menu() }
+
     func applicationShouldHandleReopen(_ s: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // Dock mode: the Dock icon is the player, a click plays or pauses. Mini tile: back to the full player.
+        if DockMode.shared.active { DockMode.shared.iconClicked(); return false }
+        if IconMode.shared.active { IconMode.shared.exit(); return true }
         if !flag { Ctl.shared.mainWindow.makeKeyAndOrderFront(nil) }
         return true
     }
@@ -139,6 +146,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.item(view, "Album Art", #selector(Ctl.showAlbumArt), "a", [.command, .option])
         c.item(view, "Smart Playlists", #selector(Ctl.showSmartPlaylists), "s", [.command, .option])
         c.item(view, "Sonic Mix", #selector(Ctl.showSonicMix), "x", [.command, .option])
+        c.item(view, "Mini Tile", #selector(Ctl.toggleIconMode), "o", [.command, .option])
+        c.item(view, "Dock Mode (Hide the Player)", #selector(Ctl.toggleDockMode), "o", [.command, .option, .shift])
+        c.item(view, "Show Player", #selector(Ctl.showPlayer), "p", [.command, .option])
         c.item(view, "Full-Screen Karaoke", #selector(Ctl.showKaraoke), "k", [.command, .option])
         c.item(view, "Milkdrop", #selector(Ctl.showMilkdrop), "m", [.command, .option])
         view.addItem(.separator())
@@ -611,6 +621,54 @@ if let si = CommandLine.arguments.firstIndex(of: "--sonic-analyze") {
     exit(0)
 }
 
+/// Debug: `MusicAmp --test-dock`: Dock mode at volume 0 — the icon click plays and pauses, the Dock menu, the live
+/// icon with the waveform, Show Player; and the mini tile and Dock mode exclude each other.
+if CommandLine.arguments.contains("--test-dock") {
+    _ = NSApplication.shared
+    var fails = 0
+    func check(_ ok: Bool, _ what: String) { print(ok ? "OK  " : "FAIL", what); if !ok { fails += 1 } }
+    func wait(_ s: Double) { let end = Date().addingTimeInterval(s); while Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) } }
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("musicamp-dock-\(getpid()).wav")
+    do {
+        let fmt = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)!
+        let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: 44100 * 20)!
+        buf.frameLength = 44100 * 20
+        for i in 0..<Int(buf.frameLength) { let v = Float(0.2 * sin(Double(i) * 0.05)); buf.floatChannelData![0][i] = v; buf.floatChannelData![1][i] = v }
+        let f = try AVAudioFile(forWriting: url, settings: fmt.settings); try f.write(from: buf)
+    } catch { print("FAIL test file: \(error)"); exit(1) }
+    let c = Ctl.shared
+    c.audio.setVolume(0)
+    c.playlist.add([url])
+    c.playlist.currentTrack = c.playlist.tracks.first
+    DockIcon.shared.start(ctl: c)
+    DockMode.shared.enter()
+    check(DockMode.shared.active, "Dock mode entered (player windows hidden)")
+    check(NSApp.dockTile.contentView is DockTileView, "Dock icon shows the track while stopped (play sign)")
+    DockMode.shared.iconClicked()
+    let t0 = Date()
+    while c.audio.state != .playing, Date().timeIntervalSince(t0) < 5 { wait(0.05) }
+    check(c.audio.state == .playing, "icon click: plays")
+    DockIcon.shared.update()   // what Ctl's transport callback does in the app (start() isn't run here)
+    wait(1.5)
+    check((NSApp.dockTile.contentView as? DockTileView)?.progress ?? 0 > 0, "Dock icon progress moves while playing")
+    let titles = DockMode.shared.menu().items.map(\.title)
+    check(titles.contains("Pause") && titles.contains("Next") && titles.contains("Show Player") && titles.contains("Sleep Timer"),
+          "Dock menu: track, Pause, Next, Previous, rating, sleep timer, Show Player (\(titles.filter { !$0.isEmpty }.count) items)")
+    DockMode.shared.iconClicked()
+    wait(0.3)
+    check(c.audio.state == .paused, "icon click again: pauses")
+    IconMode.shared.enter()
+    check(IconMode.shared.active && !DockMode.shared.active, "the mini tile replaces Dock mode")
+    DockMode.shared.enter()
+    check(DockMode.shared.active && !IconMode.shared.active, "Dock mode replaces the mini tile")
+    c.showPlayer()
+    check(!DockMode.shared.active && !IconMode.shared.active, "Show Player leaves both modes")
+    c.audio.stop()
+    try? FileManager.default.removeItem(at: url)
+    print(fails == 0 ? "ALL OK" : "\(fails) FAILED")
+    exit(fails == 0 ? 0 : 1)
+}
+
 /// Debug: `MusicAmp --test-sonic`: sonic analysis of generated music (tempo, key, timbre) and the mixes built on it.
 if CommandLine.arguments.contains("--test-sonic") {
     var fails = 0
@@ -920,17 +978,27 @@ if ["--test-vocal", "--test-smart", "--test-crossfeed", "--test-spoken"].contain
 if let di = CommandLine.arguments.firstIndex(of: "--dock-snapshot"), CommandLine.arguments.count > di + 1 {
     _ = NSApplication.shared
     let cover = CommandLine.arguments.count > di + 2 ? NSImage(contentsOfFile: CommandLine.arguments[di + 2]) : nil
-    let states: [(NSImage?, Double?, Bool, Bool)] = [(cover, 0.42, false, false), (cover, 0.42, true, false), (cover, nil, false, true), (nil, 0.7, false, false)]
+    // A made-up waveform: quiet intro, verses and choruses, a break, a fade.
+    let wave = Waveform(peaks: (0..<Waveform.buckets).map { i in
+        let x = Double(i) / Double(Waveform.buckets)
+        let shape = x < 0.08 ? x / 0.08 * 0.35 : (x > 0.92 ? (1 - x) / 0.08 * 0.6 : (sin(x * 19) > 0.2 ? 0.95 : 0.6) * (x > 0.55 && x < 0.62 ? 0.3 : 1))
+        return Float(shape * (0.85 + 0.15 * sin(Double(i) * 1.7)))
+    })
+    // cover, progress, paused, stream, waveform, stopped
+    let states: [(NSImage?, Double?, Bool, Bool, Waveform?, Bool)] = [
+        (cover, 0.42, false, false, wave, false), (cover, 0.42, true, false, wave, false), (cover, nil, false, true, nil, false),
+        (nil, 0.7, false, false, nil, false), (cover, 0, true, false, wave, true),
+    ]
     let side = 256
-    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: side * 4, pixelsHigh: side, bitsPerSample: 8, samplesPerPixel: 4,
+    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: side * states.count, pixelsHigh: side, bitsPerSample: 8, samplesPerPixel: 4,
                                hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
     NSColor(calibratedWhite: 0.82, alpha: 1).setFill()
-    NSRect(x: 0, y: 0, width: side * 4, height: side).fill()
+    NSRect(x: 0, y: 0, width: side * states.count, height: side).fill()
     for (i, st) in states.enumerated() {
         let v = DockTileView(frame: NSRect(x: 0, y: 0, width: side, height: side))
-        (v.cover, v.progress, v.paused, v.isStream) = st
+        (v.cover, v.progress, v.paused, v.isStream, v.waveform, v.stopped) = st
         let ctx = NSGraphicsContext.current!.cgContext
         ctx.saveGState()
         ctx.translateBy(x: CGFloat(i * side), y: 0)
@@ -1201,6 +1269,8 @@ if CommandLine.arguments.contains("--test-schedule") {
         check((try? dec.decode(WidgetState.self, from: data)) != nil, "widget: state round-trips as JSON")
     }
     check(MusicAmpCommand.allCases.allSatisfy { MusicAmpCommand(rawValue: $0.url.host ?? "") == $0 }, "commands: musicamp:// URLs map back")
+    check(MusicAmpCommand.allCases.allSatisfy { MusicAmpCommand(rawValue: $0.launchURL.host ?? "") == $0 && ($0.launchURL.query ?? "") == "dock=1" },
+          "commands: launch URLs (MusicAmp closed) carry dock=1 and map back")
     check(WidgetShared.folder.path.hasSuffix("Library/Application Support/MusicAmp/Widget"), "widget folder under the real home")
     print(fails == 0 ? "ALL OK" : "\(fails) FAILED")
     exit(fails == 0 ? 0 : 1)

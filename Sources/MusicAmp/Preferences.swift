@@ -89,7 +89,10 @@ private struct GeneralTab: View {
             }
             Section("Menu Bar, Dock and Notifications") {
                 Toggle("Mini player in the menu bar", isOn: ctl.binding(\.menuBarEnabled))
-                Toggle("Cover and progress in the Dock icon", isOn: ctl.binding(\.dockIconLive))
+                Toggle("Cover and waveform in the Dock icon", isOn: ctl.binding(\.dockIconLive))
+                Toggle("Close button keeps the music playing in the Dock", isOn: ctl.binding(\.closeToDock))
+                Text("Closed, MusicAmp lives in its Dock icon: click it to play or pause, right-click for the controls and Show Player. Quit with ⌘Q.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("Notify on track change", isOn: ctl.binding(\.notifyTrackChange))
                 Toggle("Only when MusicAmp is in the background", isOn: ctl.binding(\.notifyOnlyInBackground))
                     .disabled(!ctl.notifyTrackChange)

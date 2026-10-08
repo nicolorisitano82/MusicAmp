@@ -37,6 +37,7 @@ Le singole suite:
 | `--test-vocal` | Rimozione della voce su uno stereo generato: voce al centro a 440 Hz rimossa, strumento solo a sinistra e basso al centro conservati, forza al 50%, spenta = inalterato |
 | `--test-smart` | Transizioni intelligenti: misura del silenzio in testa e in coda, nessun buco tra album diversi, silenzio conservato nello stesso album e con l'opzione spenta |
 | `--test-sonic` | Analisi sonora su musica generata: tempo, tonalità, timbro; brani simili, Sonic Radio, viaggio sonoro e il suo riordino |
+| `--test-dock` | Modalità Dock a volume zero: il clic sull'icona suona e mette in pausa, menu del Dock, icona che avanza, esclusione con il Mini Tile, Show Player |
 | `--test-spoken` | Podcast: trova le pause lunghe e ignora quelle brevi, la posizione avanza più del tempo reale con i silenzi accorciati, Voice Boost alza la voce bassa più di quella forte senza saturare |
 | `--test-crossfeed` | Crossfeed: livello dei bassi passati all'altro canale per ogni preset, acuti quasi intatti, livello del mono invariato |
 | `--test-waveform [cartella]` | Barra a forma d'onda: livelli di un file generato, segmento `.cue`, FFmpeg contro nativo, cache, render della barra (spenta = pixel identici, accesa = solo la scanalatura); con `MUSICAMP_WAVE_SKIN` e `MUSICAMP_WAVE_FILE` usa una skin e un brano veri e salva i PNG nella cartella |

@@ -35,8 +35,7 @@ final class WidgetBridge {
         case .previous: c.previous()
         case .stop: c.stop()
         case .open:
-            NSApp.activate(ignoringOtherApps: true)
-            c.mainWindow.makeKeyAndOrderFront(nil)
+            c.showPlayer()   // also leaves Dock mode and the mini tile
         }
     }
 
@@ -106,6 +105,9 @@ final class WidgetBridge {
             s.album = t.album
         }
         if artworkFor == t.url { s.artwork = artworkName } else { loadArtwork(t.url) }
+        if !t.isStream, let w = WaveformStore.shared.waveform(for: t.url) {
+            s.waveform = (0..<48).map { i in w.level(from: Double(i) / 48, to: Double(i + 1) / 48) }
+        }
         return s
     }
 
@@ -120,6 +122,7 @@ final class WidgetBridge {
         try? data.write(to: WidgetShared.stateFile, options: .atomic)
         last = s
         WidgetCenter.shared.reloadTimelines(ofKind: WidgetShared.kind)
+        WidgetCenter.shared.reloadTimelines(ofKind: WidgetShared.tileKind)
     }
 
     /// A 300 px PNG of the cover, under a name unique to the track; older covers are removed.

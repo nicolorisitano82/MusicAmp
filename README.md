@@ -34,7 +34,7 @@ Un player audio minimale e nativo per macOS, compatibile con le skin classiche d
 - **Vista copertina** grande con comandi e la striscia degli album della playlist, anche a schermo intero.
 - **macOS:**
   - tasti multimediali e "In riproduzione", mini controller nella barra dei menu, notifiche;
-  - icona del Dock dinamica: durante l'ascolto mostra la copertina con la barra di avanzamento;
+  - icona del Dock dinamica con copertina e forma d'onda; chiudendo il player la musica continua e l'icona del Dock diventa il telecomando (clic = play/pausa, clic destro = comandi); in alternativa un Mini Tile flottante;
   - VoiceOver e scorciatoie globali;
   - azioni per Comandi rapidi e Siri, widget "Now Playing" per scrivania e Centro Notifiche, URL `musicamp://`;
   - finestre agganciate viste come una sola in Mission Control.
@@ -54,6 +54,8 @@ Opzionale (Impostazioni → Visualization): l'onda del brano è disegnata dentro
 ### Widget
 
 ![Widget Now Playing nelle misure piccola, media e grande](docs/images/widget.png)
+
+![Widget Mini Tile: in riproduzione, in pausa, radio](docs/images/widget-mini-tile.png)
 
 ### EQ parametrico per cuffie
 

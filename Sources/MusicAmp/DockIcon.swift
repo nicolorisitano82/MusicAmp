@@ -1,8 +1,9 @@
 import AppKit
 
-/// Dynamic Dock icon: while a track is loaded the icon becomes its cover (the app icon when it has none) with a
-/// progress bar along the bottom; paused it dims and shows a pause sign; radio shows "LIVE" instead of the bar.
-/// Back to the normal icon when playback stops. Settings → General → "Cover and progress in the Dock icon".
+/// Dynamic Dock icon: while a track is loaded the icon becomes its cover (the app icon when it has none) with the
+/// track's waveform along the bottom (green up to the playhead; a plain bar until the waveform is ready); paused it
+/// dims and shows a pause sign; radio shows "LIVE". Back to the normal icon when playback stops, except in Dock mode,
+/// where the icon is the player and always shows the current track (a play sign when stopped).
 final class DockIcon {
     static let shared = DockIcon()
     private weak var ctl: Ctl?
@@ -20,8 +21,9 @@ final class DockIcon {
     func update() {
         guard let c = ctl else { return }
         let state = c.audio.state
-        guard c.dockIconLive, state != .stopped, c.audio.hasSource, let t = c.playlist.currentTrack else {
-            restore()
+        let dock = DockMode.shared.active
+        guard let t = c.playlist.currentTrack, dock || (c.dockIconLive && state != .stopped && c.audio.hasSource) else {
+            if dock { showIdle() } else { restore() }
             return
         }
         if coverFor != t.url {
@@ -38,8 +40,12 @@ final class DockIcon {
             }
         }
         view.isStream = t.isStream
-        view.paused = state == .paused
-        view.progress = t.isStream || c.audio.duration <= 0 ? nil : min(1, max(0, c.audio.currentTime / c.audio.duration))
+        view.paused = state != .playing
+        view.stopped = state == .stopped
+        view.progress = t.isStream || c.audio.duration <= 0 || state == .stopped ? (state == .stopped && !t.isStream ? 0 : nil)
+            : min(1, max(0, c.audio.currentTime / c.audio.duration))
+        // The waveform (computed in the background the first time; the bar stands in meanwhile).
+        view.waveform = t.isStream ? nil : WaveformStore.shared.waveform(for: t.url)
         if !showing {
             NSApp.dockTile.contentView = view
             showing = true
@@ -67,11 +73,26 @@ final class DockIcon {
 
     private func redraw() {
         // Redraw only when something visible changed (the bar moves by whole points).
-        let sig = "\(coverFor?.absoluteString ?? "")|\(view.cover != nil)|\(view.paused)|\(view.isStream)|\(view.progress.map { Int($0 * 200) } ?? -1)"
+        let sig = "\(coverFor?.absoluteString ?? "")|\(view.cover != nil)|\(view.paused)|\(view.stopped)|\(view.isStream)|\(view.waveform != nil)|\(view.progress.map { Int($0 * 200) } ?? -1)"
         guard sig != lastSignature else { return }
         lastSignature = sig
         view.needsDisplay = true
         NSApp.dockTile.display()
+    }
+
+    /// Dock mode with nothing loaded: the app icon with a play sign.
+    private func showIdle() {
+        timer?.invalidate()
+        timer = nil
+        coverFor = nil
+        view.cover = nil
+        view.waveform = nil
+        view.progress = nil
+        view.isStream = false
+        view.paused = true
+        view.stopped = true
+        if !showing { NSApp.dockTile.contentView = view; showing = true }
+        redraw()
     }
 
     private func restore() {
@@ -91,7 +112,9 @@ final class DockTileView: NSView {
     var cover: NSImage?
     var progress: Double?
     var paused = false
+    var stopped = false
     var isStream = false
+    var waveform: Waveform?
 
     override func draw(_ dirty: NSRect) {
         let b = bounds
@@ -142,6 +165,18 @@ final class DockTileView: NSView {
             ])
             let ts = text.size()
             text.draw(at: NSPoint(x: art.midX - ts.width / 2, y: bar.midY - ts.height / 2))
+        } else if let p = progress, let w = waveform {
+            // The waveform: thin bars, green up to the playhead.
+            let area = NSRect(x: art.minX + inset * 0.7, y: art.minY + art.height * 0.06, width: art.width - inset * 1.4, height: art.height * 0.2)
+            let bars = 30
+            let bw = area.width / CGFloat(bars)
+            for i in 0..<bars {
+                let a = Double(i) / Double(bars), b = Double(i + 1) / Double(bars)
+                let h = max(art.height * 0.012, CGFloat(w.level(from: a, to: b)) * area.height)
+                let r = NSRect(x: area.minX + CGFloat(i) * bw + bw * 0.12, y: area.midY - h / 2, width: bw * 0.76, height: h)
+                (a < p ? NSColor(red: 0.2, green: 0.95, blue: 0.2, alpha: 1) : NSColor.white.withAlphaComponent(0.55)).setFill()
+                NSBezierPath(roundedRect: r, xRadius: bw * 0.3, yRadius: bw * 0.3).fill()
+            }
         } else if let p = progress {
             NSColor.white.withAlphaComponent(0.3).setFill()
             NSBezierPath(roundedRect: bar, xRadius: barH / 2, yRadius: barH / 2).fill()
@@ -151,7 +186,15 @@ final class DockTileView: NSView {
             NSColor(red: 0.2, green: 0.95, blue: 0.2, alpha: 1).setFill()
             NSBezierPath(roundedRect: done, xRadius: barH / 2, yRadius: barH / 2).fill()
         }
-        if paused {
+        if stopped {
+            // Stopped (Dock mode): a play sign, since a click starts playback.
+            let h = art.height * 0.3, w = h * 0.86
+            let x = art.midX - w * 0.4, y = art.midY - h / 2 + art.height * 0.05
+            let tri = NSBezierPath()
+            tri.move(to: NSPoint(x: x, y: y)); tri.line(to: NSPoint(x: x, y: y + h)); tri.line(to: NSPoint(x: x + w, y: y + h / 2)); tri.close()
+            NSColor.white.withAlphaComponent(0.92).setFill()
+            tri.fill()
+        } else if paused {
             let w = art.width * 0.075, h = art.height * 0.26, gap = w * 0.8
             NSColor.white.withAlphaComponent(0.92).setFill()
             for dx in [-gap / 2 - w, gap / 2] {

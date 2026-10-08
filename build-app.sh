@@ -61,6 +61,9 @@ cp vendor/ffmpeg/ffmpeg vendor/ffmpeg/ffprobe "$APP/Contents/Helpers/"
 cp vendor/ffmpeg/LICENSE.txt vendor/ffmpeg/SOURCE.txt "$APP/Contents/Resources/FFmpeg/"
 codesign --force --sign - "$APP/Contents/Helpers/ffmpeg" "$APP/Contents/Helpers/ffprobe" >/dev/null
 codesign --force --sign - "$APP" >/dev/null
+# Keep this build copy out of Launch Services: two apps with the same bundle id (this one and the installed one)
+# make the widget extension record flip between them and the widget gallery drop MusicAmp's widgets.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$PWD/$APP" >/dev/null 2>&1 || true
 echo "OK: $APP"
 
 [[ "${1:-}" == "--no-dmg" ]] && exit 0

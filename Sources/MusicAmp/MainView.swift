@@ -296,7 +296,7 @@ final class MainView: SkinView {
         case "options", "clutterO": popUp(ctl.optionsMenu(), at: CGPoint(x: id == "options" ? 6 : 18, y: id == "options" ? 12 : 25))
         case "minimize": NSApp.hide(nil)
         case "shade": ctl.toggleMainShade()
-        case "close": NSApp.terminate(nil)
+        case "close": if ctl.closeToDock { DockMode.shared.enter() } else { NSApp.terminate(nil) }
         case "clutterA": ctl.toggleAlwaysOnTop()
         case "clutterI": ctl.fileInfo()
         case "clutterD": ctl.toggleDoubleSize()
@@ -363,7 +363,7 @@ final class MainView: SkinView {
             button("options", "Options Menu", rect["options"]!),
             button("minimize", "Hide", rect["minimize"]!),
             toggle("shade", "Shade Mode", rect["shade"]!, ctl.mainShade),
-            button("close", "Quit", rect["close"]!),
+            button("close", ctl.closeToDock ? "Close (keeps playing in the Dock)" : "Quit", rect["close"]!),
         ]
         return items
     }

@@ -46,6 +46,7 @@ SUITES=(
     "sonic|--test-sonic|none|120|sonic analysis (tempo, key, timbre), radio, journey, smoothing"
     "stats|--test-stats|none|60|play counts, skips, ratings, smart playlist rules (genre, year, BPM, key)"
     "schedule|--test-schedule|none|30|alarm times, fades, widget state, musicamp:// URLs"
+    "dock|--test-dock|none|60|Dock mode: icon click plays/pauses, Dock menu, live icon, mini tile"
     "milkdrop|--test-milkdrop|none|300|NS-EEL, .milk parsing, HLSL→Metal shaders, offscreen renders"
     "karaoke|--karaoke-sweep|none|120|karaoke rendering: no flicker, no layout jumps|flickers 0"
     "tags|--test-tags|ffmpeg|180|tag writing: MP3 ID3v2.3/2.4, FLAC, M4A, ratings (POPM, RATING), playlist genre/year"

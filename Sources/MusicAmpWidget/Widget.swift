@@ -9,7 +9,10 @@ import WidgetKit
 
 @main
 struct MusicAmpWidgets: WidgetBundle {
-    var body: some Widget { NowPlayingWidget() }
+    var body: some Widget {
+        NowPlayingWidget()
+        MiniTileWidget()
+    }
 }
 
 struct NowPlayingWidget: Widget {
@@ -113,7 +116,8 @@ struct NowPlayingView: View {
     private var s: WidgetState { entry.state }
 
     var body: some View {
-        if !s.running || !s.hasTrack {
+        // Closed, MusicAmp still shows its last track: the buttons launch it hidden in the Dock.
+        if !s.hasTrack {
             idle
         } else {
             switch family {
@@ -133,7 +137,7 @@ struct NowPlayingView: View {
             Text(s.running ? "Add music to the playlist." : "Click to open it.").font(.caption).foregroundStyle(Theme.dim)
             Spacer()
             if s.running { controls(size: 15) } else {
-                Link(destination: MusicAmpCommand.play.url) {
+                Link(destination: MusicAmpCommand.play.launchURL) {
                     Label("Play", systemImage: "play.fill").font(.caption.bold())
                 }
                 .foregroundStyle(Theme.lcd)
@@ -261,9 +265,9 @@ struct NowPlayingView: View {
 
     private func controls(size: CGFloat) -> some View {
         HStack(spacing: size * 1.4) {
-            Button(intent: WidgetPreviousIntent()) { Image(systemName: "backward.fill") }
+            command(.previous, WidgetPreviousIntent()) { Image(systemName: "backward.fill") }
             playPause(size: size * 1.25)
-            Button(intent: WidgetNextIntent()) { Image(systemName: "forward.fill") }
+            command(.next, WidgetNextIntent()) { Image(systemName: "forward.fill") }
         }
         .buttonStyle(.plain)
         .font(.system(size: size))
@@ -272,7 +276,7 @@ struct NowPlayingView: View {
     }
 
     private func playPause(size: CGFloat) -> some View {
-        Button(intent: WidgetPlayPauseIntent()) {
+        command(.playPause, WidgetPlayPauseIntent()) {
             Image(systemName: s.playing ? "pause.circle.fill" : "play.circle.fill")
                 .font(.system(size: size))
                 .foregroundStyle(Theme.lcd)
@@ -280,8 +284,146 @@ struct NowPlayingView: View {
         .buttonStyle(.plain)
     }
 
+    /// Running: the intent (no launch, no focus change). Closed: a link that starts MusicAmp hidden in the Dock.
+    @ViewBuilder private func command<I: AppIntent, L: View>(_ c: MusicAmpCommand, _ intent: I, @ViewBuilder label: () -> L) -> some View {
+        if s.running {
+            Button(intent: intent, label: label)
+        } else {
+            Link(destination: (c == .playPause ? MusicAmpCommand.play : c).launchURL, label: label)
+        }
+    }
+
     static func mmss(_ t: Double) -> String {
         let t = max(0, Int(t))
         return String(format: "%d:%02d", t / 60, t % 60)
+    }
+}
+
+// MARK: - Mini Tile widget
+
+/// The mini tile as a widget: the cover edge to edge, the waveform green up to the playhead, a play sign when
+/// paused; a tap anywhere plays or pauses. The progress moves through timeline entries every 5 seconds.
+struct MiniTileWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: WidgetShared.tileKind, provider: TileProvider()) { entry in
+            MiniTileView(entry: entry)
+                .containerBackground(for: .widget) { MiniTileView.background(entry) }
+        }
+        .configurationDisplayName("Mini Tile")
+        .description("The cover and the waveform of what MusicAmp is playing. Tap to play or pause.")
+        .supportedFamilies([.systemSmall])
+        .contentMarginsDisabled()
+    }
+}
+
+struct TileProvider: TimelineProvider {
+    func placeholder(in context: Context) -> Entry { Entry(date: Date(), state: .sample, artwork: nil) }
+
+    func getSnapshot(in context: Context, completion: @escaping (Entry) -> Void) {
+        let s = WidgetShared.readState() ?? WidgetState()
+        completion(context.isPreview && !s.hasTrack ? Entry(date: Date(), state: .sample, artwork: nil) : entry(s, Date()))
+    }
+
+    func getTimeline(in context: Context, completion: @escaping (Timeline<Entry>) -> Void) {
+        let s = WidgetShared.readState() ?? WidgetState()
+        let now = Date()
+        guard s.playing, s.duration > 0, !s.isStream else {
+            completion(Timeline(entries: [entry(s, now)], policy: .never))
+            return
+        }
+        // An entry every 5 s until the track ends (at most 10 minutes); MusicAmp reloads on every change anyway.
+        let left = max(0, s.duration - s.elapsed - now.timeIntervalSince(s.updated))
+        let count = min(120, Int(left / 5) + 1)
+        let entries = (0..<count).map { entry(s, now.addingTimeInterval(Double($0) * 5)) }
+        completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(min(left, 600) + 1))))
+    }
+
+    private func entry(_ s: WidgetState, _ d: Date) -> Entry {
+        Entry(date: d, state: s, artwork: s.artwork.flatMap { NSImage(contentsOf: WidgetShared.folder.appendingPathComponent($0)) })
+    }
+}
+
+struct MiniTileView: View {
+    let entry: Entry
+    private var s: WidgetState { entry.state }
+
+    /// Seconds into the track at this entry's time.
+    private var progress: Double {
+        guard s.duration > 0 else { return 0 }
+        let t = s.elapsed + (s.playing ? entry.date.timeIntervalSince(s.updated) : 0)
+        return min(1, max(0, t / s.duration))
+    }
+
+    @ViewBuilder static func background(_ entry: Entry) -> some View {
+        if let img = entry.artwork {
+            Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
+        } else {
+            ZStack {
+                Theme.background
+                Image(systemName: entry.state.isStream ? "dot.radiowaves.left.and.right" : "music.note")
+                    .font(.system(size: 48)).foregroundStyle(Theme.lcd.opacity(0.6))
+            }
+        }
+    }
+
+    var body: some View {
+        if s.running {
+            Button(intent: WidgetPlayPauseIntent()) { tile }.buttonStyle(.plain)
+        } else {
+            // Closed: a tap launches MusicAmp hidden in the Dock and plays the last track.
+            Link(destination: MusicAmpCommand.play.launchURL) { tile }
+        }
+    }
+
+    private var tile: some View {
+            ZStack {
+                if !s.hasTrack {
+                    Color.black.opacity(0.4)
+                    Text(s.running ? "Nothing playing" : "MusicAmp isn't running").font(.caption.bold()).foregroundStyle(.white)
+                } else {
+                    VStack(spacing: 0) {
+                        Spacer()
+                        ZStack(alignment: .bottom) {
+                            LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom).frame(height: 70)
+                            strip.padding(.horizontal, 12).padding(.bottom, 12)
+                        }
+                    }
+                    if !s.playing {
+                        Color.black.opacity(0.3)
+                        Image(systemName: "play.fill").font(.system(size: 40, weight: .bold)).foregroundStyle(.white.opacity(0.92))
+                            .shadow(radius: 4).offset(y: -12)
+                    }
+                }
+            }
+    }
+
+    @ViewBuilder private var strip: some View {
+        if s.isStream {
+            HStack {
+                Text("● LIVE").font(.system(size: 11, weight: .heavy)).foregroundStyle(Theme.lcd)
+                Spacer()
+            }
+        } else if let w = s.waveform, !w.isEmpty {
+            GeometryReader { g in
+                HStack(alignment: .center, spacing: 1) {
+                    ForEach(0..<w.count, id: \.self) { i in
+                        let played = Double(i) / Double(w.count) < progress
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(played ? Theme.lcd : Color.white.opacity(0.5))
+                            .frame(height: max(2, CGFloat(w[i]) * g.size.height))
+                    }
+                }
+                .frame(maxHeight: .infinity)
+            }
+            .frame(height: 26)
+        } else {
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.white.opacity(0.3))
+                    Capsule().fill(Theme.lcd).frame(width: g.size.width * progress)
+                }
+            }
+            .frame(height: 4)
+        }
     }
 }

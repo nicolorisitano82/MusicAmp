@@ -8,6 +8,8 @@ public enum MusicAmpCommand: String, CaseIterable, Sendable {
     /// Posted by the widget's buttons (a sandboxed extension can post distributed notifications, names only).
     public var notificationName: Notification.Name { Notification.Name("com.genomeup.musicamp.command." + rawValue) }
     public var url: URL { URL(string: "musicamp://" + rawValue)! }
+    /// The same command for when MusicAmp is closed: it launches hidden in the Dock (no windows) and runs it.
+    public var launchURL: URL { URL(string: "musicamp://" + rawValue + "?dock=1")! }
 }
 
 public struct WidgetState: Codable, Equatable, Sendable {
@@ -29,6 +31,8 @@ public struct WidgetState: Codable, Equatable, Sendable {
     public var sleepEndOfTrack = false
     public var alarm: Date?
     public var ringing = false
+    /// The track's waveform, 48 levels 0…1 (the Mini Tile widget draws it); nil for radio or while computing.
+    public var waveform: [Float]?
 
     public init() {}
 
@@ -43,6 +47,7 @@ public struct WidgetState: Codable, Equatable, Sendable {
 
 public enum WidgetShared {
     public static let kind = "MusicAmpNowPlaying"
+    public static let tileKind = "MusicAmpMiniTile"
 
     /// The real home folder, also from inside the widget's sandbox (where NSHomeDirectory() is the container).
     public static var realHome: URL {

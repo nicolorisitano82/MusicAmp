@@ -50,13 +50,49 @@ L'intestazione "MUSICAMP" in verde Winamp mostra lo stato, il conto alla rovesci
 
 Il widget compare nella galleria (clic destro sulla scrivania → Modifica widget) dopo il primo avvio dell'app. `pluginkit -m -p com.apple.widgetkit-extension` deve elencare `com.genomeup.musicamp.widget`.
 
+## Modalità Dock e Mini Tile
+
+`IconMode.swift`. Sono due modi di ridurre il player; uno esclude l'altro.
+
+**Modalità Dock** (⇧⌥⌘O, oppure la X della finestra principale):
+- Tutte le finestre si nascondono e MusicAmp resta nell'icona del Dock: la musica continua.
+- **Clic sull'icona:** play/pausa (`applicationShouldHandleReopen`). Con la playlist vuota mostra invece il player.
+- **Menu dell'icona** (clic destro o pressione prolungata, `applicationDockMenu`): il brano in corso, Play/Pausa, Next, Previous, voto, timer di spegnimento, "Show Player" e Mini Tile. Lo stesso menu c'è anche fuori da questa modalità.
+- Di default la X della finestra principale porta qui invece di uscire. In Impostazioni → General si torna al comportamento di Winamp ("chiudi = esci"). ⌘Q esce sempre.
+- Per tornare al player: "Show Player" (⌥⌘P) dal menu del Dock o dal menu Vista.
+
+**Mini Tile** (⌥⌘O): un riquadro flottante con la copertina, la forma d'onda e l'avanzamento.
+- **Clic sul riquadro:** play/pausa. **Clic sulla forma d'onda:** salta a quel punto. **Trascinamento:** lo sposta, e la posizione viene ricordata.
+- **Passaggio del mouse:** titolo, brano precedente/successivo e un pulsante per il player completo.
+- **Clic destro:** dimensione (piccola, media, grande) e "Keep on Top".
+- Per le radio, al posto della forma d'onda, uno spettro dal vivo con "LIVE".
+- Si riapre all'avvio se era attivo alla chiusura.
+
 ## Icona del Dock dinamica
 
-`DockIcon.swift`: mentre un brano è caricato l'icona del Dock diventa la sua copertina, nella forma delle icone di macOS, con una barra di avanzamento verde in basso. Senza copertina resta l'icona dell'app con la barra. In pausa l'icona si scurisce e compare il simbolo di pausa; per le radio c'è "● LIVE" al posto della barra. Allo stop torna l'icona normale.
+`DockIcon.swift`: mentre un brano è caricato l'icona del Dock diventa la sua copertina, nella forma delle icone di macOS, con la forma d'onda del brano in basso: verde fino al punto di ascolto, bianca dopo. Finché la forma d'onda non è pronta compare una barra di avanzamento. Senza copertina resta l'icona dell'app. In modalità Dock l'icona mostra il brano anche da fermo, con il simbolo play. In pausa l'icona si scurisce e compare il simbolo di pausa; per le radio c'è "● LIVE" al posto della barra. Allo stop torna l'icona normale.
 
 - Si disegna con una vista come `NSDockTile.contentView`, aggiornata una volta al secondo solo durante la riproduzione, e ridisegnata solo quando cambia qualcosa di visibile.
 - Si spegne in Impostazioni → General → "Cover and progress in the Dock icon".
 - `--dock-snapshot out.png [copertina]` disegna i quattro stati per controllarli.
+
+### Con MusicAmp chiuso
+
+Un widget non può riprodurre audio: è un processo isolato che disegna e poi si ferma. Però può avviare MusicAmp.
+- Alla chiusura MusicAmp lascia nello stato del widget l'ultimo brano (copertina, titolo, forma d'onda, posizione), e i widget continuano a mostrarlo.
+- Con l'app chiusa i pulsanti diventano link `musicamp://play?dock=1` (oppure `next`, `previous`). MusicAmp parte nascosto nella modalità Dock, senza finestre, e riprende la playlist. Da lì l'icona del Dock e i widget lo comandano come sempre.
+- `musicamp://open` riporta il player completo.
+
+### Widget "Mini Tile"
+
+Un secondo widget, solo nella misura piccola, con l'aspetto del Mini Tile:
+- la copertina a tutta superficie;
+- la forma d'onda del brano, 48 livelli che l'app scrive nello stato del widget, verde fino al punto di ascolto;
+- un simbolo play in pausa, "● LIVE" per le radio.
+
+Un tocco ovunque fa play/pausa (`Button(intent:)` su tutto il riquadro). L'avanzamento si muove con voci della cronologia ogni 5 s, fino alla fine del brano (al massimo 10 minuti); ogni cambio nell'app ricarica entrambi i widget. Un widget non permette né il passaggio del mouse né il salto con il clic sulla forma d'onda: quelli restano nel Mini Tile dell'app.
+
+**Se un widget non compare nella galleria:** dev'esserci una sola copia di MusicAmp registrata (quella in Applicazioni). Due copie con lo stesso identificativo fanno alternare il record dell'estensione, e chronod ne scarta le descrizioni. Per questo `build-app.sh` toglie dal registro la copia in `build/`.
 
 ## URL `musicamp://`
 
@@ -65,7 +101,8 @@ Utili da script, link o dall'azione "Apri URL":
 | URL | Effetto |
 | --- | --- |
 | `musicamp://play`, `pause`, `playpause`, `next`, `previous`, `stop` | Comandi di riproduzione |
-| `musicamp://open` | Porta MusicAmp in primo piano |
+| `musicamp://open` | Porta MusicAmp in primo piano (ed esce dalla modalità Dock o dal Mini Tile) |
+| `…?dock=1` | Se MusicAmp è chiuso, lo avvia nascosto nella modalità Dock prima di eseguire il comando (lo usano i widget) |
 | `musicamp://volume?level=40` | Volume |
 | `musicamp://sleep?minutes=30` | Timer (con `minutes=0` lo spegne) |
 | `musicamp://sleep?end=track` | Stop a fine brano |

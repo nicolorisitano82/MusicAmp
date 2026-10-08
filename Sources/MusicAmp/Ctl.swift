@@ -72,6 +72,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var fadeScale: Double = 1 { didSet { if fadeScale != oldValue { audio.setVolume(volume * fadeScale) } } }
     /// Settings tab to show (the Timer menu item opens its tab).
     var prefsTab: PrefsTab = .general { didSet { notify() } }
+    /// Launched by a widget while closed: no windows, straight into Dock mode.
+    var startInDock = false
     /// Set once `start()` has run (App Intents may arrive while the app is still launching).
     private(set) var started = false
     var balance: Double = 0 { didSet { audio.setBalance(balance) } }
@@ -112,6 +114,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var waveSeekBar = false { didSet { notify(); mainView.needsDisplay = true } }
     /// The Dock icon shows the cover and progress while playing.
     var dockIconLive = true { didSet { notify(); DockIcon.shared.update() } }
+    /// The main window's close button hides the player into the Dock (music goes on) instead of quitting.
+    var closeToDock = true { didSet { notify() } }
     var plUseSkinFont = true { didSet { notify() } }
     var ffmpegEnabled = true { didSet { FFmpeg.enabled = ffmpegEnabled; notify() } }
     /// Seconds of radio audio buffered before playback starts (and after an underrun).
@@ -254,10 +258,14 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         HotKeys.shared.apply()
         restorePlaylist()
 
-        mainWindow.makeKeyAndOrderFront(nil)
-        if eqVisible { eqWindow.orderFront(nil) }
-        if plVisible { plWindow.orderFront(nil) }
-        updateWindowGroups()
+        if startInDock {
+            DockMode.shared.enter()
+        } else {
+            mainWindow.makeKeyAndOrderFront(nil)
+            if eqVisible { eqWindow.orderFront(nil) }
+            if plVisible { plWindow.orderFront(nil) }
+            updateWindowGroups()
+        }
         if ProcessInfo.processInfo.environment["MUSICAMP_TEST_GROUPS"] != nil { debugGroupSequence() }
         if let dir = ProcessInfo.processInfo.environment["MUSICAMP_TAG_DEMO"] {
             // Debug: opens the tag editor on the audio files of a folder (used for screenshots with test files).
@@ -290,7 +298,14 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             let tabs: [String: PrefsTab] = ["general": .general, "audio": .audio, "headphones": .headphones, "vis": .vis,
                                             "playlist": .playlist, "timer": .timer, "shortcuts": .shortcuts, "skins": .skins]
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                if tab == "sonic" {
+                if tab == "icon" {
+                    // Debug: icon mode on a file (not played), MUSICAMP_ICON_FILE.
+                    if let f = ProcessInfo.processInfo.environment["MUSICAMP_ICON_FILE"] {
+                        self.playlist.add([URL(fileURLWithPath: f)])
+                        self.playlist.currentTrack = self.playlist.tracks.last
+                    }
+                    IconMode.shared.enter()
+                } else if tab == "sonic" {
                     self.openSonicMix(seed: SonicMixModel.shared.pool.map(\.url).sorted { $0.path < $1.path }.first, destination: nil)
                 } else if tab == "smart" { self.showSmartPlaylists() } else { self.openPreferences(tab: tabs[tab] ?? .general) }
             }
@@ -312,10 +327,13 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         WaveformStore.shared.onReady = { [weak self] url in
             guard let self, self.playlist.currentTrack?.url == url else { return }
             self.mainView.needsDisplay = true
+            DockIcon.shared.update()
+            WidgetBridge.shared.setNeedsUpdate()
             self.notify()
         }
         WidgetBridge.shared.start(ctl: self)
         DockIcon.shared.start(ctl: self)
+        IconMode.shared.restoreAtLaunch()
         started = true
     }
 
@@ -606,7 +624,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
                                  duration: audio.hasSource ? audio.duration : 0, now: now)
         let showVis = visShown
         let lyricsOpen = lyricsWindowRef?.isVisible == true || karaokeWindowRef?.isVisible == true
-            || albumArtWindowRef?.isVisible == true   // these views follow the music
+            || albumArtWindowRef?.isVisible == true || IconMode.shared.active   // these views follow the music
         audio.analysisEnabled = playing && (showVis || audio.milkdropEnabled || lyricsOpen)
         var animating = false
         if showVis {
@@ -1429,6 +1447,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         m.addItem(rate)
         item(m, "Smart Playlists…", #selector(showSmartPlaylists))
         item(m, "Sonic Mix…", #selector(showSonicMix))
+        item(m, "Mini Tile", #selector(toggleIconMode))
+        item(m, "Dock Mode", #selector(toggleDockMode))
         m.addItem(.separator())
         let q = NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         m.addItem(q)
@@ -1645,6 +1665,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         case #selector(toggleWaveSeekBar): on(waveSeekBar)
         case #selector(toggleVocalRemover): on(vocalRemoval > 0)
         case #selector(toggleVoiceBoost): on(voiceBoost)
+        case #selector(toggleIconMode): on(IconMode.shared.active)
+        case #selector(toggleDockMode): on(DockMode.shared.active)
         case #selector(toggleShortenSilences): on(shortenSilences)
         case #selector(toggleAlwaysOnTop): on(alwaysOnTop)
         case #selector(toggleTimeRemaining): on(timeRemaining)
@@ -1768,6 +1790,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         ratingsInTags = bool("ratingsInTags", true)
         waveSeekBar = bool("waveSeekBar", false)
         dockIconLive = bool("dockIconLive", true)
+        closeToDock = bool("closeToDock", true)
         plUseSkinFont = bool("plUseSkinFont", true)
         radioBuffer = dbl("radioBuffer", 2)
         musicSpeed = dbl("musicSpeed", 1)
@@ -1804,7 +1827,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             "snapEnabled": snapEnabled, "snapDistance": snapDistance, "marqueeScroll": marqueeScroll,
             "resumeOnLaunch": resumeOnLaunch, "visThinBands": visThinBands, "visPeaksOn": visPeaksOn,
             "visFalloff": visFalloff, "peakFalloff": peakFalloff, "oscStyle": oscStyle, "plFontSize": plFontSize,
-            "plShowNumbers": plShowNumbers, "plTree": plTree, "plShowRatings": plShowRatings, "ratingsInTags": ratingsInTags, "waveSeekBar": waveSeekBar, "dockIconLive": dockIconLive, "plUseSkinFont": plUseSkinFont, "autoDownloadFonts": autoDownloadFonts,
+            "plShowNumbers": plShowNumbers, "plTree": plTree, "plShowRatings": plShowRatings, "ratingsInTags": ratingsInTags, "waveSeekBar": waveSeekBar, "dockIconLive": dockIconLive, "closeToDock": closeToDock, "plUseSkinFont": plUseSkinFont, "autoDownloadFonts": autoDownloadFonts,
             "menuBarEnabled": menuBarEnabled, "notifyTrackChange": notifyTrackChange,
             "notifyOnlyInBackground": notifyOnlyInBackground,
             // Plain files as paths; cue tracks keep their "#track=N" fragment, so they are saved as URLs.
