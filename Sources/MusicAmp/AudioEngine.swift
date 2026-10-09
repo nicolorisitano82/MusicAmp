@@ -654,6 +654,38 @@ final class AudioEngine {
 
     // MARK: Private
 
+    // MARK: Bridge (external player's captured audio)
+
+    private var bridgeNode: AVAudioSourceNode?
+    /// An external player's audio (Music, Spotify) is coming in.
+    private(set) var bridgeActive = false
+
+    /// Plays the captured audio of an external app through the chain (deck mixer input 2): EQs, analysis, outputs.
+    func startBridge(ring: AudioRing, sampleRate: Double) {
+        stopBridge()
+        stop()   // MusicAmp's own playback steps aside
+        guard let fmt = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2) else { return }
+        let node = AVAudioSourceNode(format: fmt) { _, _, frames, abl in
+            let b = UnsafeMutableAudioBufferListPointer(abl)
+            guard b.count >= 2, let l = b[0].mData?.assumingMemoryBound(to: Float.self), let r = b[1].mData?.assumingMemoryBound(to: Float.self) else { return noErr }
+            ring.read(into: l, r, frames: Int(frames))
+            return noErr
+        }
+        engine.attach(node)
+        engine.connect(node, to: deckMixer, fromBus: 0, toBus: 2, format: fmt)
+        bridgeNode = node
+        bridgeActive = true
+        startEngine()
+    }
+
+    func stopBridge() {
+        guard let n = bridgeNode else { return }
+        engine.disconnectNodeOutput(n)
+        engine.detach(n)
+        bridgeNode = nil
+        bridgeActive = false
+    }
+
     private func startEngine() {
         guard !engine.isRunning else { return }
         engine.prepare()

@@ -32,7 +32,7 @@ final class MainView: SkinView {
     private func down(_ id: String) -> Bool { pressed == id && pressInside }
 
     override var renderSignature: Int {
-        let a = ctl.audio
+        let a = ctl.transport
         var h = Hasher()
         h.combine(isActive); h.combine(ObjectIdentifier(skin)); h.combine(shade)
         h.combine("\(a.state)"); h.combine(Int(a.currentTime)); h.combine(a.state == .paused && ctl.blinkOn)
@@ -54,13 +54,13 @@ final class MainView: SkinView {
         guard ctl.waveSeekBar, let t = ctl.playlist.currentTrack, !t.isStream else { return nil }
         return WaveformStore.shared.waveform(for: t.url)
     }
-    private var loaded: Bool { ctl.audio.hasSource && ctl.audio.state != .stopped }
+    private var loaded: Bool { ctl.transport.hasSource && ctl.transport.state != .stopped }
 
     // MARK: Render
 
     override func render(_ r: Renderer) {
         if shade { renderShade(r); return }
-        let a = ctl.audio
+        let a = ctl.transport
         r.blit("main", R(0, 0, 275, 116), 0, 0)
         // Easter egg (⌃⇧ + "nullsoft"): the "It really whips the llama's ass" title bar rows of TITLEBAR.BMP.
         let titleY: CGFloat = ctl.easterEgg ? (isActive ? 57 : 72) : (isActive ? 0 : 15)
@@ -175,7 +175,7 @@ final class MainView: SkinView {
     }
 
     private func drawTime(_ r: Renderer) {
-        let a = ctl.audio
+        let a = ctl.transport
         let cur = seekPreview.map { $0 * a.duration } ?? a.currentTime
         let t = ctl.timeRemaining ? max(0, a.duration - cur) : cur
         let m = (Int(t) / 60) % 100, s = Int(t) % 60
@@ -195,7 +195,7 @@ final class MainView: SkinView {
     }
 
     private func renderShade(_ r: Renderer) {
-        let a = ctl.audio
+        let a = ctl.transport
         r.blit("titlebar", isActive ? R(27, 29, 275, 14) : R(27, 42, 275, 14), 0, 0)
         titleButtons(r, shade: true)
         if a.state == .playing || ctl.snapshotMode { r.visualizer(ctl, R(79, 5, 38, 5), dots: false) }
@@ -247,7 +247,7 @@ final class MainView: SkinView {
 
     override func hitUp(_ p: CGPoint, _ e: NSEvent) {
         if let k = dragKind {
-            if (k == "pos" || k == "shadepos"), let sp = seekPreview { ctl.audio.seek(to: sp * ctl.audio.duration) }
+            if (k == "pos" || k == "shadepos"), let sp = seekPreview { ctl.transport.seek(to: sp * ctl.transport.duration) }
             dragKind = nil
             seekPreview = nil
             ctl.marqueeDragging = false
@@ -275,7 +275,7 @@ final class MainView: SkinView {
             let f = dragKind == "pos" ? (p.x - 16 - 14) / 219 : (p.x - 226 - 1) / 14
             let v = max(0, min(1, Double(f)))
             seekPreview = v
-            let d = ctl.audio.duration
+            let d = ctl.transport.duration
             ctl.marqueeOverride = "SEEK TO: \(Ctl.mmss(v * d))/\(Ctl.mmss(d)) (\(Int(v * 100))%)"
         default: break
         }
@@ -312,7 +312,7 @@ final class MainView: SkinView {
     override var accessibilityName: String { "MusicAmp, main window" }
 
     override func accessibilityItems() -> [AXItem] {
-        let a = ctl.audio
+        let a = ctl.transport
         func button(_ id: String, _ label: String, _ r: CGRect) -> AXItem {
             AXItem(id: id, kind: .button, label: label, rect: r, press: { [weak self] in self?.perform(id, nil) })
         }

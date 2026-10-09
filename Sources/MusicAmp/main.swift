@@ -6,6 +6,9 @@ import AVFoundation
 import Accelerate
 import MusicAmpShared
 
+// Interface language chosen in Settings (before anything is localized).
+AppLanguage.apply()
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var started = false
     private var pending: [URL] = []
@@ -34,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ n: Notification) {
         Ctl.shared.saveSettings()
+        MainActor.assumeIsolated { Outputs.shared.disconnectAll() }   // Chromecast/Sonos back to idle
         WidgetBridge.shared.terminated()
         PlayStats.shared.save()
         Ctl.shared.audio.restoreDeviceRate()   // bit-perfect: give the device its rate back
@@ -54,32 +58,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let c = Ctl.shared
         let bar = NSMenu()
         func sub(_ title: String) -> NSMenu {
-            let it = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            let m = NSMenu(title: title)
+            let it = NSMenuItem(title: L(title), action: nil, keyEquivalent: "")
+            let m = NSMenu(title: L(title))
             it.submenu = m
             bar.addItem(it)
             return m
         }
 
         let app = sub("MusicAmp")
-        app.addItem(withTitle: "About MusicAmp", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        app.addItem(withTitle: L("About MusicAmp"), action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         app.addItem(.separator())
         c.item(app, "Settings…", #selector(Ctl.showPreferences), ",")
         app.addItem(.separator())
-        app.addItem(withTitle: "Hide MusicAmp", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        app.addItem(withTitle: "Quit MusicAmp", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        app.addItem(withTitle: L("Hide MusicAmp"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        app.addItem(withTitle: L("Quit MusicAmp"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         // Standard Edit menu: text fields (library search, preferences, Jump to file) get ⌘A ⌘C ⌘V ⌘X ⌘Z from it.
         let edit = sub("Edit")
-        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-        edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        edit.addItem(withTitle: L("Undo"), action: Selector(("undo:")), keyEquivalent: "z")
+        edit.addItem(withTitle: L("Redo"), action: Selector(("redo:")), keyEquivalent: "Z")
         edit.addItem(.separator())
-        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        let find = edit.addItem(withTitle: "Find in Playlist", action: #selector(Ctl.searchPlaylist), keyEquivalent: "f")
+        edit.addItem(withTitle: L("Cut"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: L("Copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        let find = edit.addItem(withTitle: L("Find in Playlist"), action: #selector(Ctl.searchPlaylist), keyEquivalent: "f")
         find.target = c
-        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        edit.addItem(withTitle: L("Paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: L("Select All"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
 
         let file = sub("File")
         // macOS order: File before Edit.
@@ -95,7 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         file.addItem(.separator())
         c.item(file, "Load Playlist…", #selector(Ctl.loadPlaylistFile))
         c.item(file, "Save Playlist…", #selector(Ctl.savePlaylistFile), "s")
-        let smart = NSMenuItem(title: "Smart Playlists", action: nil, keyEquivalent: "")
+        let smart = NSMenuItem(title: L("Smart Playlists"), action: nil, keyEquivalent: "")
         smart.submenu = SmartPlaylistStore.shared.menu()
         file.addItem(smart)
         file.addItem(.separator())
@@ -115,7 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.item(play, "Queue / Dequeue (Q)", #selector(Ctl.queueSelected))
         c.item(play, "Clear Queue", #selector(Ctl.clearQueue))
         play.addItem(.separator())
-        let speed = NSMenuItem(title: "Speed and Pitch", action: nil, keyEquivalent: "")
+        let speed = NSMenuItem(title: L("Speed and Pitch"), action: nil, keyEquivalent: "")
         speed.submenu = c.speedMenu()
         play.addItem(speed)
         c.item(play, "Back 15 Seconds", #selector(Ctl.skipBack15), String(Character(UnicodeScalar(NSLeftArrowFunctionKey)!)), [.command, .option])
@@ -126,10 +130,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.item(play, "Time Remaining", #selector(Ctl.toggleTimeRemaining))
         play.addItem(.separator())
         c.item(play, "Remove Vocals (Karaoke)", #selector(Ctl.toggleVocalRemover), "v", [.command, .option])
-        let rate = NSMenuItem(title: "Rate Current Track", action: nil, keyEquivalent: "")
+        // Music app / Spotify bridge: behind a feature flag, not in this release.
+        if FeatureFlags.bridge {
+            let source = NSMenuItem(title: L("Source"), action: nil, keyEquivalent: "")
+            let sm = NSMenu(title: L("Source"))
+            c.item(sm, "MusicAmp Playlist", #selector(Ctl.sourceItem(_:)), tag: 0)
+            for (i, app) in ExternalPlayer.App.allCases.enumerated() { c.item(sm, "\(app.name) App (Bridge)", #selector(Ctl.sourceItem(_:)), tag: i + 1) }
+            source.submenu = sm
+            play.addItem(source)
+        }
+        c.item(play, "Speakers (AirPlay, Chromecast, Sonos)…", #selector(Ctl.showSpeakers))
+        let rate = NSMenuItem(title: L("Rate Current Track"), action: nil, keyEquivalent: "")
         rate.submenu = c.ratingMenu(#selector(Ctl.rateCurrent(_:)), current: nil, keys: true)
         play.addItem(rate)
-        let sleep = NSMenuItem(title: "Sleep Timer and Alarm", action: nil, keyEquivalent: "")
+        let sleep = NSMenuItem(title: L("Sleep Timer and Alarm"), action: nil, keyEquivalent: "")
         sleep.submenu = Scheduler.shared.sleepMenu()
         play.addItem(sleep)
 
@@ -158,7 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.item(view, "Double Size", #selector(Ctl.toggleDoubleSize), "d")
         c.item(view, "Group Playlist by Artist and Album", #selector(Ctl.togglePlTree), "g", [.command, .option])
         c.item(view, "Always on Top", #selector(Ctl.toggleAlwaysOnTop), "a", [.option])
-        let vis = NSMenuItem(title: "Visualization", action: nil, keyEquivalent: "")
+        let vis = NSMenuItem(title: L("Visualization"), action: nil, keyEquivalent: "")
         vis.submenu = c.visMenu()
         view.addItem(vis)
 
@@ -1425,6 +1439,227 @@ if CommandLine.arguments.contains("--test-schedule") {
     check(MusicAmpCommand.allCases.allSatisfy { MusicAmpCommand(rawValue: $0.launchURL.host ?? "") == $0 && ($0.launchURL.query ?? "") == "dock=1" },
           "commands: launch URLs (MusicAmp closed) carry dock=1 and map back")
     check(WidgetShared.folder.path.hasSuffix("Library/Application Support/MusicAmp/Widget"), "widget folder under the real home")
+    // Bridge ring buffer: stereo in, stereo out in order, silence when empty, backlog kept short.
+    do {
+        let ring = AudioRing(capacity: 1000, prime: 0)
+        var inter = (0..<200).map { Float($0) }   // 100 stereo frames: L = even, R = odd
+        let n = inter.count
+        inter.withUnsafeMutableBytes { raw in
+            var abl = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(mNumberChannels: 2, mDataByteSize: UInt32(n * 4), mData: raw.baseAddress))
+            withUnsafeMutablePointer(to: &abl) { ring.write(UnsafeMutableAudioBufferListPointer($0), channels: 2, interleaved: true) }
+        }
+        var l = [Float](repeating: -1, count: 120), r = [Float](repeating: -1, count: 120)
+        ring.read(into: &l, &r, frames: 120)
+        check(l[0] == 0 && r[0] == 1 && l[30] == 60 && r[30] == 61 && abs(l[99]) < 198 && l[100] == 0 && r[119] == 0,
+              "bridge ring: stereo frames in order, faded out when it runs dry, then silence")
+    }
+    // Capture and engine on different cycles, with jitter: no dry spells or drops once primed.
+    BridgeRingTest.run(check: check)
+    print(fails == 0 ? "ALL OK" : "\(fails) FAILED")
+    exit(fails == 0 ? 0 : 1)
+}
+
+/// Debug: `MusicAmp --test-i18n`: the Italian strings (format specifiers match the English keys, menus and settings
+/// covered, no Italian left in the English interface) and the language choice.
+if CommandLine.arguments.contains("--test-i18n") {
+    var fails = 0
+    func check(_ ok: Bool, _ what: String) { print(ok ? "OK  " : "FAIL", what); if !ok { fails += 1 } }
+    let file = Bundle.main.path(forResource: "Localizable", ofType: "strings", inDirectory: nil, forLocalization: "it")
+        ?? FileManager.default.currentDirectoryPath + "/Resources/it.lproj/Localizable.strings"
+    guard let it = NSDictionary(contentsOfFile: file) as? [String: String] else { print("FAIL can't read \(file)"); exit(1) }
+    check(it.count > 300, "Italian strings: \(it.count)")
+    func specs(_ s: String) -> [String] {
+        let r = try! NSRegularExpression(pattern: "%(?:\\d+\\$)?(?:lld|ld|d|@|lf|f|%)")
+        return r.matches(in: s, range: NSRange(s.startIndex..., in: s)).map { m in
+            String(s[Range(m.range, in: s)!]).replacingOccurrences(of: "\\d+\\$", with: "", options: .regularExpression)
+        }.sorted()
+    }
+    let bad = it.filter { specs($0.key) != specs($0.value) }.map(\.key)
+    check(bad.isEmpty, "format specifiers match" + (bad.isEmpty ? "" : ": " + bad.joined(separator: " | ")))
+    // Every menu title of the app has an Italian translation.
+    let titles = ["File", "Controls", "View", "Open Files…", "Add Folder…", "Previous (Z)", "Next (B)", "Source", "Speakers (AirPlay, Chromecast, Sonos)…",
+                  "Sleep Timer and Alarm", "Equalizer", "Playlist", "Library", "Lyrics", "Settings…", "Quit MusicAmp", "Show Player", "Dock Mode"]
+    let missing = titles.filter { it[$0] == nil }
+    check(missing.isEmpty, "menus translated" + (missing.isEmpty ? "" : ": missing " + missing.joined(separator: ", ")))
+    let settings = ["General", "Audio", "Headphones", "Language", "Restart Now", "Mute this Mac while casting", "Show Translation", "Translate To"]
+    check(settings.allSatisfy { it[$0] != nil }, "settings, speakers and translation controls translated")
+    // The English interface has no Italian left in it (the keys are the English text).
+    let italian = it.keys.filter { k in ["Aggiorna", "Ascoltato", "Scaricato", "In corso"].contains(k) }
+    check(italian.isEmpty, "no Italian keys")
+    check(AppLanguage.supported == ["en", "it"] && AppLanguage.choices.map(\.0) == ["system", "en", "it"], "languages: System, English, Italiano")
+    // Choosing a language sets AppleLanguages for MusicAmp only; System removes it.
+    let saved = UserDefaults.standard.string(forKey: AppLanguage.key)
+    let savedLangs = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?["AppleLanguages"]
+    UserDefaults.standard.set("it", forKey: AppLanguage.key); AppLanguage.apply()
+    check((UserDefaults.standard.array(forKey: "AppleLanguages") as? [String])?.first == "it", "Italiano → AppleLanguages = it")
+    UserDefaults.standard.set("system", forKey: AppLanguage.key); AppLanguage.apply()
+    check(UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?["AppleLanguages"] == nil, "System → follows macOS")
+    if let saved { UserDefaults.standard.set(saved, forKey: AppLanguage.key) } else { UserDefaults.standard.removeObject(forKey: AppLanguage.key) }
+    if let savedLangs { UserDefaults.standard.set(savedLangs, forKey: "AppleLanguages") }
+    // Inside the app bundle, launched in Italian: menus come out in Italian.
+    if Bundle.main.preferredLocalizations.first == "it" {
+        check(L("Controls") == "Controlli" && L("Speakers (AirPlay, Chromecast, Sonos)…") == "Altoparlanti (AirPlay, Chromecast, Sonos)…", "bundle lookup in Italian: \(L("Controls"))")
+    }
+    // Lyrics translation targets.
+    check(LyricsTranslator.targets.map(\.0).contains("it") && LyricsTranslator.targets.map(\.0).contains("en"), "lyrics translate to Italian and English")
+    print(fails == 0 ? "ALL OK" : "\(fails) FAILED")
+    exit(fails == 0 ? 0 : 1)
+}
+
+/// Debug: `MusicAmp --test-tv [out.png]`: see TVKaraokeTest.swift.
+if CommandLine.arguments.contains("--test-tv") {
+    exit(MainActor.assumeIsolated { TVKaraokeTest.run() })
+}
+
+/// Debug: `MusicAmp --test-outputs`: the live AAC stream (HTTP, ADTS frames, decodes back to the tone), the cover,
+/// silence while nothing plays, a system player on the stream (volume 0), Cast v2 framing and UPnP descriptions.
+/// With MUSICAMP_TEST_NET=1 it also lists the speakers found on the network (nothing is played on them).
+if CommandLine.arguments.contains("--test-outputs") {
+    var fails = 0
+    func check(_ ok: Bool, _ what: String) { print(ok ? "OK  " : "FAIL", what); if !ok { fails += 1 } }
+    check(LiveStream.adtsHeader(length: 100, sampleRate: 44100) == Data([0xFF, 0xF1, 0x50, 0x80, 0x0D, 0x7F, 0xFC]), "ADTS header (AAC-LC, 44.1 kHz, stereo)")
+
+    let fmt = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)!
+    let live = LiveStream.shared
+    do { try live.startDetached(format: fmt) } catch { print("FAIL can't listen: \(error)"); exit(1) }
+    check(live.url?.absoluteString.hasSuffix("/live.aac") == true, "stream address on the local network: \(live.url?.absoluteString ?? "none")")
+
+    /// Plain HTTP GET on a socket, reading for `seconds`.
+    func get(_ path: String, seconds: Double) -> Data {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        defer { close(fd) }
+        var a = sockaddr_in(); a.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); a.sin_family = sa_family_t(AF_INET)
+        a.sin_port = live.port.bigEndian; a.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let ok = withUnsafePointer(to: &a) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+        guard ok == 0 else { return Data() }
+        var tv = timeval(tv_sec: 0, tv_usec: 200_000)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        let req = "GET \(path) HTTP/1.1\r\nHost: test\r\n\r\n"
+        _ = req.withCString { send(fd, $0, strlen($0), 0) }
+        var out = Data(), buf = [UInt8](repeating: 0, count: 65536)
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end {
+            let n = recv(fd, &buf, buf.count, 0)
+            if n > 0 { out.append(contentsOf: buf[0..<n]) } else if n == 0 { break }
+        }
+        return out
+    }
+    func body(_ d: Data) -> (String, Data) {
+        guard let r = d.range(of: Data("\r\n\r\n".utf8)) else { return ("", Data()) }
+        return (String(data: d[..<r.lowerBound], encoding: .utf8) ?? "", d[r.upperBound...])
+    }
+    func frames(_ d: Data) -> Int? {
+        var i = d.startIndex, n = 0
+        while i + 7 <= d.endIndex {
+            guard d[i] == 0xFF, d[i + 1] & 0xF6 == 0xF0 else { return nil }
+            let len = (Int(d[i + 3] & 3) << 11) | (Int(d[i + 4]) << 3) | (Int(d[i + 5]) >> 5)
+            guard len > 7 else { return nil }
+            i += len; n += 1
+        }
+        return n
+    }
+
+    // A 1 kHz tone, 3 s, fed while a listener reads.
+    var got = Data()
+    let reader = DispatchSemaphore(value: 0)
+    Thread.detachNewThread { got = get("/live.aac", seconds: 3.5); reader.signal() }
+    var waited = 0.0
+    while live.clientCount == 0, waited < 2 { Thread.sleep(forTimeInterval: 0.05); waited += 0.05 }
+    check(live.clientCount == 1, "one listener connected")
+    for k in 0..<32 {
+        let b = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: 4096)!
+        b.frameLength = 4096
+        for i in 0..<4096 {
+            let v = 0.5 * sin(2 * Float.pi * 1000 * Float(k * 4096 + i) / 44100)
+            b.floatChannelData![0][i] = v; b.floatChannelData![1][i] = v
+        }
+        live.feed(b)
+    }
+    reader.wait()
+    let (head, aac) = body(got)
+    check(head.hasPrefix("HTTP/1.1 200") && head.contains("audio/aac"), "HTTP 200, audio/aac")
+    let count = frames(aac)
+    check((count ?? 0) > 100, "ADTS frames well formed: \(count.map(String.init) ?? "broken")")
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("musicamp-live.aac")
+    try? aac.write(to: tmp)
+    if let f = try? AVAudioFile(forReading: tmp), let pcm = AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: AVAudioFrameCount(f.length)) {
+        try? f.read(into: pcm)
+        let x = pcm.floatChannelData![0], n = Int(pcm.frameLength)
+        // 2 s of tone after the encoder's priming.
+        let a = 4096, z = min(n, a + 88200)
+        var sum: Float = 0, crossings = 0
+        for i in a..<z { sum += x[i] * x[i]; if i > a, (x[i - 1] < 0) != (x[i] < 0) { crossings += 1 } }
+        let rms = sqrt(sum / Float(max(1, z - a)))
+        let hz = Double(crossings) / 2 / (Double(z - a) / f.processingFormat.sampleRate)
+        check(abs(rms - 0.354) < 0.05, String(format: "decodes back: level %.3f (tone 0.354)", rms))
+        check(abs(hz - 1000) < 15, String(format: "decodes back: %.0f Hz (tone 1000)", hz))
+    } else {
+        check(false, "the stream decodes as AAC")
+    }
+
+    // Lossless stream.
+    StreamEncoderTest.run(live, format: fmt, check: check)
+
+    // Nothing playing: silence keeps the stream alive.
+    let quiet = body(get("/live.aac", seconds: 1.2)).1
+    check((frames(quiet) ?? 0) > 20, "silence while nothing plays: \(frames(quiet) ?? 0) frames in 1.2 s")
+
+    // Cover for Chromecast.
+    check(body(get("/cover.jpg", seconds: 0.5)).0.hasPrefix("HTTP/1.1 404"), "no cover: 404")
+    live.coverJPEG = Data([0xFF, 0xD8, 0xFF, 0xD9])
+    let cover = body(get("/cover.jpg", seconds: 0.5))
+    check(cover.0.contains("image/jpeg") && cover.1 == Data([0xFF, 0xD8, 0xFF, 0xD9]), "cover served as /cover.jpg")
+
+    // A system player (the AirPlay path) plays the stream; volume 0, nothing is heard.
+    let player = AVPlayer(url: live.localURL!)
+    player.volume = 0
+    player.play()
+    let until = Date().addingTimeInterval(10)
+    while Date() < until, !(player.timeControlStatus == .playing && player.currentTime().seconds > 0.5) {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    }
+    check(player.timeControlStatus == .playing && player.currentTime().seconds > 0.5,
+          String(format: "system player (AirPlay path) plays the stream: %.1f s", player.currentTime().seconds))
+    player.pause()
+    live.stop()
+    check(!live.running && live.port == 0, "stream stops")
+
+    // Cast v2 framing.
+    let m = CastSession.encode(source: "sender-0", destination: "receiver-0", namespace: CastSession.NS.receiver, payload: #"{"type":"LAUNCH"}"#)
+    let back = CastSession.decode(m)
+    check(back?.source == "sender-0" && back?.destination == "receiver-0" && back?.namespace == CastSession.NS.receiver && back?.payload == #"{"type":"LAUNCH"}"#,
+          "Cast message encodes and decodes")
+    check(m.prefix(2) == Data([0x08, 0x00]), "Cast message starts with protocol_version 0")
+
+    // UPnP descriptions: a Sonos speaker and a DLNA renderer.
+    let sonos = """
+        <root><device><deviceType>urn:schemas-upnp-org:device:ZonePlayer:1</deviceType><friendlyName>192.168.1.20 - Sonos One</friendlyName>
+        <manufacturer>Sonos, Inc.</manufacturer><modelName>Sonos One</modelName><roomName>Kitchen &amp; Dining</roomName><UDN>uuid:RINCON_1</UDN>
+        <deviceList><device><deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType><serviceList>
+        <service><serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType><controlURL>/MediaRenderer/RenderingControl/Control</controlURL></service>
+        <service><serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType><controlURL>/MediaRenderer/AVTransport/Control</controlURL></service>
+        </serviceList></device></deviceList></device></root>
+        """
+    let s1 = SpeakerDiscovery.renderer(fromDescription: sonos, location: URL(string: "http://192.168.1.20:1400/xml/device_description.xml")!)
+    check(s1?.kind == .sonos && s1?.name == "Kitchen & Dining" && s1?.control?.absoluteString == "http://192.168.1.20:1400/MediaRenderer/AVTransport/Control",
+          "Sonos: room name and AVTransport control URL")
+    check(s1?.rendering?.absoluteString == "http://192.168.1.20:1400/MediaRenderer/RenderingControl/Control", "Sonos: RenderingControl URL for the volume")
+    let dlna = """
+        <root><device><friendlyName>Living TV</friendlyName><manufacturer>Xiaomi</manufacturer><modelName>MiTV</modelName><UDN>uuid:tv</UDN>
+        <serviceList><service><serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType><controlURL>AVTransport/control</controlURL></service></serviceList>
+        </device></root>
+        """
+    let s2 = SpeakerDiscovery.renderer(fromDescription: dlna, location: URL(string: "http://10.0.0.5:49152/description.xml")!)
+    check(s2?.kind == .upnp && s2?.name == "Living TV" && s2?.control?.absoluteString == "http://10.0.0.5:49152/AVTransport/control", "DLNA renderer: relative control URL")
+    check(SpeakerDiscovery.renderer(fromDescription: "<root><device><friendlyName>Printer</friendlyName></device></root>", location: URL(string: "http://10.0.0.9/")!) == nil,
+          "devices without AVTransport are ignored")
+
+    if ProcessInfo.processInfo.environment["MUSICAMP_TEST_NET"] == "1" {
+        let d = SpeakerDiscovery.shared
+        d.start()
+        RunLoop.main.run(until: Date().addingTimeInterval(5))
+        print("     speakers found: " + (d.speakers.isEmpty ? "none" : d.speakers.map { "\($0.name) (\($0.kindName))" }.joined(separator: ", ")))
+    }
     print(fails == 0 ? "ALL OK" : "\(fails) FAILED")
     exit(fails == 0 ? 0 : 1)
 }

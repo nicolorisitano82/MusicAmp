@@ -91,7 +91,7 @@ extension Ctl {
         if jumpPanelRef == nil {
             let model = JumpModel(ctl: self)
             let panel = NSPanel(contentViewController: NSHostingController(rootView: JumpView(model: model)))
-            panel.title = "Jump to File"
+            panel.title = L("Jump to File")
             panel.styleMask = [.titled, .closable, .utilityWindow]
             panel.isFloatingPanel = true
             panel.hidesOnDeactivate = false

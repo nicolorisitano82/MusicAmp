@@ -17,7 +17,7 @@ extension Ctl {
         if let tab { prefsTab = tab }
         if prefsWindowRef == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: PreferencesView(ctl: self)))
-            w.title = "MusicAmp Settings"
+            w.title = L("MusicAmp Settings")
             w.styleMask = [.titled, .closable]
             w.isReleasedWhenClosed = false
             w.center()
@@ -64,6 +64,7 @@ struct PreferencesView: View {
 
 private struct GeneralTab: View {
     @ObservedObject var ctl: Ctl
+    @State private var langChanged = false
 
     var body: some View {
         Form {
@@ -83,6 +84,18 @@ private struct GeneralTab: View {
             Section("Display") {
                 Toggle("Show remaining time", isOn: ctl.binding(\.timeRemaining))
                 Toggle("Scroll title", isOn: ctl.binding(\.marqueeScroll))
+            }
+            Section("Language") {
+                Picker("Language", selection: Binding(get: { AppLanguage.current }, set: { UserDefaults.standard.set($0, forKey: AppLanguage.key); langChanged = true })) {
+                    ForEach(AppLanguage.choices, id: \.0) { Text(LocalizedStringKey($0.1)).tag($0.0) }
+                }
+                if langChanged {
+                    HStack {
+                        Text("MusicAmp will use the new language after a restart.").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Restart Now") { AppLanguage.relaunch() }
+                    }
+                }
             }
             Section("Startup") {
                 Toggle("Resume playback at launch", isOn: ctl.binding(\.resumeOnLaunch))
@@ -116,6 +129,9 @@ private struct AudioTab: View {
                 Button("Refresh List") { devices = AudioDevice.outputDevices() }
                 LabeledContent("AirPlay and system outputs") {
                     RoutePicker().frame(width: 28, height: 22)
+                }
+                LabeledContent("Several AirPlay speakers, Chromecast, Sonos") {
+                    Button("Speakers…") { ctl.showSpeakers() }
                 }
                 Text("With \"System Default\", MusicAmp follows the output chosen here, in Control Center or in Sound settings, even if it's an AirPlay speaker.")
                     .font(.caption).foregroundStyle(.secondary)

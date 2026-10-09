@@ -238,6 +238,9 @@ final class LyricsService: ObservableObject {
         }
     }
 
+    /// The lyrics being shown, if any.
+    var lyrics: Lyrics? { if case .found(let l) = state { return l } else { return nil } }
+
     // MARK: Synced from the audio
 
     /// Can the current lyrics be timed from the audio? A local, non-cue file, lyrics without times (or none).

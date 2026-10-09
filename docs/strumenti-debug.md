@@ -33,7 +33,10 @@ Le singole suite:
 | `--test-peq` | Formato Equalizer APO, risposta calcolata, EQ parametrico misurato sul motore (+12 dB a 1 kHz), indice AutoEq |
 | `--test-bitperfect` | Scelta della frequenza del dispositivo, grafo ricostruito a un'altra frequenza, diagnosi; non cambia la frequenza del dispositivo |
 | `--test-musicbrainz` | Escape delle query, associazione file/tracce, ricerche reali su MusicBrainz e Cover Art Archive |
-| `--test-schedule` | Orari della sveglia (giorni, una volta, ora legale), curve di dissolvenza, stato del widget, URL `musicamp://` |
+| `--test-schedule` | Orari della sveglia (giorni, una volta, ora legale), curve di dissolvenza, stato del widget, URL `musicamp://`, ring buffer del bridge Musica/Spotify |
+| `--test-outputs` | Stream live AAC per le casse (HTTP, frame ADTS, tono decodificato, silenzio, copertina), AVPlayer muto sullo stream (AirPlay), messaggi Cast v2, descrizioni Sonos/DLNA; con `MUSICAMP_TEST_NET=1` elenca le casse in rete |
+| `--test-tv [frame.png]` | Karaoke sulla TV: fotogramma (orientamento, riga cantata, tempo di disegno), stream HLS audio+video e solo audio (playlist, segmenti, tracce), AVPlayer muto sull'indirizzo di rete; salva i fotogrammi se si passa un percorso |
+| `--test-i18n` | Stringhe italiane (specificatori di formato, menu e impostazioni coperti), scelta della lingua; con `-AppleLanguages '(it)'` nel bundle verifica il lookup in italiano |
 | `--test-vocal` | Rimozione della voce su uno stereo generato: voce al centro a 440 Hz rimossa, strumento solo a sinistra e basso al centro conservati, forza al 50%, spenta = inalterato |
 | `--test-smart` | Transizioni intelligenti: misura del silenzio in testa e in coda, nessun buco tra album diversi, silenzio conservato nello stesso album e con l'opzione spenta |
 | `--test-sonic` | Analisi sonora su musica generata: tempo, tonalità, timbro; brani simili, Sonic Radio, viaggio sonoro e il suo riordino |
@@ -97,3 +100,15 @@ swift build -c release
 ```
 
 Il report elenca, per ogni preset con problemi, l'errore di traduzione o di compilazione di ogni shader. Con `--milkdrop-msl` si vede la riga Metal che lo ha causato.
+
+## Feature flag
+
+Funzioni costruite ma non ancora rilasciate. Sono spente di default e si accendono per singolo Mac (vedi `FeatureFlags.swift`); servono un riavvio di MusicAmp:
+
+```bash
+defaults write com.genomeup.musicamp feature.bridge -bool YES
+```
+
+| Flag | Funzione |
+| --- | --- |
+| `feature.bridge` | App Musica e Spotify come sorgente (Controlli → Sorgente): comando via AppleScript e cattura dell'audio con un process tap. Vedi [sorgenti-e-uscite.md](sorgenti-e-uscite.md) |

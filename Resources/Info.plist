@@ -43,6 +43,7 @@
 	<key>CFBundleLocalizations</key>
 	<array>
 		<string>en</string>
+		<string>it</string>
 	</array>
 	<key>CFBundleName</key>
 	<string>MusicAmp</string>
@@ -65,6 +66,16 @@
 	<string>4</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>MusicAmp controls the Music app and Spotify when you choose them as its source: play, pause, next track and what is playing.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>MusicAmp plays the Music app's and Spotify's sound through its own equalizers, visualizers and outputs when you choose them as its source.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>MusicAmp finds Chromecast, Sonos and other speakers on your network and streams your music to them.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_googlecast._tcp</string>
+	</array>
 	<key>NSAppleMusicUsageDescription</key>
 	<string>MusicAmp reads your Music library so you can browse and play your local tracks.</string>
 	<key>NSHighResolutionCapable</key>

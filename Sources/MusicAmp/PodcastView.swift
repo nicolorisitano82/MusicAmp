@@ -6,7 +6,7 @@ extension Ctl {
     @objc func showPodcasts() {
         if podcastWindowRef == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: PodcastView(ctl: self, store: .shared)))
-            w.title = "Podcasts"
+            w.title = L("Podcasts")
             w.styleMask = [.titled, .closable, .resizable, .miniaturizable]
             w.setContentSize(NSSize(width: 920, height: 560))
             w.isReleasedWhenClosed = false
@@ -51,7 +51,7 @@ struct PodcastView: View {
                 HStack {
                     Button { showAdd = true } label: { Label("Add", systemImage: "plus") }
                     Spacer()
-                    Button { store.refreshAll() } label: { Image(systemName: "arrow.clockwise") }.help("Aggiorna tutti")
+                    Button { store.refreshAll() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh All")
                 }
                 .buttonStyle(.borderless).padding(8)
             }
@@ -131,13 +131,13 @@ struct PodcastView: View {
         if let p = store.downloads[PodcastStore.key(f, e)] {
             ProgressView(value: p).progressViewStyle(.circular).controlSize(.mini).help("Download \(Int(p * 100))%")
         } else if s.played {
-            Image(systemName: "checkmark").foregroundStyle(.secondary).help("Ascoltato")
+            Image(systemName: "checkmark").foregroundStyle(.secondary).help("Played")
         } else if s.position > 5 {
-            Image(systemName: "circle.lefthalf.filled").foregroundStyle(.tint).help("In corso")
+            Image(systemName: "circle.lefthalf.filled").foregroundStyle(.tint).help("In Progress")
         } else if s.file != nil {
-            Image(systemName: "arrow.down.circle.fill").foregroundStyle(.secondary).help("Scaricato")
+            Image(systemName: "arrow.down.circle.fill").foregroundStyle(.secondary).help("Downloaded")
         } else {
-            Image(systemName: "circle.fill").font(.system(size: 6)).foregroundStyle(.tint).help("Nuovo")
+            Image(systemName: "circle.fill").font(.system(size: 6)).foregroundStyle(.tint).help("New")
         }
     }
 

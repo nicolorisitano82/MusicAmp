@@ -20,10 +20,10 @@ Un player audio minimale e nativo per macOS, compatibile con le skin classiche d
   - album in un solo file con `.cue`, divisi in tracce;
   - timer di spegnimento e sveglia, con dissolvenze;
   - formati extra (Ogg, Opus, APE, WavPack, Musepack, WMA, DSD…) con FFmpeg già incluso;
-  - AirPlay e scelta dell'uscita.
+  - AirPlay e scelta dell'uscita; [più casse AirPlay insieme, Chromecast, Sonos e UPnP/DLNA](docs/sorgenti-e-uscite.md) con uno stream live dopo gli EQ.
 - **Radio internet** Icecast/SHOUTcast e HLS, con client nativo e catalogo radio-browser.info.
 - **Podcast:** ricerca, RSS, OPML, download, velocità e intonazione, Voice Boost e silenzi accorciati, ripresa dal punto salvato negli audiolibri.
-- **Testi** sincronizzati (LRCLIB, `.lrc`, tag) e **karaoke** a schermo intero con le parole evidenziate una alla volta.
+- **Testi** sincronizzati (LRCLIB, `.lrc`, tag), tradotti riga per riga sul Mac, e **karaoke** a schermo intero con le parole evidenziate una alla volta.
 - **Milkdrop** su Metal:
   - preset `.milk` di Milkdrop 1 e 2;
   - gli shader HLSL di Milkdrop 2 sono tradotti in Metal: compila il 99,9% della raccolta "cream of the crop" di projectM.
@@ -43,7 +43,8 @@ Un player audio minimale e nativo per macOS, compatibile con le skin classiche d
   - icona del Dock dinamica con copertina e forma d'onda; chiudendo il player la musica continua e l'icona del Dock diventa il telecomando (clic = play/pausa, clic destro = comandi); in alternativa un Mini Tile flottante;
   - VoiceOver e scorciatoie globali;
   - azioni per Comandi rapidi e Siri, widget "Now Playing" per scrivania e Centro Notifiche, URL `musicamp://`;
-  - finestre agganciate viste come una sola in Mission Control.
+  - finestre agganciate viste come una sola in Mission Control;
+  - interfaccia in inglese o in italiano (Impostazioni → Generali → Lingua).
 
 | Playlist ad albero | Finestre secondarie con la grafica della skin |
 | --- | --- |

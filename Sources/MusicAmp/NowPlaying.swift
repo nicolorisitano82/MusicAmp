@@ -99,18 +99,12 @@ final class NowPlaying {
     private func loadArtwork(_ url: URL) {
         artworkURL = url
         artwork = nil
-        Task {
-            let md = (try? await AVURLAsset(url: url).load(.commonMetadata)) ?? []
-            var data: Data?
-            for item in md where item.commonKey == .commonKeyArtwork {
-                data = try? await item.load(.dataValue)
-                if data != nil { break }
-            }
-            await MainActor.run { [data] in
-                guard self.artworkURL == url, let data, let img = NSImage(data: data) else { return }
-                self.artwork = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
-                self.update()
-            }
+        // The same cover as the player and the Dock (file tags, cue sheets, podcast artwork): it also goes to
+        // AirPlay screens.
+        Task { @MainActor in
+            guard let img = await Artwork.load(url), self.artworkURL == url else { return }
+            self.artwork = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
+            self.update()
         }
     }
 }

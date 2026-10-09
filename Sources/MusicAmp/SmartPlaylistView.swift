@@ -5,7 +5,7 @@ extension Ctl {
     @objc func showSmartPlaylists() {
         if smartWindowRef == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: SmartPlaylistsView(store: .shared, stats: .shared)))
-            w.title = "Smart Playlists"
+            w.title = L("Smart Playlists")
             w.styleMask = [.titled, .closable, .resizable, .miniaturizable]
             w.setContentSize(NSSize(width: 980, height: 620))
             w.contentMinSize = NSSize(width: 820, height: 480)

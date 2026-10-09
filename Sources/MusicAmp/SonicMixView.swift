@@ -13,7 +13,7 @@ extension Ctl {
         model.mode = destination == nil ? .radio : .journey
         if sonicWindowRef == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: SonicMixView(model: model, store: .shared)))
-            w.title = "Sonic Mix"
+            w.title = L("Sonic Mix")
             w.styleMask = [.titled, .closable, .resizable, .miniaturizable]
             w.setContentSize(NSSize(width: 760, height: 600))
             w.contentMinSize = NSSize(width: 640, height: 460)

@@ -20,6 +20,23 @@ final class DockIcon {
     /// Transport, track or setting changed: redraw now and keep the progress moving while playing.
     func update() {
         guard let c = ctl else { return }
+        // Bridge (Music, Spotify): the external app's cover and progress.
+        if let e = c.external, e.hasSource, c.dockIconLive || DockMode.shared.active {
+            coverFor = nil
+            view.cover = e.artwork
+            view.waveform = nil
+            view.isStream = false
+            view.paused = !e.playing
+            view.stopped = false
+            view.progress = e.duration > 0 ? min(1, e.currentTime / e.duration) : nil
+            if !showing { NSApp.dockTile.contentView = view; showing = true }
+            lastSignature = ""
+            redraw()
+            if e.playing, timer == nil {
+                timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.update() }
+            } else if !e.playing { timer?.invalidate(); timer = nil }
+            return
+        }
         let state = c.audio.state
         let dock = DockMode.shared.active
         guard let t = c.playlist.currentTrack, dock || (c.dockIconLive && state != .stopped && c.audio.hasSource) else {

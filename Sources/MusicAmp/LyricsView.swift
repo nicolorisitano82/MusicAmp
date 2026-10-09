@@ -6,7 +6,7 @@ extension Ctl {
         if lyricsWindowRef == nil {
             let w = LyricsWindow(contentViewController: NSHostingController(rootView: LyricsView(ctl: self, service: .shared)))
             w.ctl = self
-            w.title = "Lyrics"
+            w.title = L("Lyrics")
             w.styleMask = [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView]
             w.titlebarAppearsTransparent = true
             w.titleVisibility = .hidden
@@ -42,7 +42,7 @@ extension Ctl {
     @objc func showKaraoke() {
         if karaokeWindowRef == nil {
             let w = KaraokeWindow(contentViewController: NSHostingController(rootView: KaraokeView(ctl: self, service: .shared)))
-            w.title = "Karaoke"
+            w.title = L("Karaoke")
             w.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
             w.titlebarAppearsTransparent = true
             w.titleVisibility = .hidden
@@ -62,9 +62,12 @@ extension Ctl {
 
     /// Looks lyrics up for what is playing, only while a lyrics view is open (no network otherwise).
     func refreshLyrics(force: Bool = false, evenIfHidden: Bool = false) {
-        let open = lyricsWindowRef?.isVisible == true || karaokeWindowRef?.isVisible == true
+        let tv = MainActor.assumeIsolated { TVKaraoke.shared.active }
+        let open = lyricsWindowRef?.isVisible == true || karaokeWindowRef?.isVisible == true || tv
         guard open || force || evenIfHidden else { return }
-        let q = playlist.currentTrack.flatMap { LyricsService.query(for: $0, duration: audio.duration) }
+        var q = playlist.currentTrack.flatMap { LyricsService.query(for: $0, duration: audio.duration) }
+        // Music app / Spotify as the source: what that app plays.
+        if let e = external { q = e.title.isEmpty ? nil : LyricsService.Query(artist: e.artist, title: e.title, album: e.album, duration: e.duration, file: nil) }
         LyricsService.shared.load(q, force: force)
     }
 }
@@ -350,6 +353,7 @@ final class CoverModel: ObservableObject {
 struct LyricsView: View {
     @ObservedObject var ctl: Ctl
     @ObservedObject var service: LyricsService
+    @ObservedObject private var translator = LyricsTranslator.shared
     @StateObject private var cover = CoverModel()
     @AppStorage("lyricsFontSize") private var fontSize = 26.0
     @AppStorage("lyricsFollow") private var follow = true
@@ -369,8 +373,9 @@ struct LyricsView: View {
         .sheet(isPresented: $editing) { editSheet }
         .onAppear { cover.update(ctl.playlist.currentTrack?.url) }
         .onChange(of: service.query) { cover.update(ctl.playlist.currentTrack?.url) }
-        .onChange(of: service.state) { service.autoSyncIfUseful() }
-        .onAppear { service.autoSyncIfUseful() }
+        .onChange(of: service.state) { service.autoSyncIfUseful(); translator.request(service.lyrics) }
+        .onAppear { service.autoSyncIfUseful(); translator.request(service.lyrics) }
+        .translationTask(translator.configuration) { session in await translator.run(session) }
     }
 
     private var header: some View {
@@ -393,6 +398,21 @@ struct LyricsView: View {
         .padding(.horizontal, 20)
         .padding(.top, 34)
         .padding(.bottom, 8)
+    }
+
+    /// Plain lyrics with each line's translation under it (dimmed), when translation is on.
+    private func translatedPlain(_ text: String) -> AttributedString {
+        var out = AttributedString()
+        for line in text.components(separatedBy: .newlines) {
+            out += AttributedString(line + "\n")
+            if let tr = translator.translation(line) {
+                var t = AttributedString(tr + "\n")
+                t.foregroundColor = .white.opacity(0.45)
+                t.font = .system(size: fontSize * 0.55, weight: .medium, design: .rounded)
+                out += t
+            }
+        }
+        return out
     }
 
     /// Times plain lyrics (or writes missing ones) from the audio, on this Mac.
@@ -437,7 +457,7 @@ struct LyricsView: View {
             } else {
                 ScrollView {
                     if l.synced == nil { syncControl(label: "Sync with the Audio").padding(.top, 16) }
-                    Text(l.plain ?? l.synced?.map(\.text).joined(separator: "\n") ?? "")
+                    Text(translatedPlain(l.plain ?? l.synced?.map(\.text).joined(separator: "\n") ?? ""))
                         .font(.system(size: fontSize * 0.75, weight: .semibold, design: .rounded))
                         .foregroundStyle(.white.opacity(0.9))
                         .lineSpacing(6)
@@ -476,6 +496,15 @@ struct LyricsView: View {
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .overlay(alignment: .bottomLeading) {
+                                if let tr = translator.translation(line.text) {
+                                    Text(tr)
+                                        .font(.system(size: fontSize * 0.52, weight: .medium, design: .rounded))
+                                        .foregroundStyle(.white.opacity(i == current ? 0.75 : 0.35))
+                                        .offset(y: fontSize * 0.62)
+                                }
+                            }
+                            .padding(.bottom, translator.translation(line.text) == nil ? 0 : fontSize * 0.55)
                             .scaleEffect(i == current ? 1.0 : 0.96, anchor: .leading)
                             .animation(.spring(response: 0.45, dampingFraction: 0.85), value: current)
                             .id(i)
@@ -524,6 +553,7 @@ struct LyricsView: View {
             Button { fontSize = max(16, fontSize - 2) } label: { Image(systemName: "textformat.size.smaller") }.help("Smaller Text")
             Button { fontSize = min(44, fontSize + 2) } label: { Image(systemName: "textformat.size.larger") }.help("Larger Text")
             Button { ctl.showKaraoke() } label: { Image(systemName: "music.mic") }.help("Full-Screen Karaoke")
+            TranslateMenu()
             Menu {
                 Button("Search Again") { ctl.refreshLyrics(force: true) }
                 Button("Correct Artist and Title…") {
@@ -580,6 +610,7 @@ struct LyricsView: View {
 struct KaraokeView: View {
     @ObservedObject var ctl: Ctl
     @ObservedObject var service: LyricsService
+    @ObservedObject private var translator = LyricsTranslator.shared
     @StateObject private var cover = CoverModel()
 
     var body: some View {
@@ -605,8 +636,9 @@ struct KaraokeView: View {
         .environment(\.colorScheme, .dark)
         .onAppear { cover.update(ctl.playlist.currentTrack?.url) }
         .onChange(of: service.query) { cover.update(ctl.playlist.currentTrack?.url) }
-        .onChange(of: service.state) { service.autoSyncIfUseful() }
-        .onAppear { service.autoSyncIfUseful() }
+        .onChange(of: service.state) { service.autoSyncIfUseful(); translator.request(service.lyrics) }
+        .onAppear { service.autoSyncIfUseful(); translator.request(service.lyrics) }
+        .translationTask(translator.configuration) { session in await translator.run(session) }
     }
 
     @ViewBuilder
@@ -625,6 +657,12 @@ struct KaraokeView: View {
                 Group {
                     if let c = cur, !lines[c].text.isEmpty {
                         KaraokeLine(words: l.timedWords(c), now: now, size: big, center: true, pulse: music.bass)
+                        if let tr = translator.translation(lines[c].text) {
+                            Text(tr)
+                                .font(.system(size: big * 0.42, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.7))
+                                .multilineTextAlignment(.center)
+                        }
                     } else if let c = cur {
                         BreakDots(progress: (now - lines[c].time) / max(1, l.gap(after: c)), size: big * 0.35, kick: music.kick)
                     } else {
@@ -697,6 +735,7 @@ struct KaraokeView: View {
             }
             .buttonStyle(.borderless)
             .help("Remove the lead vocals (⌥⌘V)")
+            TranslateMenu()
             Text("Press Esc to exit").font(.caption).foregroundStyle(.white.opacity(0.4))
         }
         .foregroundStyle(.white)

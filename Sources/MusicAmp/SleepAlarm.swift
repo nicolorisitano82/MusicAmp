@@ -306,7 +306,7 @@ final class Scheduler: NSObject, ObservableObject, NSMenuDelegate {
     // MARK: Menu (Controls → Sleep Timer, Options menu)
 
     func sleepMenu() -> NSMenu {
-        let m = NSMenu(title: "Sleep Timer")
+        let m = NSMenu(title: L("Sleep Timer"))
         m.delegate = self
         menuNeedsUpdate(m)
         return m
@@ -331,7 +331,7 @@ final class Scheduler: NSObject, ObservableObject, NSMenuDelegate {
         }
         m.addItem(.separator())
         if let a = nextAlarm {
-            m.addItem(withTitle: "Alarm: " + Scheduler.describe(a), action: nil, keyEquivalent: "")
+            m.addItem(withTitle: L("Alarm: ") + Scheduler.describe(a), action: nil, keyEquivalent: "")
         }
         add(m, "Timer and Alarm Settings…", #selector(menuSettings))
     }

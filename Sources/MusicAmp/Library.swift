@@ -129,7 +129,7 @@ extension Ctl {
     @objc func showLibrary() {
         if libraryWindowRef == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: LibraryView(ctl: self, lib: .shared)))
-            w.title = "Library"
+            w.title = L("Library")
             w.styleMask = [.titled, .closable, .resizable, .miniaturizable]
             w.setContentSize(NSSize(width: 860, height: 520))
             w.isReleasedWhenClosed = false
@@ -240,7 +240,7 @@ struct LibraryView: View {
                 Label("Add", systemImage: "text.badge.plus")
             }
             .help("Add to Playlist")
-            Button { lib.reload() } label: { Image(systemName: "arrow.clockwise") }.help("Aggiorna")
+            Button { lib.reload() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh")
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
     }

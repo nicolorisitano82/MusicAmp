@@ -328,7 +328,7 @@ final class SmartPlaylistStore: NSObject, ObservableObject, NSMenuDelegate {
     // MARK: Menu (File → Smart Playlists)
 
     func menu() -> NSMenu {
-        let m = NSMenu(title: "Smart Playlists")
+        let m = NSMenu(title: L("Smart Playlists"))
         m.delegate = self
         return m
     }
@@ -341,7 +341,7 @@ final class SmartPlaylistStore: NSObject, ObservableObject, NSMenuDelegate {
             it.tag = i
         }
         if !playlists.isEmpty { m.addItem(.separator()) }
-        let edit = m.addItem(withTitle: "Edit Smart Playlists…", action: #selector(Ctl.showSmartPlaylists), keyEquivalent: "")
+        let edit = m.addItem(withTitle: L("Edit Smart Playlists…"), action: #selector(Ctl.showSmartPlaylists), keyEquivalent: "")
         edit.target = Ctl.shared
     }
 

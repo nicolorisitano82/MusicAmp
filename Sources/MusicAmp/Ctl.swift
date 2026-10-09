@@ -67,11 +67,48 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var rgPreventClip = true { didSet { applyTransitionSettings(); notify() } }
     var timeRemaining = false { didSet { notify() } }
     var visMode = 0 { didSet { notify() } }   // 0 spectrum, 1 oscilloscope, 2 off
-    var volume: Double = 75 { didSet { audio.setVolume(volume * fadeScale) } }
+    var volume: Double = 75 {
+        didSet {
+            audio.setVolume(volume * fadeScale)
+            MainActor.assumeIsolated { if Outputs.shared.casting { Outputs.shared.applyVolume() } }
+        }
+    }
     /// Sleep-timer fade-out and alarm fade-in: scales the output without touching the volume setting.
     var fadeScale: Double = 1 { didSet { if fadeScale != oldValue { audio.setVolume(volume * fadeScale) } } }
     /// Settings tab to show (the Timer menu item opens its tab).
     var prefsTab: PrefsTab = .general { didSet { notify() } }
+    /// Bridge with the Music app or Spotify (nil = MusicAmp plays its own files).
+    var external: ExternalPlayer? { didSet { notify() } }
+    /// What the skin's transport shows: the bridge when on, else the engine.
+    var transport: Transport { external ?? audio }
+
+    /// Switches the source: nil = MusicAmp's playlist, or the Music app / Spotify (bridge).
+    func useSource(_ app: ExternalPlayer.App?) {
+        external?.stop()
+        external = nil
+        guard let app else { mainView.needsDisplay = true; return }
+        guard FeatureFlags.bridge else { return }
+        guard app.installed else { flashMarquee("\(app.name.uppercased()) IS NOT INSTALLED"); NSSound.beep(); return }
+        audio.stop()
+        let e = ExternalPlayer(app: app)
+        external = e
+        e.start(engine: audio)
+        flashMarquee("SOURCE: \(app.name.uppercased())")
+        wake()
+    }
+
+    @objc func sourceItem(_ s: NSMenuItem) { useSource(s.tag == 0 ? nil : ExternalPlayer.App.allCases[s.tag - 1]) }
+
+    /// The external player moved to another track.
+    func externalTrackChanged() {
+        marqueeOffset = 0
+        mainView.needsDisplay = true
+        DockIcon.shared.update()
+        refreshLyrics()
+        MainActor.assumeIsolated { Outputs.shared.trackChanged() }
+        notify()
+    }
+
     /// Launched by a widget while closed: no windows, straight into Dock mode.
     var startInDock = false
     /// Set once `start()` has run (App Intents may arrive while the app is still launching).
@@ -151,6 +188,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var smartWindowRef: NSWindow?
     var sonicWindowRef: NSWindow?
     var insightsWindowRef: NSWindow?
+    var speakersWindowRef: NSWindow?
     var milkdropController: MilkdropController?
     private var menuBar: MenuBarController?
     private var notifier: TrackNotifier?
@@ -237,8 +275,8 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         eqWindow = SkinWindow(view: eqView)
         plWindow = SkinWindow(view: plView)
         mainWindow.title = "MusicAmp"
-        eqWindow.title = "Equalizer"
-        plWindow.title = "Playlist"
+        eqWindow.title = L("Equalizer")
+        plWindow.title = L("Playlist")
         if let p = skinPath, let s = try? Skin.load(from: URL(fileURLWithPath: p)) { skin = s } else { skinPath = nil }
         layoutInitial()
         applyLevel()
@@ -275,7 +313,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 let model = TagEditorModel(urls: urls, ctl: self)
                 let w = NSWindow(contentViewController: NSHostingController(rootView: TagEditorView(model: model)))
-                w.title = "Tags — \(urls.count) files"
+                w.title = L("Tags — \(urls.count) files")
                 w.setContentSize(NSSize(width: 270 + TagEditorView.formMinWidth + 40, height: 620))
                 w.isReleasedWhenClosed = false
                 self.tagEditorWindowRef = w
@@ -389,9 +427,11 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             lastTrack = playlist.currentTrack
             applyAutoEQ(announce: true)
             refreshLyrics()
+            MainActor.assumeIsolated { Outputs.shared.trackChanged() }
             applySpokenWord()
         }
         nowPlaying?.update()
+        MainActor.assumeIsolated { Outputs.shared.playbackChanged() }
         WidgetBridge.shared.setNeedsUpdate()
         DockIcon.shared.update()
         notifier?.transportChanged()
@@ -537,7 +577,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     }
 
     func speedMenu() -> NSMenu {
-        let m = NSMenu(title: "Speed")
+        let m = NSMenu(title: L("Speed"))
         for v in [50, 75, 100, 125, 150, 175, 200, 250, 300] {
             item(m, String(format: "%.2g×", Double(v) / 100), #selector(setSpeedItem(_:)), tag: v)
         }
@@ -620,7 +660,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     private func tick() {
         tickCount += 1
         let now = Date()
-        let playing = audio.state == .playing
+        let playing = audio.state == .playing || external?.playing == true
         if playing, playlist.currentTrack?.isEpisode == true { MainActor.assumeIsolated { PodcastInsightsStore.shared.skipAdIfNeeded(self) } }
         PlayStats.shared.observe(track: playlist.currentTrack, playing: playing, position: audio.hasSource ? audio.currentTime : 0,
                                  duration: audio.hasSource ? audio.duration : 0, now: now)
@@ -712,6 +752,10 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     }
 
     var marqueeText: String {
+        if let e = external {
+            if e.title.isEmpty { return e.error ?? "\(e.app.name): nothing playing" }
+            return "\(e.artist) - \(e.title)" + (e.duration > 0 ? " (\(Ctl.mmss(e.duration)))" : "") + " [\(e.app.name)]"
+        }
         guard let i = playlist.current else { return "MusicAmp" }
         let t = playlist.tracks[i]
         if t.isStream {
@@ -731,6 +775,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     /// then starts it when `start`. `then` runs on the main thread once the file is ready.
     func playIndex(_ i: Int, start: Bool = true, then: (() -> Void)? = nil) {
         guard playlist.tracks.indices.contains(i) else { return }
+        if external != nil { useSource(nil) }   // choosing a playlist track brings MusicAmp back as the source
         pendingShuffle = nil
         let t = playlist.tracks[i]
         playlist.currentTrack = t
@@ -790,6 +835,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     private var loadToken = 0
 
     @objc func play() {
+        if let e = external { e.play(); return }
         if !audio.hasSource || playlist.current == nil {
             if playlist.tracks.isEmpty { openFiles(); return }
             playIndex(playlist.current ?? playlist.selection.min() ?? 0)
@@ -799,14 +845,16 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     }
 
     @objc func pause() {
+        if let e = external { e.pause(); return }
         audio.pause()
         savePosition()
     }
-    @objc func stop() { audio.stop() }
+    @objc func stop() { if let e = external { e.pause(); return }; audio.stop() }
 
     @objc func next() { next(auto: false) }
 
     func next(auto: Bool) {
+        if let e = external, !auto { e.next(); return }
         let n = playlist.tracks.count
         guard n > 0 else { return }
         let wasPlaying = auto || audio.state != .stopped
@@ -831,6 +879,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     }
 
     @objc func previous() {
+        if let e = external { e.previous(); return }
         let n = playlist.tracks.count
         guard n > 0 else { return }
         let wasPlaying = audio.state != .stopped
@@ -1045,7 +1094,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        if menu.title == "Skin" { populateSkinsMenu(menu) }
+        if menu.title == L("Skin") { populateSkinsMenu(menu) }
     }
 
     // MARK: Windows
@@ -1385,7 +1434,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     @discardableResult
     func item(_ m: NSMenu, _ title: String, _ action: Selector?, _ key: String = "",
               _ mods: NSEvent.ModifierFlags = .command, tag: Int = 0) -> NSMenuItem {
-        let it = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        let it = NSMenuItem(title: L(title), action: action, keyEquivalent: key)
         it.keyEquivalentModifierMask = mods
         it.target = self
         it.tag = tag
@@ -1394,15 +1443,15 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     }
 
     func skinsSubmenuItem() -> NSMenuItem {
-        let it = NSMenuItem(title: "Skin", action: nil, keyEquivalent: "")
-        let m = NSMenu(title: "Skin")
+        let it = NSMenuItem(title: L("Skin"), action: nil, keyEquivalent: "")
+        let m = NSMenu(title: L("Skin"))
         m.delegate = self
         it.submenu = m
         return it
     }
 
     func visMenu() -> NSMenu {
-        let m = NSMenu(title: "Visualization")
+        let m = NSMenu(title: L("Visualization"))
         item(m, "Spectrum Analyzer", #selector(setVisMode(_:)), tag: 0)
         item(m, "Oscilloscope", #selector(setVisMode(_:)), tag: 1)
         item(m, "Off", #selector(setVisMode(_:)), tag: 2)
@@ -1417,7 +1466,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         item(m, "File Info…", #selector(fileInfo))
         m.addItem(.separator())
         m.addItem(skinsSubmenuItem())
-        let vis = NSMenuItem(title: "Visualization", action: nil, keyEquivalent: "")
+        let vis = NSMenuItem(title: L("Visualization"), action: nil, keyEquivalent: "")
         vis.submenu = visMenu()
         m.addItem(vis)
         m.addItem(.separator())
@@ -1441,10 +1490,10 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         m.addItem(.separator())
         item(m, "Shuffle", #selector(toggleShuffle))
         item(m, "Repeat", #selector(toggleRepeat))
-        let sleep = NSMenuItem(title: "Sleep Timer", action: nil, keyEquivalent: "")
+        let sleep = NSMenuItem(title: L("Sleep Timer"), action: nil, keyEquivalent: "")
         sleep.submenu = Scheduler.shared.sleepMenu()
         m.addItem(sleep)
-        let rate = NSMenuItem(title: "Rate Current Track", action: nil, keyEquivalent: "")
+        let rate = NSMenuItem(title: L("Rate Current Track"), action: nil, keyEquivalent: "")
         rate.submenu = ratingMenu(#selector(rateCurrent(_:)), current: playlist.currentTrack.map { PlayStats.shared.rating($0.url) }, keys: false)
         m.addItem(rate)
         item(m, "Smart Playlists…", #selector(showSmartPlaylists))
@@ -1452,7 +1501,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         item(m, "Mini Tile", #selector(toggleIconMode))
         item(m, "Dock Mode", #selector(toggleDockMode))
         m.addItem(.separator())
-        let q = NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+        let q = NSMenuItem(title: L("Quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         m.addItem(q)
         return m
     }
@@ -1469,7 +1518,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         let mine = userPresets
         if !mine.isEmpty {
             m.addItem(.separator())
-            m.addItem(withTitle: "Your Presets", action: nil, keyEquivalent: "").isEnabled = false
+            m.addItem(withTitle: L("Your Presets"), action: nil, keyEquivalent: "").isEnabled = false
             for (i, p) in mine.enumerated() { item(m, p.name, #selector(applyUserPreset(_:)), tag: i) }
         }
         m.addItem(.separator())
@@ -1478,7 +1527,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         item(m, "Save as .eqf File…", #selector(saveEQFile))
         item(m, "Export All to .q1…", #selector(exportEQLibrary))
         if !mine.isEmpty {
-            let del = NSMenuItem(title: "Delete Preset", action: nil, keyEquivalent: "")
+            let del = NSMenuItem(title: L("Delete Preset"), action: nil, keyEquivalent: "")
             let sub = NSMenu()
             for (i, p) in mine.enumerated() { item(sub, p.name, #selector(deleteUserPreset(_:)), tag: i) }
             del.submenu = sub
@@ -1571,7 +1620,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     }
 
     func ratingMenu(_ action: Selector, current: Int?, keys: Bool) -> NSMenu {
-        let m = NSMenu(title: "Rating")
+        let m = NSMenu(title: L("Rating"))
         for n in stride(from: 5, through: 0, by: -1) {
             let it = item(m, n == 0 ? "No Rating" : PlayStats.stars(n), action, keys ? "\(n)" : "", [.command, .option])
             it.tag = n
@@ -1582,7 +1631,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
 
     func trackContextMenu(clicked i: Int) -> NSMenu {
         let m = NSMenu()
-        let play = m.addItem(withTitle: "Play", action: #selector(playClicked(_:)), keyEquivalent: "")
+        let play = m.addItem(withTitle: L("Play"), action: #selector(playClicked(_:)), keyEquivalent: "")
         play.target = self
         play.tag = i
         item(m, "Queue / Dequeue", #selector(queueSelected))
@@ -1591,7 +1640,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         if playlist.currentTrack != nil, playlist.current != i { item(m, "Sonic Journey to This Track", #selector(sonicJourneyToSelection)) }
         m.addItem(.separator())
         let ratings = Set(playlist.selection.compactMap { playlist.tracks.indices.contains($0) ? PlayStats.shared.rating(playlist.tracks[$0].url) : nil })
-        let r = NSMenuItem(title: "Rating", action: nil, keyEquivalent: "")
+        let r = NSMenuItem(title: L("Rating"), action: nil, keyEquivalent: "")
         r.submenu = ratingMenu(#selector(rateSelected(_:)), current: ratings.count == 1 ? ratings.first : nil, keys: false)
         m.addItem(r)
         if let st = PlayStats.shared.entry(playlist.tracks[i].url) {
@@ -1669,6 +1718,10 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
         case #selector(toggleVoiceBoost): on(voiceBoost)
         case #selector(toggleIconMode): on(IconMode.shared.active)
         case #selector(toggleDockMode): on(DockMode.shared.active)
+        case #selector(sourceItem(_:)):
+            let current = external.map { ExternalPlayer.App.allCases.firstIndex(of: $0.app)! + 1 } ?? 0
+            on(it.tag == current)
+            if it.tag > 0 { return ExternalPlayer.App.allCases[it.tag - 1].installed }
         case #selector(toggleShortenSilences): on(shortenSilences)
         case #selector(toggleAlwaysOnTop): on(alwaysOnTop)
         case #selector(toggleTimeRemaining): on(timeRemaining)

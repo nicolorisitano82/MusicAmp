@@ -7,7 +7,7 @@ extension Ctl {
     @objc func showAlbumArt() {
         if albumArtWindowRef == nil {
             let w = KaraokeWindow(contentViewController: NSHostingController(rootView: AlbumArtView(ctl: self)))
-            w.title = "Album Art"
+            w.title = L("Album Art")
             w.styleMask = [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView]
             w.titlebarAppearsTransparent = true
             w.titleVisibility = .hidden

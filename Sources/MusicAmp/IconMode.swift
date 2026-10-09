@@ -73,7 +73,7 @@ final class IconMode: NSObject, ObservableObject, NSWindowDelegate {
         p.hidesOnDeactivate = false
         p.isMovable = false   // moved by our drag, so a click stays a click
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        p.title = "MusicAmp"
+        p.title = L("MusicAmp")
         p.setAccessibilityLabel("MusicAmp icon player")
         p.contentView = NSHostingView(rootView: IconTileView(ctl: .shared, mode: self))
         p.delegate = self
@@ -374,10 +374,10 @@ final class DockMode: ObservableObject {
         c.item(m, c.audio.state == .playing ? "Pause" : "Play", #selector(Ctl.dockPlayPause))
         c.item(m, "Next", #selector(Ctl.next as (Ctl) -> () -> Void))
         c.item(m, "Previous", #selector(Ctl.previous))
-        let rate = NSMenuItem(title: "Rate Current Track", action: nil, keyEquivalent: "")
+        let rate = NSMenuItem(title: L("Rate Current Track"), action: nil, keyEquivalent: "")
         rate.submenu = c.ratingMenu(#selector(Ctl.rateCurrent(_:)), current: c.playlist.currentTrack.map { PlayStats.shared.rating($0.url) }, keys: false)
         m.addItem(rate)
-        let sleep = NSMenuItem(title: "Sleep Timer", action: nil, keyEquivalent: "")
+        let sleep = NSMenuItem(title: L("Sleep Timer"), action: nil, keyEquivalent: "")
         sleep.submenu = Scheduler.shared.sleepMenu()
         m.addItem(sleep)
         m.addItem(.separator())

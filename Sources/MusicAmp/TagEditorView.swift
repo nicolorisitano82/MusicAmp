@@ -14,7 +14,7 @@ extension Ctl {
             w.contentViewController = host
         } else {
             let w = NSWindow(contentViewController: host)
-            w.title = "Tag Editor"
+            w.title = L("Tag Editor")
             w.styleMask = [.titled, .closable, .resizable, .miniaturizable]
             w.isReleasedWhenClosed = false
             w.setContentSize(NSSize(width: 270 + TagEditorView.formMinWidth + 40, height: 620))

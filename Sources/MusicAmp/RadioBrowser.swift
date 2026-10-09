@@ -153,7 +153,7 @@ extension Ctl {
     @objc func showRadio() {
         if radioWindowRef == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: RadioView(ctl: self, dir: .shared)))
-            w.title = "Radio"
+            w.title = L("Radio")
             w.styleMask = [.titled, .closable, .resizable, .miniaturizable]
             w.setContentSize(NSSize(width: 860, height: 520))
             w.isReleasedWhenClosed = false

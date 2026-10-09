@@ -18,6 +18,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/MusicAmp" "$APP/Contents/MacOS/MusicAmp"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+cp -R Resources/en.lproj Resources/it.lproj "$APP/Contents/Resources/"
 
 # App Intents metadata (Shortcuts actions, widget buttons): what Xcode does, from the constant values the
 # release build wrote (see Package.swift).

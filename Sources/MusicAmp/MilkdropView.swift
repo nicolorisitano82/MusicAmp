@@ -14,7 +14,7 @@ extension Ctl {
             }
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 500),
                              styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
-            w.title = "Milkdrop"
+            w.title = L("Milkdrop")
             w.contentView = c.view
             w.collectionBehavior = [.fullScreenPrimary]
             w.isReleasedWhenClosed = false
@@ -215,9 +215,9 @@ final class MilkdropController: NSObject, MTKViewDelegate, NSWindowDelegate {
 
     func contextMenu() -> NSMenu {
         let m = NSMenu()
-        m.addItem(withTitle: "Next Preset", action: #selector(menuNext), keyEquivalent: "").target = self
-        m.addItem(withTitle: "Previous Preset", action: #selector(menuPrev), keyEquivalent: "").target = self
-        let lock = m.addItem(withTitle: "Lock Preset", action: #selector(menuLock), keyEquivalent: "")
+        m.addItem(withTitle: L("Next Preset"), action: #selector(menuNext), keyEquivalent: "").target = self
+        m.addItem(withTitle: L("Previous Preset"), action: #selector(menuPrev), keyEquivalent: "").target = self
+        let lock = m.addItem(withTitle: L("Lock Preset"), action: #selector(menuLock), keyEquivalent: "")
         lock.target = self
         lock.state = locked ? .on : .off
         let auto = NSMenu()
@@ -227,7 +227,7 @@ final class MilkdropController: NSObject, MTKViewDelegate, NSWindowDelegate {
             it.representedObject = s
             it.state = interval == s ? .on : .off
         }
-        m.addItem(withTitle: "Auto-Advance", action: nil, keyEquivalent: "").submenu = auto
+        m.addItem(withTitle: L("Auto-Advance"), action: nil, keyEquivalent: "").submenu = auto
         let list = NSMenu()
         for (i, e) in entries.enumerated() {
             let it = list.addItem(withTitle: e.name, action: #selector(menuPick(_:)), keyEquivalent: "")
@@ -235,11 +235,11 @@ final class MilkdropController: NSObject, MTKViewDelegate, NSWindowDelegate {
             it.tag = i
             it.state = history.indices.contains(historyPos) && history[historyPos] == i ? .on : .off
         }
-        m.addItem(withTitle: "Presets", action: nil, keyEquivalent: "").submenu = list
+        m.addItem(withTitle: L("Presets"), action: nil, keyEquivalent: "").submenu = list
         m.addItem(.separator())
-        m.addItem(withTitle: "Open Presets Folder", action: #selector(menuFolder), keyEquivalent: "").target = self
-        m.addItem(withTitle: "Reload Presets", action: #selector(menuReload), keyEquivalent: "").target = self
-        m.addItem(withTitle: "Full Screen", action: #selector(menuFull), keyEquivalent: "").target = self
+        m.addItem(withTitle: L("Open Presets Folder"), action: #selector(menuFolder), keyEquivalent: "").target = self
+        m.addItem(withTitle: L("Reload Presets"), action: #selector(menuReload), keyEquivalent: "").target = self
+        m.addItem(withTitle: L("Full Screen"), action: #selector(menuFull), keyEquivalent: "").target = self
         return m
     }
 
