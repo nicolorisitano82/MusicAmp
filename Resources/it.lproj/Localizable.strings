@@ -508,3 +508,8 @@
 "Lossless (FLAC)" = "Senza perdita (FLAC)";
 "High (AAC 320 kb/s)" = "Alta (AAC 320 kb/s)";
 "Lossless sends exactly what MusicAmp plays (about 2 Mb/s on your network); Chromecast and most UPnP speakers play it, and a speaker that refuses it gets AAC. Sonos and the karaoke on a TV always use AAC 320 kb/s." = "Senza perdita invia esattamente ciò che suona MusicAmp (circa 2 Mb/s sulla rete di casa); Chromecast e la maggior parte delle casse UPnP lo riproducono, e una cassa che lo rifiuta riceve AAC. Sonos e il karaoke sulla TV usano sempre AAC 320 kb/s.";
+
+/* Beta */
+"Beta" = "Beta";
+"Speakers (Beta)" = "Altoparlanti (Beta)";
+"AirPlay to several speakers, Chromecast, Sonos and UPnP are new: they may not work with every device yet." = "AirPlay su più casse, Chromecast, Sonos e UPnP sono nuovi: potrebbero non funzionare ancora con tutti i dispositivi.";

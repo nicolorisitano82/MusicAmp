@@ -131,7 +131,10 @@ private struct AudioTab: View {
                     RoutePicker().frame(width: 28, height: 22)
                 }
                 LabeledContent("Several AirPlay speakers, Chromecast, Sonos") {
-                    Button("Speakers…") { ctl.showSpeakers() }
+                    HStack(spacing: 6) {
+                        BetaBadge()
+                        Button("Speakers…") { ctl.showSpeakers() }
+                    }
                 }
                 Text("With \"System Default\", MusicAmp follows the output chosen here, in Control Center or in Sound settings, even if it's an AirPlay speaker.")
                     .font(.caption).foregroundStyle(.secondary)

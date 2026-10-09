@@ -340,7 +340,7 @@ extension Ctl {
     @MainActor @objc func showSpeakers() {
         if speakersWindowRef == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: SpeakersView(outputs: .shared, discovery: .shared)))
-            w.title = L("Speakers")
+            w.title = L("Speakers (Beta)")
             w.styleMask = [.titled, .closable, .miniaturizable]
             w.isReleasedWhenClosed = false
             w.setFrameAutosaveName("Speakers")
@@ -370,6 +370,13 @@ struct SpeakersView: View {
 
     var body: some View {
         Form {
+            Section {
+                HStack(spacing: 10) {
+                    BetaBadge()
+                    Text("AirPlay to several speakers, Chromecast, Sonos and UPnP are new: they may not work with every device yet.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section {
                 Toggle("AirPlay to several speakers", isOn: Binding(get: { outputs.airPlayOn }, set: { outputs.setAirPlay($0) }))
                 if outputs.airPlayOn {
@@ -442,5 +449,17 @@ private struct SpeakerRow: View {
             }
             Toggle("", isOn: Binding(get: { outputs.isOn(speaker) }, set: { _ in outputs.toggle(speaker) })).labelsHidden().toggleStyle(.switch)
         }
+    }
+}
+
+/// "Beta" capsule for features still being tried out (Speakers).
+struct BetaBadge: View {
+    var body: some View {
+        Text("Beta")
+            .font(.caption2.weight(.bold)).textCase(.uppercase)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .foregroundStyle(.white)
+            .background(Capsule().fill(Color.orange))
+            .accessibilityLabel(Text("Beta"))
     }
 }

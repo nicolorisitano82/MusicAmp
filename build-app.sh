@@ -1,6 +1,9 @@
 #!/bin/bash
-# Builds build/MusicAmp.app (release, Apple Silicon, macOS 26, ad-hoc signed, with a bundled LGPL FFmpeg)
+# Builds build/MusicAmp.app (release, Apple Silicon, macOS 26, with a bundled LGPL FFmpeg)
 # and build/MusicAmp-<version>.dmg.
+# Signing: the "MusicAmp Dev" certificate from the login keychain when there is one (a stable signature, so
+# macOS keeps the permissions it granted — Music folder, audio recording, local network — across builds),
+# otherwise ad hoc. MUSICAMP_SIGN=<identity> picks another one, MUSICAMP_SIGN=- forces ad hoc.
 # --no-dmg skips the disk image (faster when only the app is needed).
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -14,6 +17,9 @@ swift build -c release --triple arm64-apple-macosx26.0
 BIN=$(swift build -c release --triple arm64-apple-macosx26.0 --show-bin-path)
 APP=build/MusicAmp.app
 rm -rf "$APP"
+SIGN=${MUSICAMP_SIGN:-$(security find-certificate -c "MusicAmp Dev" -Z 2>/dev/null | awk '/SHA-1 hash:/ { print $3; exit }')}
+SIGN=${SIGN:--}
+[[ "$SIGN" == "-" ]] && echo "Signing: ad hoc" || echo "Signing: $SIGN"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/MusicAmp" "$APP/Contents/MacOS/MusicAmp"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
@@ -42,7 +48,7 @@ mkdir -p "$APPEX/Contents/MacOS" "$APPEX/Contents/Resources"
 cp "$BIN/MusicAmpWidget" "$APPEX/Contents/MacOS/MusicAmpWidget"
 cp Resources/Widget/Info.plist "$APPEX/Contents/Info.plist"
 appintents MusicAmpWidget "$APPEX/Contents/Resources"
-codesign --force --sign - --entitlements Resources/Widget/Widget.entitlements "$APPEX" >/dev/null
+codesign --force --sign "$SIGN" --entitlements Resources/Widget/Widget.entitlements "$APPEX" >/dev/null
 
 # Bundled FFmpeg (LGPL, decode only): built once from ffmpeg.org sources into vendor/ffmpeg.
 Scripts/build-ffmpeg.sh
@@ -50,8 +56,8 @@ mkdir -p "$APP/Contents/Helpers" "$APP/Contents/Resources/FFmpeg"
 # The vendored FFmpeg is universal: keep only the Apple Silicon slice.
 for tool in ffmpeg ffprobe; do lipo -thin arm64 "vendor/ffmpeg/$tool" -output "$APP/Contents/Helpers/$tool" 2>/dev/null || cp "vendor/ffmpeg/$tool" "$APP/Contents/Helpers/"; done
 cp vendor/ffmpeg/LICENSE.txt vendor/ffmpeg/SOURCE.txt "$APP/Contents/Resources/FFmpeg/"
-codesign --force --sign - "$APP/Contents/Helpers/ffmpeg" "$APP/Contents/Helpers/ffprobe" >/dev/null
-codesign --force --sign - "$APP" >/dev/null
+codesign --force --sign "$SIGN" "$APP/Contents/Helpers/ffmpeg" "$APP/Contents/Helpers/ffprobe" >/dev/null
+codesign --force --sign "$SIGN" "$APP" >/dev/null
 # Keep this build copy out of Launch Services: two apps with the same bundle id (this one and the installed one)
 # make the widget extension record flip between them and the widget gallery drop MusicAmp's widgets.
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$PWD/$APP" >/dev/null 2>&1 || true

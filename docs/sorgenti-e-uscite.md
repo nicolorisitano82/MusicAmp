@@ -36,7 +36,7 @@ Se un permesso manca, la sorgente mostra un messaggio con il punto delle Imposta
 
 ## Uscite: più casse AirPlay, Chromecast, Sonos, UPnP
 
-**Controlli → Altoparlanti…**, oppure Impostazioni → Audio → Altoparlanti… (`Outputs.swift`, `LiveStream.swift`, `CastDevices.swift`).
+**Controlli → Altoparlanti…** (in beta), oppure Impostazioni → Audio → Altoparlanti… (`Outputs.swift`, `LiveStream.swift`, `CastDevices.swift`).
 
 ### Lo stream
 

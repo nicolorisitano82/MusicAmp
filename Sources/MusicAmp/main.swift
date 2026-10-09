@@ -140,7 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             source.submenu = sm
             play.addItem(source)
         }
-        c.item(play, "Speakers (AirPlay, Chromecast, Sonos)…", #selector(Ctl.showSpeakers))
+        c.item(play, "Speakers (AirPlay, Chromecast, Sonos)…", #selector(Ctl.showSpeakers)).badge = NSMenuItemBadge(string: L("Beta"))
         let rate = NSMenuItem(title: L("Rate Current Track"), action: nil, keyEquivalent: "")
         rate.submenu = c.ratingMenu(#selector(Ctl.rateCurrent(_:)), current: nil, keys: true)
         play.addItem(rate)
