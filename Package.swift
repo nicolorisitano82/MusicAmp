@@ -15,7 +15,9 @@ let package = Package(
     platforms: [.macOS("26.0")],
     targets: [
         .target(name: "MusicAmpShared", path: "Sources/MusicAmpShared"),
-        .executableTarget(name: "MusicAmp", dependencies: ["MusicAmpShared"], path: "Sources/MusicAmp",
+        // Apple's Core ML Stable Diffusion pipeline (MIT), vendored: Live Video's images, on the Neural Engine.
+        .target(name: "StableDiffusion", path: "Sources/StableDiffusion", exclude: ["LICENSE.md", "README.md"]),
+        .executableTarget(name: "MusicAmp", dependencies: ["MusicAmpShared", "StableDiffusion"], path: "Sources/MusicAmp",
                           swiftSettings: constValues("MusicAmp")),
         // WidgetKit extension, packaged by build-app.sh as Contents/PlugIns/MusicAmpWidget.appex.
         .executableTarget(name: "MusicAmpWidget", dependencies: ["MusicAmpShared"], path: "Sources/MusicAmpWidget",

@@ -189,6 +189,7 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
     var sonicWindowRef: NSWindow?
     var insightsWindowRef: NSWindow?
     var speakersWindowRef: NSWindow?
+    var liveVideoWindowRef: NSWindow?
     var milkdropController: MilkdropController?
     private var menuBar: MenuBarController?
     private var notifier: TrackNotifier?
@@ -427,11 +428,11 @@ final class Ctl: NSObject, NSMenuItemValidation, NSMenuDelegate, ObservableObjec
             lastTrack = playlist.currentTrack
             applyAutoEQ(announce: true)
             refreshLyrics()
-            MainActor.assumeIsolated { Outputs.shared.trackChanged() }
+            MainActor.assumeIsolated { Outputs.shared.trackChanged(); LiveVideo.shared.refresh() }
             applySpokenWord()
         }
         nowPlaying?.update()
-        MainActor.assumeIsolated { Outputs.shared.playbackChanged() }
+        MainActor.assumeIsolated { Outputs.shared.playbackChanged(); LiveVideo.shared.transportChanged() }
         WidgetBridge.shared.setNeedsUpdate()
         DockIcon.shared.update()
         notifier?.transportChanged()

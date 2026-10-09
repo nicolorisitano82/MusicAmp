@@ -3,7 +3,6 @@
 /* Menus */
 "MusicAmp" = "MusicAmp";
 "About MusicAmp" = "Informazioni su MusicAmp";
-"Settings…" = "Impostazioni…";
 "Hide MusicAmp" = "Nascondi MusicAmp";
 "Hide Others" = "Nascondi altre";
 "Show All" = "Mostra tutte";
@@ -513,3 +512,38 @@
 "Beta" = "Beta";
 "Speakers (Beta)" = "Altoparlanti (Beta)";
 "AirPlay to several speakers, Chromecast, Sonos and UPnP are new: they may not work with every device yet." = "AirPlay su più casse, Chromecast, Sonos e UPnP sono nuovi: potrebbero non funzionare ancora con tutti i dispositivi.";
+
+/* Live Video */
+"Live Video" = "Live Video";
+"Live Video (Beta)" = "Live Video (Beta)";
+"Live Video needs an image model: Settings → Visualization → Live Video." = "Live Video ha bisogno di un modello di immagini: Impostazioni → Visualizzazione → Live Video.";
+"Waiting for the lyrics…" = "In attesa del testo…";
+"Reading the song…" = "Leggo la canzone…";
+"Couldn't imagine this song." = "Non riesco a immaginare questa canzone.";
+"Painting %d of %d…" = "Dipingo %d di %d…";
+"The image model failed." = "Il modello di immagini si è fermato.";
+"Choose a Core ML Stable Diffusion model: a folder or a .zip from Apple's Hugging Face pages." = "Scegli un modello Core ML di Stable Diffusion: una cartella o uno .zip dalle pagine Hugging Face di Apple.";
+"Pictures made on this Mac from what the lyrics are about, with the lyrics underneath. Needs Apple Intelligence and an image model (downloaded once, kept on this Mac)." = "Immagini create su questo Mac da ciò che racconta il testo, con il testo sotto. Servono Apple Intelligence e un modello di immagini (scaricato una volta, resta su questo Mac).";
+"Image model" = "Modello di immagini";
+"None installed" = "Nessuno installato";
+"SDXL — best quality, 768 px, Neural Engine" = "SDXL — qualità migliore, 768 px, Neural Engine";
+"SD 2.1 — faster, 512 px, GPU" = "SD 2.1 — più veloce, 512 px, GPU";
+"Download (%@)" = "Scarica (%@)";
+"Choose Model…" = "Scegli modello…";
+"Watercolor" = "Acquerello";
+"Illustration" = "Illustrazione";
+"Oil Painting" = "Pittura a olio";
+"Cinematic" = "Cinematografico";
+"Prepare the next track while this one plays" = "Prepara il brano successivo mentre suona questo";
+"Show on the TV (Chromecast with lyrics)" = "Mostra sulla TV (Chromecast con testo)";
+"Open Live Video" = "Apri Live Video";
+"Clear Pictures (%@)" = "Cancella immagini (%@)";
+"Models: Apple's Core ML conversions of Stable Diffusion (CreativeML Open RAIL++-M licence). A model folder or .zip can also be added by hand with Choose Model…; they're kept in Application Support/MusicAmp/Models." = "Modelli: conversioni Core ML di Stable Diffusion fatte da Apple (licenza CreativeML Open RAIL++-M). Una cartella o uno .zip di modello si possono aggiungere anche a mano con Scegli modello…; restano in Application Support/MusicAmp/Models.";
+"Settings…" = "Impostazioni…";
+"Preparing the image model (the first time takes a couple of minutes)…" = "Preparo il modello di immagini (la prima volta servono un paio di minuti)…";
+"Preparing the video" = "Preparo il video";
+"Writing the storyboard…" = "Scrivo lo storyboard…";
+"Picture %d of %d" = "Immagine %d di %d";
+"Play Now" = "Riproduci subito";
+"Make the whole video before the song starts" = "Crea tutto il video prima che parta la canzone";
+"Automatic (the director chooses)" = "Automatico (sceglie il regista)";

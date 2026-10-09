@@ -10,6 +10,7 @@ Riferimenti per chi lavora sul codice o crea contenuti (skin, preset) per MusicA
 | [Editor dei tag e vista copertina](tag.md) | Modifica dei tag su più file (MP3, FLAC, M4A), ricerca su MusicBrainz e Cover Art Archive, vista grande della copertina |
 | [Motore audio](audio.md) | Grafo AVAudioEngine, gapless, crossfade, bit-perfect, EQ parametrico e AutoEq, file CUE, timer e sveglia, ReplayGain, FFmpeg, radio, podcast |
 | [Intelligenza artificiale sul Mac](ai.md) | Testi sincronizzati dall'audio, podcast trascritti con capitoli/riassunto/pubblicità, playlist a parole, umore e stile, riordino dei tag |
+| [Live Video (Beta)](live-video.md) | Immagini create sul Mac dal testo della canzone (storyboard con Apple Intelligence, Stable Diffusion in Core ML con modelli in sideload), sulla finestra e sulla TV |
 | [Sorgenti, uscite e lingue](sorgenti-e-uscite.md) | Apple Music e Spotify come sorgente, stream live per più casse AirPlay, Chromecast, Sonos e UPnP, traduzione dei testi, lingua dell'interfaccia |
 | [Ascolti, voti e playlist intelligenti](playlist-intelligenti.md) | Conteggio degli ascolti, voti, regole e ordinamenti delle playlist intelligenti |
 | [Integrazione con macOS](sistema.md) | Comandi rapidi (App Intents senza Xcode), widget WidgetKit, URL `musicamp://` |

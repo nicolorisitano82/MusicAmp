@@ -187,7 +187,7 @@ final class LyricsService: ObservableObject {
 
     static let userAgent = "MusicAmp/0.5 (https://github.com/nicolorisitano82/MusicAmp)"
 
-    private var cacheDir: URL {
+    var cacheDir: URL {
         let u = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("MusicAmp/Lyrics", isDirectory: true)
         try? FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)

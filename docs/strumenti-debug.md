@@ -36,6 +36,8 @@ Le singole suite:
 | `--test-schedule` | Orari della sveglia (giorni, una volta, ora legale), curve di dissolvenza, stato del widget, URL `musicamp://`, ring buffer del bridge Musica/Spotify |
 | `--test-outputs` | Stream live AAC per le casse (HTTP, frame ADTS, tono decodificato, silenzio, copertina), AVPlayer muto sullo stream (AirPlay), messaggi Cast v2, descrizioni Sonos/DLNA; con `MUSICAMP_TEST_NET=1` elenca le casse in rete |
 | `--test-tv [frame.png]` | Karaoke sulla TV: fotogramma (orientamento, riga cantata, tempo di disegno), stream HLS audio+video e solo audio (playlist, segmenti, tracce), AVPlayer muto sull'indirizzo di rete; salva i fotogrammi se si passa un percorso |
+| `--test-livevideo [frame.png]` | Live Video: righe in scene, chiavi della cache, tempi delle scene, dissolvenza, fotogramma sopra un'immagine; con `MUSICAMP_TEST_SD=1` storyboard con Apple Intelligence e un'immagine con il modello installato |
+| `--livevideo-diagnose` | Storyboard di Live Video su tutti i testi in cache: righe, gruppi, esito o errore esatto (filtri, rifiuto, contesto), scene di riserva, tempi; i testi non vengono mai stampati |
 | `--test-i18n` | Stringhe italiane (specificatori di formato, menu e impostazioni coperti), scelta della lingua; con `-AppleLanguages '(it)'` nel bundle verifica il lookup in italiano |
 | `--test-vocal` | Rimozione della voce su uno stereo generato: voce al centro a 440 Hz rimossa, strumento solo a sinistra e basso al centro conservati, forza al 50%, spenta = inalterato |
 | `--test-smart` | Transizioni intelligenti: misura del silenzio in testa e in coda, nessun buco tra album diversi, silenzio conservato nello stesso album e con l'opzione spenta |

@@ -62,7 +62,7 @@ extension Ctl {
 
     /// Looks lyrics up for what is playing, only while a lyrics view is open (no network otherwise).
     func refreshLyrics(force: Bool = false, evenIfHidden: Bool = false) {
-        let tv = MainActor.assumeIsolated { TVKaraoke.shared.active }
+        let tv = MainActor.assumeIsolated { TVKaraoke.shared.active || LiveVideo.shared.active }
         let open = lyricsWindowRef?.isVisible == true || karaokeWindowRef?.isVisible == true || tv
         guard open || force || evenIfHidden else { return }
         var q = playlist.currentTrack.flatMap { LyricsService.query(for: $0, duration: audio.duration) }
@@ -193,14 +193,18 @@ struct WordFlow: Layout {
             h += rowH
         }
         h += lineSpacing * CGFloat(max(0, rs.count - 1))
-        if let pw = proposal.width { w = min(pw, w) }
+        // Wrapped onto several rows: take the whole width offered, so placing the words (which wraps again, in
+        // the width it's given) finds the same rows. Reporting only the widest row made it wrap once more and
+        // the last row fell below the frame.
+        if let pw = proposal.width, pw.isFinite { w = rs.count > 1 ? pw : min(pw, w) }
         return CGSize(width: w, height: h)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
         var y = bounds.minY
-        for r in rows(sizes, width: bounds.width) {
+        // Same width as sizeThatFits (a hair of slack against rounding).
+        for r in rows(sizes, width: max(bounds.width, proposal.width ?? 0) + 0.5) {
             let rowW = r.map { sizes[$0].width }.reduce(0, +) + spacing * CGFloat(max(0, r.count - 1))
             let rowH = r.map { sizes[$0].height }.max() ?? 0
             var x = center ? bounds.minX + (bounds.width - rowW) / 2 : bounds.minX

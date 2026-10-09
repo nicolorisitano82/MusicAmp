@@ -47,6 +47,7 @@ SUITES=(
     "stats|--test-stats|none|60|play counts, skips, ratings, smart playlist rules (genre, year, BPM, key)"
     "schedule|--test-schedule|none|30|alarm times, fades, widget state, musicamp:// URLs"
     "i18n|--test-i18n|none|30|Italian interface strings, language choice, lyrics translation targets"
+    "livevideo|--test-livevideo|none|60|Live Video: lyric lines into scenes, cache keys, scene timing, frame over a picture"
     "tv|--test-tv|none|90|karaoke on the TV: frame, drawing time, HLS audio and video streams, players on them"
     "outputs|--test-outputs|none|60|live AAC stream for speakers, cover, silence, AirPlay player, Cast and UPnP messages"
     "dock|--test-dock|none|60|Dock mode: icon click plays/pauses, Dock menu, live icon, mini tile"

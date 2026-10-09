@@ -35,6 +35,7 @@ final class TVKaraoke {
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
+        LiveVideo.shared.refresh()
     }
 
     func stop(stream: LiveStream) {
@@ -42,6 +43,7 @@ final class TVKaraoke {
         timer = nil
         stream.removeHLS(TVKaraoke.name)
         hls = nil
+        LiveVideo.shared.refresh()
     }
 
     private func tick() {
@@ -128,7 +130,9 @@ final class TVKaraoke {
         guard let ctx = CGContext(data: CVPixelBufferGetBaseAddress(pb), width: CVPixelBufferGetWidth(pb), height: CVPixelBufferGetHeight(pb),
                                   bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(pb), space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else { return }
-        let r = ImageRenderer(content: TVKaraokeFrame(s: s).frame(width: TVKaraoke.size.width, height: TVKaraoke.size.height))
+        // Live Video on the TV when chosen (Settings → Visualization → Live Video), otherwise the lyrics karaoke.
+        let content: AnyView = LiveVideo.shared.onTV ? AnyView(LiveVideoFrame(input: LiveVideo.shared.input(s))) : AnyView(TVKaraokeFrame(s: s))
+        let r = ImageRenderer(content: content.frame(width: TVKaraoke.size.width, height: TVKaraoke.size.height))
         r.proposedSize = ProposedViewSize(TVKaraoke.size)
         r.render { _, paint in paint(ctx) }
     }

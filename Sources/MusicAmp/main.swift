@@ -165,6 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.item(view, "Dock Mode (Hide the Player)", #selector(Ctl.toggleDockMode), "o", [.command, .option, .shift])
         c.item(view, "Show Player", #selector(Ctl.showPlayer), "p", [.command, .option])
         c.item(view, "Full-Screen Karaoke", #selector(Ctl.showKaraoke), "k", [.command, .option])
+        c.item(view, "Live Video", #selector(Ctl.showLiveVideo)).badge = NSMenuItemBadge(string: L("Beta"))
         c.item(view, "Milkdrop", #selector(Ctl.showMilkdrop), "m", [.command, .option])
         view.addItem(.separator())
         c.item(view, "Windowshade Mode", #selector(Ctl.toggleMainShade), "w", [.option])
@@ -1505,6 +1506,32 @@ if CommandLine.arguments.contains("--test-i18n") {
     check(LyricsTranslator.targets.map(\.0).contains("it") && LyricsTranslator.targets.map(\.0).contains("en"), "lyrics translate to Italian and English")
     print(fails == 0 ? "ALL OK" : "\(fails) FAILED")
     exit(fails == 0 ? 0 : 1)
+}
+
+/// Debug: `MusicAmp --livevideo-board <lyrics cache file> <title> <artist>`: one song's storyboard.
+if let i = CommandLine.arguments.firstIndex(of: "--livevideo-board"), CommandLine.arguments.count > i + 3 {
+    let a = CommandLine.arguments
+    let code: Int32 = await LiveVideoDiagnose.board(file: a[i + 1], title: a[i + 2], artist: a[i + 3])
+    exit(code)
+}
+
+/// Debug: `MusicAmp --livevideo-paint <board.json> <out dir>`: paints a storyboard.
+if let i = CommandLine.arguments.firstIndex(of: "--livevideo-paint"), CommandLine.arguments.count > i + 2 {
+    let a = CommandLine.arguments
+    let code: Int32 = await LiveVideoDiagnose.paint(board: a[i + 1], out: a[i + 2])
+    exit(code)
+}
+
+/// Debug: `MusicAmp --livevideo-diagnose`: Live Video storyboards on the cached lyrics (see LiveVideoDiagnose.swift).
+if CommandLine.arguments.contains("--livevideo-diagnose") {
+    let code: Int32 = await LiveVideoDiagnose.run()
+    exit(code)
+}
+
+/// Debug: `MusicAmp --test-livevideo [frame.png]`: see LiveVideoTest.swift.
+if CommandLine.arguments.contains("--test-livevideo") {
+    let code: Int32 = await LiveVideoTest.run()
+    exit(code)
 }
 
 /// Debug: `MusicAmp --test-tv [out.png]`: see TVKaraokeTest.swift.
