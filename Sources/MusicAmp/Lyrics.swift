@@ -185,7 +185,7 @@ final class LyricsService: ObservableObject {
     private var request = 0
     private var autoTried = Set<String>()
 
-    static let userAgent = "MusicAmp/0.4 (https://github.com/nicolorisitano82/MusicAmp)"
+    static let userAgent = "MusicAmp/0.5 (https://github.com/nicolorisitano82/MusicAmp)"
 
     private var cacheDir: URL {
         let u = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

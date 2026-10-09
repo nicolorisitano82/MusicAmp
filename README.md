@@ -20,10 +20,11 @@ Un player audio minimale e nativo per macOS, compatibile con le skin classiche d
   - album in un solo file con `.cue`, divisi in tracce;
   - timer di spegnimento e sveglia, con dissolvenze;
   - formati extra (Ogg, Opus, APE, WavPack, Musepack, WMA, DSD…) con FFmpeg già incluso;
-  - AirPlay e scelta dell'uscita; [più casse AirPlay insieme, Chromecast, Sonos e UPnP/DLNA](docs/sorgenti-e-uscite.md) con uno stream live dopo gli EQ.
+  - AirPlay e scelta dell'uscita.
+- **Altoparlanti (Beta):** [più casse AirPlay insieme, Chromecast, Sonos e UPnP/DLNA](docs/sorgenti-e-uscite.md), in FLAC senza perdita o AAC 320 kb/s, dopo gli EQ. Pausa e volume vengono inoltrati ai dispositivi, e la TV mostra il karaoke.
 - **Radio internet** Icecast/SHOUTcast e HLS, con client nativo e catalogo radio-browser.info.
 - **Podcast:** ricerca, RSS, OPML, download, velocità e intonazione, Voice Boost e silenzi accorciati, ripresa dal punto salvato negli audiolibri.
-- **Testi** sincronizzati (LRCLIB, `.lrc`, tag), tradotti riga per riga sul Mac, e **karaoke** a schermo intero con le parole evidenziate una alla volta.
+- **Testi** sincronizzati (LRCLIB, `.lrc`, tag), tradotti riga per riga sul Mac, e **karaoke** a schermo intero con le parole evidenziate una alla volta, anche sulla TV tramite Chromecast.
 - **Milkdrop** su Metal:
   - preset `.milk` di Milkdrop 1 e 2;
   - gli shader HLSL di Milkdrop 2 sono tradotti in Metal: compila il 99,9% della raccolta "cream of the crop" di projectM.
@@ -63,6 +64,12 @@ Opzionale (Impostazioni → Visualization): l'onda del brano è disegnata dentro
 ![Widget Now Playing nelle misure piccola, media e grande](docs/images/widget.png)
 
 ![Widget Mini Tile: in riproduzione, in pausa, radio](docs/images/widget-mini-tile.png)
+
+### Altoparlanti (Beta)
+
+Controlli → Altoparlanti manda la musica a casse AirPlay 2 (anche più di una, sincronizzate), Chromecast, Sonos e UPnP/DLNA trovati sulla rete. Lo stream parte dopo equalizzatori e crossfeed, in FLAC a 24 bit o in AAC 320 kb/s. Con il pulsante 🎤 il Chromecast riceve un video karaoke: testo e audio viaggiano nello stesso stream e restano sempre sincronizzati.
+
+![Karaoke sulla TV via Chromecast: copertina sfocata, riga cantata con le parole che si accendono, traduzione e righe successive](docs/images/karaoke-tv.png)
 
 ### EQ parametrico per cuffie
 
