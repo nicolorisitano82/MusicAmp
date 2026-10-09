@@ -37,9 +37,17 @@ final class Outputs: ObservableObject {
             }
         }
     }
-    /// Device volume when it was last anchored to the slider (speaker id → (device level 0…1, slider 0…100)).
-    private var volumeAnchor: [String: (level: Double, slider: Double)] = [:]
-    private var lastSent: [String: Double] = [:]
+    /// While Chromecast/UPnP speakers play, the volume slider *is* their volume (0…100 = their 0…100%), like
+    /// Spotify or Google Home: on connecting it moves to the speaker's level, and a change on the remote moves it.
+    /// The Mac's own setting is kept here and given back when casting ends.
+    private var savedMacVolume: Double?
+    /// Speakers whose volume the slider drives (speaker id → last level sent, 0…1).
+    private var volumeLinked: [String: Double] = [:]
+    /// Until when a speaker's volume reports are our own change settling (devices step through levels).
+    private var ignoreReportsUntil: [String: Date] = [:]
+    private var volumeSendPending = false
+    /// Setting the slider from a speaker's report: don't send it back.
+    private var adoptingDeviceVolume = false
     /// UPnP renderers stopped (not paused) by a pause: resuming loads the stream again.
     private var upnpStopped = Set<String>()
 
@@ -81,19 +89,46 @@ final class Outputs: ObservableObject {
         LiveStream.shared.gain = 1
         airPlayer.volume = x * x
         Ctl.shared.audio.engine.mainMixerNode.outputVolume = casting && muteMac ? 0 : x * x
-        for (id, a) in volumeAnchor where active[id] != nil {
-            let target = max(0, min(1, a.slider > 0.5 ? a.level * v / a.slider : a.level))
-            guard abs((lastSent[id] ?? -1) - target) > 0.004 else { continue }
-            lastSent[id] = target
-            if let c = casts[id] { c.setVolume(target) } else if let u = upnp[id] { UPnPRenderer.setVolume(u, Int((target * 100).rounded())) }
+        guard !adoptingDeviceVolume, !volumeLinked.isEmpty, !volumeSendPending else { return }
+        // Coalesce a slider drag into one command every 100 ms.
+        volumeSendPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self.sendVolume() }
+    }
+
+    private func sendVolume() {
+        volumeSendPending = false
+        let level = (max(0, min(100, Ctl.shared.volume)) / 100 * 100).rounded() / 100   // whole percent, like the devices
+        for (id, last) in volumeLinked where active[id] != nil && abs(last - level) > 0.001 {
+            volumeLinked[id] = level
+            ignoreReportsUntil[id] = Date().addingTimeInterval(0.8)
+            OutputsLog.add("volume → \(id.hasPrefix("cast") ? "cast" : "upnp") \(Int((level * 100).rounded()))%")
+            if let c = casts[id] { c.setVolume(level) } else if let u = upnp[id] { UPnPRenderer.setVolume(u, Int((level * 100).rounded())) }
         }
     }
 
-    /// A speaker reported its volume: changed on the speaker (remote, app) → that becomes the new reference.
+    /// A speaker reported its volume. The first report links it to the slider; later ones (the remote, another
+    /// app) move the slider, except while our own change is still settling.
     private func deviceVolume(_ id: String, _ level: Double) {
-        if let sent = lastSent[id], abs(sent - level) < 0.006 { return }   // our own change coming back
-        volumeAnchor[id] = (level, max(0, min(100, Ctl.shared.volume)))
-        lastSent[id] = level
+        guard active[id] != nil else { return }
+        if let until = ignoreReportsUntil[id], Date() < until { return }
+        if let last = volumeLinked[id], abs(last - level) < 0.006 { return }
+        if savedMacVolume == nil { savedMacVolume = Ctl.shared.volume }
+        volumeLinked[id] = level
+        adoptingDeviceVolume = true
+        Ctl.shared.volume = (level * 100).rounded()
+        adoptingDeviceVolume = false
+        Ctl.shared.mainView.needsDisplay = true
+        OutputsLog.add("volume ← \(id.hasPrefix("cast") ? "cast" : "upnp") \(Int((level * 100).rounded()))% (slider follows)")
+    }
+
+    /// Casting to Chromecast/UPnP ended: the slider goes back to the Mac's own volume.
+    private func restoreMacVolume() {
+        guard volumeLinked.isEmpty, let v = savedMacVolume else { return }
+        savedMacVolume = nil
+        adoptingDeviceVolume = true
+        Ctl.shared.volume = v
+        adoptingDeviceVolume = false
+        Ctl.shared.mainView.needsDisplay = true
     }
 
     /// The current track's cover for Chromecast's screen.
@@ -249,8 +284,9 @@ final class Outputs: ObservableObject {
         defer { updateTV() }
         if let u = upnp.removeValue(forKey: s.id) { UPnPRenderer.stop(u) }
         active[s.id] = nil
-        volumeAnchor[s.id] = nil
-        lastSent[s.id] = nil
+        volumeLinked[s.id] = nil
+        ignoreReportsUntil[s.id] = nil
+        restoreMacVolume()
         upnpStopped.remove(s.id)
         stopStreamIfIdle()
     }
@@ -261,6 +297,8 @@ final class Outputs: ObservableObject {
         updateTV()
         upnp.values.forEach(UPnPRenderer.stop); upnp = [:]
         active = [:]
+        volumeLinked = [:]
+        restoreMacVolume()
         setAirPlay(false)
     }
 
@@ -364,7 +402,7 @@ struct SpeakersView: View {
                     LabeledContent("Stream", value: u.absoluteString).textSelection(.enabled)
                     LabeledContent("Listeners", value: "\(outputs.listeners)")
                 }
-                Text("The volume slider moves each speaker's own volume, from where it was; the sound is sent at full level. Speakers play what MusicAmp plays, after the equalizers, with a few seconds of delay. Different kinds of speakers aren't in sync with each other. Any player on the network can open the stream address too.")
+                Text("While Chromecast or UPnP speakers play, the volume slider is their volume; the sound is sent at full level. Speakers play what MusicAmp plays, after the equalizers, with a few seconds of delay. Different kinds of speakers aren't in sync with each other. Any player on the network can open the stream address too.")
                     .font(.caption).foregroundStyle(.secondary)
                 if outputs.casting { Button("Stop All") { outputs.disconnectAll() } }
             } header: { Text("Stream") }

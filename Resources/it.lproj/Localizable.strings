@@ -341,7 +341,7 @@
 "Mute this Mac while casting" = "Silenzia questo Mac durante la trasmissione";
 "Stream" = "Stream";
 "Listeners" = "Ascoltatori";
-"The volume slider moves each speaker's own volume, from where it was; the sound is sent at full level. Speakers play what MusicAmp plays, after the equalizers, with a few seconds of delay. Different kinds of speakers aren't in sync with each other. Any player on the network can open the stream address too." = "Il cursore del volume muove il volume di ogni cassa partendo da dov'era; il suono viene inviato a livello pieno. Le casse suonano ciò che suona MusicAmp, dopo gli equalizzatori, con qualche secondo di ritardo. Casse di tipo diverso non sono sincronizzate tra loro. Anche qualunque player in rete può aprire l'indirizzo dello stream.";
+"While Chromecast or UPnP speakers play, the volume slider is their volume; the sound is sent at full level. Speakers play what MusicAmp plays, after the equalizers, with a few seconds of delay. Different kinds of speakers aren't in sync with each other. Any player on the network can open the stream address too." = "Mentre suonano Chromecast o casse UPnP, il cursore del volume è il loro volume; il suono viene inviato a livello pieno. Le casse suonano ciò che suona MusicAmp, dopo gli equalizzatori, con qualche secondo di ritardo. Casse di tipo diverso non sono sincronizzate tra loro. Anche qualunque player in rete può aprire l'indirizzo dello stream.";
 "Stop All" = "Ferma tutto";
 "Connecting…" = "Connessione…";
 "Playing" = "In riproduzione";

@@ -54,12 +54,14 @@ Tutto parte da uno stream live sulla rete locale (`LiveStream.swift`, `StreamEnc
 - I renderer UPnP ricevono il FLAC con `protocolInfo audio/flac`; se `SetAVTransportURI` fallisce, ricevono l'AAC.
 - I Sonos e il karaoke sulla TV usano sempre AAC 320 kb/s. Anche gli stream HLS sono a 320 kb/s.
 
-**Volume.** Lo stream va sempre a livello pieno: abbassarlo prima della codifica toglieva risoluzione. Il cursore muove il volume dei dispositivi, in modo relativo:
-- alla connessione si legge il volume del dispositivo: `RECEIVER_STATUS` per il Chromecast, `GetVolume` di RenderingControl per UPnP/Sonos;
-- muovendo il cursore, il volume del dispositivo cambia nella stessa proporzione, con `SET_VOLUME` o `SetVolume`;
-- se il volume cambia dal telecomando, quello diventa il nuovo riferimento;
-- una TV all'8% non salta mai al 75%;
-- AirPlay segue il volume del suo player.
+**Volume.** Lo stream va sempre a livello pieno: abbassarlo prima della codifica toglieva risoluzione. Con Chromecast o UPnP/Sonos collegati, **il cursore di MusicAmp è il volume del dispositivo**, come in Spotify o Google Home:
+- alla connessione il cursore si porta al volume attuale del dispositivo, letto da `RECEIVER_STATUS` o da `GetVolume`, quindi niente salti;
+- muovendo il cursore, il dispositivo va allo stesso valore (0–100%). I comandi sono raggruppati ogni 100 ms;
+- le notifiche del dispositivo nei 0,8 s successivi vengono ignorate: il Chromecast sale o scende a gradini dell'1% e notifica ogni gradino, e prima questo innescava un ciclo;
+- un cambio dal telecomando sposta il cursore;
+- quando la trasmissione finisce, anche all'uscita da MusicAmp, il cursore torna al volume del Mac.
+
+AirPlay segue il volume del suo player.
 
 Con "Silenzia questo Mac durante la trasmissione", attivo di default, le casse del Mac tacciono mentre si trasmette.
 

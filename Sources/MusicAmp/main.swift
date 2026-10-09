@@ -36,8 +36,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ n: Notification) {
+        // Chromecast/Sonos back to idle, and the slider back to the Mac's volume before it is saved.
+        MainActor.assumeIsolated { Outputs.shared.disconnectAll() }
         Ctl.shared.saveSettings()
-        MainActor.assumeIsolated { Outputs.shared.disconnectAll() }   // Chromecast/Sonos back to idle
         WidgetBridge.shared.terminated()
         PlayStats.shared.save()
         Ctl.shared.audio.restoreDeviceRate()   // bit-perfect: give the device its rate back
