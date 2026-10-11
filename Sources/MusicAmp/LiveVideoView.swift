@@ -13,6 +13,11 @@ struct LiveVideoInput {
     var scene = 0
     var progress = 0.0   // 0…1 through the scene
     var fade = 1.0       // 0…1 cross-fade from the previous picture
+    /// How this scene frames its picture: the shot's framing, and the n-th return of a repeated part.
+    var framing = ""
+    var variation = 0
+    var previousFraming = ""
+    var previousVariation = 0
     var status = ""
     /// The song waits while its video is made: pictures done / total (total 0 while the storyboard is written).
     var preparing: (done: Int, total: Int)?
@@ -23,7 +28,7 @@ extension LiveVideo {
     /// The frame for the song playing now (window and TV).
     func input(_ s: TVKaraoke.State) -> LiveVideoInput {
         var i = LiveVideoInput(s: s, status: status)
-        if holding { i.preparing = (images.count, board?.scenes.count ?? 0) }
+        if holding { i.preparing = (images.count, board?.imageCount ?? 0) }
         let duration = Ctl.shared.audio.duration
         guard let sc = scene(at: s.now, lyrics: s.lyrics, duration: duration), let (k, img) = image(upTo: sc.index) else { return i }
         i.picture = img
@@ -31,27 +36,44 @@ extension LiveVideo {
         let start = k == sc.index ? sc.start : sceneStart(k, lyrics: s.lyrics, duration: duration)
         let end = k == sc.index ? sc.end : sc.start
         i.progress = max(0, min(1, (s.now - start) / max(1, end - start)))
+        if let b = board, b.scenes.indices.contains(k) { i.framing = b.scenes[k].framing; i.variation = b.scenes[k].variation }
         if k == sc.index, k > 0, let (pk, prev) = image(upTo: k - 1), pk < k {
             i.fade = max(0, min(1, (s.now - sc.start) / 1.2))
-            if i.fade < 1 { i.previous = prev }
+            if i.fade < 1 {
+                i.previous = prev
+                if let b = board, b.scenes.indices.contains(pk) { i.previousFraming = b.scenes[pk].framing; i.previousVariation = b.scenes[pk].variation }
+            }
         }
         return i
     }
 }
 
-/// A picture slowly zooming and drifting (the "Ken Burns" move), filling the frame.
+/// A picture slowly zooming and drifting (the "Ken Burns" move), filling the frame. Wide shots pull back, close
+/// shots push in; when a part comes back (the chorus) its picture is framed again closer and off-centre, so the
+/// repeat reads as a new shot of the same scene.
 private struct KenBurns: View {
     let image: CGImage
     let progress: Double
     let scene: Int
+    var framing = ""
+    var variation = 0
 
     var body: some View {
         GeometryReader { geo in
             let dir: CGFloat = scene % 2 == 0 ? 1 : -1
+            let (from, to): (Double, Double) = switch framing {
+            case "wide", "crowd": (1.18, 1.04)
+            case "close-up", "detail": (1.04, 1.18)
+            default: (1.05, 1.13)
+            }
+            let v = Double(min(variation, 2))
+            let crop = 0.22 * v
+            let side: CGFloat = variation % 2 == 1 ? 1 : -1
             Image(decorative: image, scale: 1).resizable().aspectRatio(contentMode: .fill)
                 .frame(width: geo.size.width, height: geo.size.height)
-                .scaleEffect(1.05 + 0.10 * progress)
-                .offset(x: dir * geo.size.width * 0.03 * (progress - 0.5), y: -geo.size.height * 0.015 * progress)
+                .scaleEffect(from + (to - from) * progress + crop)
+                .offset(x: dir * geo.size.width * 0.03 * (progress - 0.5) + side * geo.size.width * 0.08 * v,
+                        y: -geo.size.height * 0.015 * progress - geo.size.height * 0.04 * v)
                 .clipped()
         }
     }
@@ -67,8 +89,10 @@ struct LiveVideoFrame: View {
                 if input.picture == nil {
                     LyricsBackdrop(cover: input.s.cover.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }, pulse: input.s.pulse)
                 }
-                if let p = input.previous { KenBurns(image: p, progress: 1, scene: input.scene - 1) }
-                if let p = input.picture { KenBurns(image: p, progress: input.progress, scene: input.scene).opacity(input.fade) }
+                if let p = input.previous { KenBurns(image: p, progress: 1, scene: input.scene - 1, framing: input.previousFraming, variation: input.previousVariation) }
+                if let p = input.picture {
+                    KenBurns(image: p, progress: input.progress, scene: input.scene, framing: input.framing, variation: input.variation).opacity(input.fade)
+                }
                 // Lyrics over a dark band at the bottom.
                 VStack(spacing: big * 0.3) {
                     Spacer()
@@ -200,7 +224,7 @@ struct LiveVideoSettings: View {
             }
             .disabled(live.models.isEmpty)
             ForEach(LiveVideoModel.downloads) { d in
-                if !live.models.contains(where: { $0.isXL == (d.id == "sdxl") }) {
+                if !live.models.contains(where: { m in d.url.lastPathComponent.hasPrefix(m.name) }) {
                     HStack {
                         Text(LocalizedStringKey(d.title))
                         Spacer()
@@ -218,7 +242,7 @@ struct LiveVideoSettings: View {
             Picker("Style", selection: $live.style) {
                 ForEach(LiveVideoStyle.allCases) { Text(LocalizedStringKey($0.label)).tag($0) }
             }
-            Toggle("Make the whole video before the song starts", isOn: $live.waitBeforePlaying)
+            Toggle("Wait for the first picture before the song starts", isOn: $live.waitBeforePlaying)
             Toggle("Prepare the next track while this one plays", isOn: $live.prefetch)
             Toggle("Show on the TV (Chromecast with lyrics)", isOn: $live.onTV)
             HStack {
@@ -227,6 +251,8 @@ struct LiveVideoSettings: View {
                 Button(String(format: L("Clear Pictures (%@)"), ByteCountFormatter.string(fromByteCount: cache, countStyle: .file))) { live.clearCache(); cache = live.cacheSize }
             }
             if let e = live.error { Text(e).font(.caption).foregroundStyle(.red) }
+            Text("Requirements: Mac with Apple Silicon and macOS 26, Apple Intelligence turned on, and a model: SDXL full needs 32 GB of memory and 7 GB of disk; SDXL 16 GB and 3 GB; SD 2.1 8 GB and 1.2 GB. Pictures are kept per song (about 2 MB each song).")
+                .font(.caption).foregroundStyle(.secondary)
             Text("Models: Apple's Core ML conversions of Stable Diffusion (CreativeML Open RAIL++-M licence). A model folder or .zip can also be added by hand with Choose Model…; they're kept in Application Support/MusicAmp/Models.")
                 .font(.caption).foregroundStyle(.secondary)
         } header: { Text("Live Video") }

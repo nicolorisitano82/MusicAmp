@@ -18,9 +18,10 @@ struct LiveVideoModel: Identifiable, Hashable {
     var name: String { url.lastPathComponent }
     /// split_einsum models are made for the Neural Engine; "original" ones run best on the GPU.
     var computeUnits: MLComputeUnits { name.contains("split_einsum") ? .cpuAndNeuralEngine : .cpuAndGPU }
-    var size: Int { isXL ? 768 : 512 }
+    /// Apple's "-ios" SDXL is 768 px, the full SDXL 1024, SD 2.x 512.
+    var size: Int { isXL ? (name.contains("-ios") ? 768 : 1024) : 512 }
     var label: String {
-        let base = isXL ? "SDXL" : (name.contains("2-1") ? "SD 2.1" : "Stable Diffusion")
+        let base = isXL ? (name.contains("-ios") ? "SDXL" : "SDXL full, 1024 px") : (name.contains("2-1") ? "SD 2.1" : "Stable Diffusion")
         return "\(base) (\(computeUnits == .cpuAndNeuralEngine ? "Neural Engine" : "GPU"))"
     }
 
@@ -51,7 +52,16 @@ struct LiveVideoModel: Identifiable, Hashable {
             }
         }
         scan(folder, depth: 3)
-        return out.sorted { ($0.isXL ? 0 : 1, $0.name) < ($1.isXL ? 0 : 1, $1.name) }
+        return out.sorted { $0.rank < $1.rank }
+    }
+
+    /// Preferred first: the full SDXL on Macs with 32 GB or more (it holds ~7 GB while painting), then the
+    /// compressed SDXL, then SD 2.x.
+    static var bigMemory: Bool { ProcessInfo.processInfo.physicalMemory >= 32 << 30 }
+    var rank: Int {
+        let full = isXL && !name.contains("-ios")
+        if full { return Self.bigMemory ? 0 : 2 }
+        return isXL ? 1 : 3
     }
 
     /// Apple's ready-made Core ML models (Hugging Face), offered as downloads.
@@ -62,7 +72,9 @@ struct LiveVideoModel: Identifiable, Hashable {
         let url: URL
     }
     static let downloads: [Download] = [
-        Download(id: "sdxl", title: "SDXL — best quality, 768 px, Neural Engine", bytes: 3_052_964_832,
+        Download(id: "sdxl-full", title: "SDXL full — best pictures, 1024 px, GPU (Macs with 32 GB)", bytes: 7_040_000_000,
+                 url: URL(string: "https://huggingface.co/apple/coreml-stable-diffusion-xl-base/resolve/main/coreml-stable-diffusion-xl-base_original_compiled.zip")!),
+        Download(id: "sdxl", title: "SDXL — good and quicker, 768 px, Neural Engine", bytes: 3_052_964_832,
                  url: URL(string: "https://huggingface.co/apple/coreml-stable-diffusion-xl-base-ios/resolve/main/coreml-stable-diffusion-xl-base-ios_split_einsum_compiled.zip")!),
         Download(id: "sd21", title: "SD 2.1 — faster, 512 px, GPU", bytes: 1_139_245_980,
                  url: URL(string: "https://huggingface.co/apple/coreml-stable-diffusion-2-1-base-palettized/resolve/main/coreml-stable-diffusion-2-1-base-palettized_original_compiled.zip")!),
@@ -101,6 +113,12 @@ struct LiveVideoScene: Codable, Equatable {
     var firstLine: Int
     var lastLine: Int
     var prompt: String
+    /// The picture this scene shows (-1: its own, one per scene), how it is framed again when a part comes
+    /// back (0 the first time), the shot's framing and the song section ("chorus"…).
+    var image: Int = -1
+    var variation: Int = 0
+    var framing: String = ""
+    var kind: String = ""
 }
 
 struct LiveVideoBoard: Codable, Equatable {
@@ -112,6 +130,14 @@ struct LiveVideoBoard: Codable, Equatable {
     var characters: String = ""
     var mood: String = ""
     var scenes: [LiveVideoScene]
+    /// One prompt (and negative prompt) per distinct picture; empty: one picture per scene from its prompt.
+    var shots: [String] = []
+    var negatives: [String] = []
+    /// The shot each picture was asked for, for checking it with Vision.
+    var shotInfo: [LiveVideoPlan.Shot] = []
+
+    var imageCount: Int { shots.isEmpty ? scenes.count : shots.count }
+    func imageIndex(_ scene: Int) -> Int { scenes.indices.contains(scene) && scenes[scene].image >= 0 ? scenes[scene].image : scene }
 }
 
 enum LiveVideoStory {
@@ -360,7 +386,9 @@ final class LiveVideoEngine: @unchecked Sendable {
     private var cancelled = false
     private let lock = NSLock()
 
-    static let negative = "text, letters, words, watermark, signature, logo, blurry, deformed hands, extra fingers, ugly, low quality, photo frame, border"
+    /// Always excluded: text and artefacts, and nudity (the models have no safety checker of their own).
+    static let negative = "nude, naked, nudity, nsfw, explicit, topless, lingerie, underwear, cleavage, " +
+        "text, letters, words, watermark, signature, logo, blurry, deformed hands, extra fingers, ugly, low quality, photo frame, border"
 
     func cancel() { lock.lock(); cancelled = true; lock.unlock() }
     /// The model is loaded and ready (otherwise the next image starts by loading it: ~2 minutes the first
@@ -371,7 +399,7 @@ final class LiveVideoEngine: @unchecked Sendable {
     private var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
 
     /// One image; nil when cancelled.
-    func image(_ prompt: String, seed: UInt32, model: LiveVideoModel) async throws -> CGImage? {
+    func image(_ prompt: String, seed: UInt32, model: LiveVideoModel, negative: String = LiveVideoEngine.negative) async throws -> CGImage? {
         try await withCheckedThrowingContinuation { cont in
             queue.async { [self] in
                 lock.lock(); cancelled = false; lock.unlock()
@@ -390,7 +418,7 @@ final class LiveVideoEngine: @unchecked Sendable {
                         lock.lock(); readyModel = model.id; lock.unlock()
                     }
                     var c = PipelineConfiguration(prompt: prompt)
-                    c.negativePrompt = Self.negative
+                    c.negativePrompt = negative
                     c.stepCount = 20
                     c.seed = seed
                     c.guidanceScale = 7.5
@@ -469,7 +497,11 @@ final class LiveVideo: ObservableObject {
     var windowOpen = false
     var active: Bool { windowOpen || (onTV && TVKaraoke.shared.active) }
 
-    var model: LiveVideoModel? { models.first { $0.id == modelPath } ?? models.first }
+    var model: LiveVideoModel? {
+        // MUSICAMP_LV_MODEL=<part of the folder name>: a model for benchmarks.
+        if let want = ProcessInfo.processInfo.environment["MUSICAMP_LV_MODEL"], let m = models.first(where: { $0.name.contains(want) }) { return m }
+        return models.first { $0.id == modelPath } ?? models.first
+    }
 
     private let engine = LiveVideoEngine()
     private var job: Task<Void, Never>?
@@ -496,11 +528,11 @@ final class LiveVideo: ObservableObject {
 
     /// What a song's pictures depend on: the model, the style, the song and its lyrics.
     static func key(model: LiveVideoModel, style: LiveVideoStyle, title: String, artist: String, lines: [String]) -> String {
-        let s = ["v\(LiveVideoStory.version)", model.name, style.rawValue, artist.lowercased(), title.lowercased(), lines.joined(separator: "\n")].joined(separator: "|")
+        let s = ["v\(LiveVideoStory.version).\(LiveVideoPlan.version)\(LiveVideo.useDirectorRecipe ? "d" : "p")", model.name, style.rawValue, artist.lowercased(), title.lowercased(), lines.joined(separator: "\n")].joined(separator: "|")
         return SHA256.hash(data: Data(s.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
     }
 
-    private struct Song {
+    struct Song {
         var title: String
         var artist: String
         var lines: [String]
@@ -534,7 +566,7 @@ final class LiveVideo: ObservableObject {
         guard AI.languageModelAvailable else { status = AI.unavailableReason ?? "Apple Intelligence is off."; release(); return }
         guard let song = currentSong() else { status = L("Waiting for the lyrics…"); holdIfStarting(complete: false); return }
         let key = Self.key(model: model, style: style, title: song.title, artist: song.artist, lines: song.lines)
-        holdIfStarting(complete: Self.isComplete(key))
+        holdIfStarting(complete: Self.hasFirstPicture(key))
         guard key != jobKey else { return }
         stopJob()
         jobKey = key
@@ -601,12 +633,17 @@ final class LiveVideo: ObservableObject {
         }
     }
 
+    /// The storyboard and the first picture are in the cache: the song can start, the rest is painted as it plays.
+    static func hasFirstPicture(_ key: String) -> Bool {
+        FileManager.default.fileExists(atPath: cacheFolder.appendingPathComponent(key, isDirectory: true).appendingPathComponent("image0.jpg").path)
+    }
+
     /// Board and every picture already in the cache.
     static func isComplete(_ key: String) -> Bool {
         let dir = cacheFolder.appendingPathComponent(key, isDirectory: true)
         guard let d = try? Data(contentsOf: dir.appendingPathComponent("board.json")),
               let b = try? JSONDecoder().decode(LiveVideoBoard.self, from: d) else { return false }
-        return b.scenes.indices.allSatisfy { FileManager.default.fileExists(atPath: dir.appendingPathComponent("scene\($0).jpg").path) }
+        return (0..<b.imageCount).allSatisfy { FileManager.default.fileExists(atPath: dir.appendingPathComponent("image\($0).jpg").path) }
     }
 
     private func stopJob() {
@@ -614,6 +651,42 @@ final class LiveVideo: ObservableObject {
         job = nil
         engine.cancel()
         jobKey = ""
+    }
+
+    /// Storyboard then pictures, in the order they'll be shown, from the cache when already made.
+    /// The current recipe is the plan (structure + chosen fields + prompts by code); MUSICAMP_LV_RECIPE=director
+    /// brings back the previous one (reader and director writing the prompts), for comparisons.
+    nonisolated static var useDirectorRecipe: Bool { ProcessInfo.processInfo.environment["MUSICAMP_LV_RECIPE"] == "director" }
+
+    /// The storyboard for a song.
+    static func makeBoard(_ song: Song, key: String, style: LiveVideoStyle, director: Bool = useDirectorRecipe) async throws -> LiveVideoBoard {
+        if director {
+            let groups = LiveVideoStory.groups(times: song.times, count: song.lines.count)
+            return try await LiveVideoStory.make(key: key, title: song.title, artist: song.artist, lines: song.lines, groups: groups)
+        }
+        return try await LiveVideoPlan.make(key: key, title: song.title, artist: song.artist, lines: song.lines, times: song.times, style: style)
+    }
+
+    /// The prompt and negative prompt for picture `i` of a board.
+    static func prompt(_ b: LiveVideoBoard, image i: Int, style: LiveVideoStyle) -> (String, String) {
+        if b.shots.indices.contains(i) { return (b.shots[i], b.negatives.indices.contains(i) ? b.negatives[i] : LiveVideoEngine.negative) }
+        // Previous recipe: the scene first, then the look, then the mood.
+        let look = style == .auto ? (LiveVideoStyle(rawValue: b.style) ?? .cinematic) : style
+        let scene = b.scenes.indices.contains(i) ? b.scenes[i].prompt : ""
+        return ([scene, look.prompt, b.mood].filter { !$0.isEmpty }.joined(separator: ", "), LiveVideoEngine.negative)
+    }
+
+    /// Paints picture `i`; checks it with Vision against its shot and, if it fails, paints it once more with
+    /// another seed and keeps the better one.
+    func paint(_ b: LiveVideoBoard, image i: Int, seed: UInt32, model: LiveVideoModel, style: LiveVideoStyle) async throws -> (CGImage, LiveVideoCheck.Result?)? {
+        let (prompt, negative) = Self.prompt(b, image: i, style: style)
+        guard let first = try await engine.image(prompt, seed: seed &+ UInt32(i), model: model, negative: negative) else { return nil }
+        guard b.shotInfo.indices.contains(i) else { return (first, nil) }
+        let r1 = LiveVideoCheck.check(first, shot: b.shotInfo[i])
+        if r1.ok || Task.isCancelled { return (first, r1) }
+        guard let second = try await engine.image(prompt, seed: seed &+ UInt32(i) &+ 1000, model: model, negative: negative) else { return (first, r1) }
+        let r2 = LiveVideoCheck.check(second, shot: b.shotInfo[i])
+        return r2.score > r1.score ? (second, r2) : (first, r1)
     }
 
     /// Storyboard then pictures, in the order they'll be shown, from the cache when already made.
@@ -627,8 +700,7 @@ final class LiveVideo: ObservableObject {
         } else {
             if current { status = L("Reading the song…") }
             do {
-                let groups = LiveVideoStory.groups(times: song.times, count: song.lines.count)
-                b = try await LiveVideoStory.make(key: key, title: song.title, artist: song.artist, lines: song.lines, groups: groups)
+                b = try await Self.makeBoard(song, key: key, style: style)
                 try? JSONEncoder().encode(b).write(to: boardFile)
             } catch {
                 if current { self.error = error.localizedDescription; status = L("Couldn't imagine this song."); release() }
@@ -639,25 +711,25 @@ final class LiveVideo: ObservableObject {
         if current { board = b }
         // Same song, same pictures: the seed comes from the song's key (hashValue changes at every launch).
         let seed = UInt32(key.prefix(8), radix: 16) ?? 4242
-        for (i, scene) in b.scenes.enumerated() {
+        for i in 0..<b.imageCount {
             if Task.isCancelled { return }
-            let file = dir.appendingPathComponent("scene\(i).jpg")
+            let file = dir.appendingPathComponent("image\(i).jpg")
             if let img = Self.load(file) {
                 if current { images[i] = img }
                 continue
             }
             if current {
-                status = engine.isLoaded(model) ? String(format: L("Painting %d of %d…"), i + 1, b.scenes.count)
+                status = engine.isLoaded(model) ? String(format: L("Painting %d of %d…"), i + 1, b.imageCount)
                     : L("Preparing the image model (the first time takes a couple of minutes)…")
             }
             do {
-                // Style, the scene (characters already in it), then the mood: Stable Diffusion reads ~75 words.
-                // The scene first (Stable Diffusion weighs the first words most), then the look, then the mood.
-                let look = style == .auto ? (LiveVideoStyle(rawValue: b.style) ?? .cinematic) : style
-                let prompt = [scene.prompt, look.prompt, b.mood].filter { !$0.isEmpty }.joined(separator: ", ")
-                guard let img = try await engine.image(prompt, seed: seed &+ UInt32(i), model: model) else { return }
+                guard let (img, _) = try await paint(b, image: i, seed: seed, model: model, style: style) else { return }
                 Self.save(img, file)
-                if current, !Task.isCancelled { images[i] = img }
+                if current, !Task.isCancelled {
+                    images[i] = img
+                    // The first picture is enough to start the song: the next ones come before their scenes.
+                    if i == 0 { release() }
+                }
             } catch {
                 if current { self.error = error.localizedDescription; status = L("The image model failed."); release() }
                 return
@@ -717,7 +789,8 @@ final class LiveVideo: ObservableObject {
 
     /// The latest picture ready at or before scene `i` (a scene still being painted shows the previous one).
     func image(upTo i: Int) -> (Int, CGImage)? {
-        for k in stride(from: i, through: 0, by: -1) { if let img = images[k] { return (k, img) } }
+        guard let b = board else { return nil }
+        for k in stride(from: i, through: 0, by: -1) { if let img = images[b.imageIndex(k)] { return (k, img) } }
         return nil
     }
 

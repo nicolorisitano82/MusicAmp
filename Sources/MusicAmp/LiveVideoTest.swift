@@ -47,6 +47,55 @@ enum LiveVideoTest {
         check(plain.map(\.count) == [4, 4, 2], "plain lyrics: about four lines per picture")
         check(LiveVideoStory.groups(times: nil, count: 0).isEmpty, "no lyrics: no line groups")
 
+        // Song structure (original test text): verse, chorus, verse, chorus, bridge, chorus.
+        let chorus = ["we are the lights of the harbour", "burning bright until the morning", "nobody can turn us off tonight"]
+        let song = ["walking home along the river", "the city sleeping in the rain", "my old coat and your umbrella", ""] + chorus + [""] +
+            ["the bus is late again tonight", "we share the last cigarette", "you laugh at every stupid joke", ""] + chorus + [""] +
+            ["and when the summer ends", "we will still remember this", ""] + chorus
+        let secs = LiveVideoPlan.sections(lines: song, times: nil)
+        check(secs.map(\.kind) == [.verse, .chorus, .verse, .chorus, .bridge, .chorus], "structure: verse, chorus, verse, chorus, bridge, chorus (\(secs.map(\.kind.rawValue).joined(separator: ", ")))")
+        check(Set(secs.filter { $0.kind == .chorus }.map(\.part)).count == 1 && Set(secs.map(\.part)).count == 4, "the chorus is one picture: 4 distinct parts for 6 sections")
+        var gapped = (0..<12).map { Double($0) * 3 }
+        for k in 6..<12 { gapped[k] += 10 }
+        check(LiveVideoPlan.stanzas(lines: (0..<12).map { "line \($0)" }, times: gapped).map(\.count) == [6, 6], "stanzas split at a 10 s pause")
+
+        // Treatment and shot list parsing (format slips included).
+        let treatment = LiveVideoPlan.parseTreatment("""
+            VOICE: a girl to her best friend
+            A: the narrator | a young woman, short black hair, yellow raincoat
+            B: her friend | a young man with curly hair and a denim jacket
+            PLACES: a rainy riverside path at night; a bus stop; a small kitchen
+            STYLE: Watercolor
+            MOOD: blue rain, warm street lamps
+            THEME: friendship that outlasts the summer
+            1. They walk home by the river in the rain.
+            Part 2: They sing on the bus stop bench.
+            """)
+        check(treatment.characters.count == 2 && treatment.places.count == 3 && treatment.style == "watercolor" && treatment.parts[1] != nil && treatment.parts[2] != nil,
+              "treatment: two characters, three places, style, numbered parts")
+        let shots = LiveVideoPlan.parseShots("""
+            1. WHO: A+B | ACTION: walk under one umbrella | PLACE: 1 | FRAMING: wide | LIGHT: street lamps in rain
+            2. **WHO:** crowd | ACTION: sing together | PLACE: 2 | FRAMING: Close up | LIGHT: neon
+            """, places: treatment.places)
+        check(shots[1]?.place == "a rainy riverside path at night" && shots[1]?.who == "A+B" && shots[2]?.framing == "close-up", "shot list: fields, place by number, framing normalised")
+        if let s1 = shots[1] {
+            let p = LiveVideoPlan.prompt(s1, characters: treatment.characters, style: .watercolor, mood: treatment.mood)
+            check(p.hasPrefix("a young woman in yellow raincoat and a young man in a denim jacket walk under one umbrella in a rainy riverside path") && p.split(separator: " ").count <= 62,
+                  "prompt by code: the event first (people by their clothes, action, place), within ~60 words: \(p)")
+            check(LiveVideoPlan.negative("wide").contains("portrait") && !LiveVideoPlan.negative("close-up").contains("posing") && LiveVideoPlan.negative("wide").contains("nude"),
+                  "negative prompt fits the framing and always excludes nudity")
+        }
+        check(LiveVideoPlan.isPose("stands by the window") && LiveVideoPlan.isPose("she gazes at the city") && !LiveVideoPlan.isPose("runs for the last night train"),
+              "poses are told apart from actions")
+        do {
+        }
+        check(LiveVideoPlan.youthful("a woman in her sixties with silver hair, bold red coat") == "a woman in her twenties with dark hair, bold red coat",
+              "cast kept young unless the song is about age: \(LiveVideoPlan.youthful("a woman in her sixties with silver hair, bold red coat"))")
+        let juno = (0..<40).map { "line \($0 % 20 < 4 ? $0 % 4 : $0)" }
+        check(Set(LiveVideoPlan.sections(lines: juno, times: nil).map(\.part)).count <= LiveVideoPlan.maxPictures, "at most \(LiveVideoPlan.maxPictures) pictures per song")
+        check(LiveVideoCheck.vocabulary.count > 500, "Vision knows \(LiveVideoCheck.vocabulary.count) scene/object labels")
+        print("     place words Vision can check in 'a crowded concert stage, a train station': " + (LiveVideoCheck.placeWords("a crowded concert stage") + LiveVideoCheck.placeWords("a train station")).joined(separator: ", "))
+
         // Cache key: same song and settings → same pictures; another style → others.
         let m = LiveVideoModel(url: URL(fileURLWithPath: "/m/coreml-stable-diffusion-xl-base-ios_split_einsum_compiled"), isXL: true)
         let k1 = LiveVideo.key(model: m, style: .watercolor, title: "T", artist: "A", lines: lines)

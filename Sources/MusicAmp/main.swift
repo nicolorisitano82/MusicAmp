@@ -1522,6 +1522,13 @@ if let i = CommandLine.arguments.firstIndex(of: "--livevideo-paint"), CommandLin
     exit(code)
 }
 
+/// Debug: `MusicAmp --livevideo-bench <count> <out dir>`: previous recipe vs the plan on songs from this Mac.
+if let i = CommandLine.arguments.firstIndex(of: "--livevideo-bench"), CommandLine.arguments.count > i + 2 {
+    let a = CommandLine.arguments
+    let code: Int32 = await LiveVideoDiagnose.bench(count: Int(a[i + 1]) ?? 8, out: a[i + 2])
+    exit(code)
+}
+
 /// Debug: `MusicAmp --livevideo-diagnose`: Live Video storyboards on the cached lyrics (see LiveVideoDiagnose.swift).
 if CommandLine.arguments.contains("--livevideo-diagnose") {
     let code: Int32 = await LiveVideoDiagnose.run()

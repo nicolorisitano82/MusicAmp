@@ -526,7 +526,6 @@
 "Pictures made on this Mac from what the lyrics are about, with the lyrics underneath. Needs Apple Intelligence and an image model (downloaded once, kept on this Mac)." = "Immagini create su questo Mac da ciò che racconta il testo, con il testo sotto. Servono Apple Intelligence e un modello di immagini (scaricato una volta, resta su questo Mac).";
 "Image model" = "Modello di immagini";
 "None installed" = "Nessuno installato";
-"SDXL — best quality, 768 px, Neural Engine" = "SDXL — qualità migliore, 768 px, Neural Engine";
 "SD 2.1 — faster, 512 px, GPU" = "SD 2.1 — più veloce, 512 px, GPU";
 "Download (%@)" = "Scarica (%@)";
 "Choose Model…" = "Scegli modello…";
@@ -547,3 +546,8 @@
 "Play Now" = "Riproduci subito";
 "Make the whole video before the song starts" = "Crea tutto il video prima che parta la canzone";
 "Automatic (the director chooses)" = "Automatico (sceglie il regista)";
+"Wait for the first picture before the song starts" = "Aspetta la prima immagine prima di far partire la canzone";
+"SDXL full — best pictures, 1024 px, GPU (Macs with 32 GB)" = "SDXL completo — immagini migliori, 1024 px, GPU (Mac con 32 GB)";
+"SDXL — good and quicker, 768 px, Neural Engine" = "SDXL — buone e più rapide, 768 px, Neural Engine";
+"SDXL full, 1024 px" = "SDXL completo, 1024 px";
+"Requirements: Mac with Apple Silicon and macOS 26, Apple Intelligence turned on, and a model: SDXL full needs 32 GB of memory and 7 GB of disk; SDXL 16 GB and 3 GB; SD 2.1 8 GB and 1.2 GB. Pictures are kept per song (about 2 MB each song)." = "Requisiti: Mac con Apple Silicon e macOS 26, Apple Intelligence attivo e un modello. SDXL completo richiede 32 GB di memoria e 7 GB di disco; SDXL 16 GB e 3 GB; SD 2.1 8 GB e 1,2 GB. Le immagini restano salvate per canzone (circa 2 MB a canzone).";
