@@ -169,6 +169,7 @@ if (( PACKAGE )); then
         check "app and widget versions match" bash -c "[[ '$(plist "$APP/Contents/Info.plist" CFBundleShortVersionString)' == '$(plist "$WX/Contents/Info.plist" CFBundleShortVersionString)' ]]"
         check "musicamp:// URL scheme declared" bash -c "/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' '$APP/Contents/Info.plist' | grep -qx musicamp"
         check "FFmpeg licence shipped" test -f "$APP/Contents/Resources/FFmpeg/LICENSE.txt"
+        check "package licences shipped (MLX, Stable Diffusion)" test -f "$APP/Contents/Resources/Licenses/mlx-swift.txt" -a -f "$APP/Contents/Resources/Licenses/ml-stable-diffusion.txt"
         check "packaged binary runs: --test-schedule" "$APP/Contents/MacOS/MusicAmp" --test-schedule
     fi
 fi

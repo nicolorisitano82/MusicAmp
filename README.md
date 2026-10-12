@@ -71,6 +71,10 @@ Controlli → Altoparlanti manda la musica a casse AirPlay 2 (anche più di una,
 
 ![Karaoke sulla TV via Chromecast: copertina sfocata, riga cantata con le parole che si accendono, traduzione e righe successive](docs/images/karaoke-tv.png)
 
+### Live Video (sperimentale, nascosto)
+
+Immagini create sul Mac da ciò che racconta la canzone, con il testo karaoke sotto, in finestra o sulla TV. Il testo lo legge Qwen 2.5 (eseguito sul Mac con MLX) oppure Apple Intelligence; le immagini le dipinge Stable Diffusion in Core ML. Modelli scaricati dalle impostazioni, niente esce dal Mac. Non è ancora pronto, quindi è spento: per provarlo `defaults write com.genomeup.musicamp feature.liveVideo -bool YES` e riavvia MusicAmp. Requisiti e funzionamento in [docs/live-video.md](docs/live-video.md).
+
 ### EQ parametrico per cuffie
 
 ![Impostazioni → Headphones con un profilo di esempio e la sua curva](docs/images/cuffie.png)
@@ -111,7 +115,7 @@ Le skin non sono incluse: trascina un file `.wsz` sul player per caricarlo. I pr
 ./build-app.sh
 ```
 
-Crea `build/MusicAmp.app` (Apple Silicon) e `build/MusicAmp-<versione>.dmg`. Servono Swift 6, macOS 26 e Xcode installato (per i metadati di Comandi rapidi e widget); non c'è un progetto Xcode. La prima build scarica e compila FFmpeg dai sorgenti ufficiali (circa un minuto).
+Crea `build/MusicAmp.app` (Apple Silicon) e `build/MusicAmp-<versione>.dmg`. Servono Swift 6, macOS 26 e Xcode installato (per i metadati di Comandi rapidi e widget); non c'è un progetto Xcode. La prima build scarica e compila FFmpeg dai sorgenti ufficiali (circa un minuto) e le librerie MLX di Apple (alcuni minuti). Il Metal Toolchain di Xcode non serve: gli shader di MLX arrivano già compilati con il download del modello (vedi [docs/live-video.md](docs/live-video.md)).
 
 ## Test
 

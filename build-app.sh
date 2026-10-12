@@ -61,6 +61,14 @@ mkdir -p "$APP/Contents/Helpers" "$APP/Contents/Resources/FFmpeg"
 # The vendored FFmpeg is universal: keep only the Apple Silicon slice.
 for tool in ffmpeg ffprobe; do lipo -thin arm64 "vendor/ffmpeg/$tool" -output "$APP/Contents/Helpers/$tool" 2>/dev/null || cp "vendor/ffmpeg/$tool" "$APP/Contents/Helpers/"; done
 cp vendor/ffmpeg/LICENSE.txt vendor/ffmpeg/SOURCE.txt "$APP/Contents/Resources/FFmpeg/"
+# Licences of the Swift packages built into the app (MLX, swift-transformers, …) and of the vendored Stable
+# Diffusion pipeline.
+mkdir -p "$APP/Contents/Resources/Licenses"
+for d in .build/checkouts/* Packages/*; do
+    [[ -d "$d" ]] || continue
+    for f in "$d"/LICENSE*; do [[ -f "$f" ]] && cp "$f" "$APP/Contents/Resources/Licenses/$(basename "$d").txt" && break; done
+done
+cp Sources/StableDiffusion/LICENSE.md "$APP/Contents/Resources/Licenses/ml-stable-diffusion.txt"
 codesign --force --sign "$SIGN" "$APP/Contents/Helpers/ffmpeg" "$APP/Contents/Helpers/ffprobe" >/dev/null
 codesign --force --sign "$SIGN" "$APP" >/dev/null
 # Keep this build copy out of Launch Services: two apps with the same bundle id (this one and the installed one)
