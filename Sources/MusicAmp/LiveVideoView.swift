@@ -169,6 +169,7 @@ struct LiveVideoFrame: View {
 
 extension Ctl {
     @MainActor @objc func showLiveVideo() {
+        guard FeatureFlags.liveVideo else { return }
         if liveVideoWindowRef == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: LiveVideoWindow()))
             w.title = L("Live Video (Beta)")
@@ -200,6 +201,10 @@ struct LiveVideoWindow: View {
                 Button("Settings…") { Ctl.shared.openPreferences(tab: .vis) }.padding()
             }
         }
+        .overlay(alignment: .topTrailing) {
+            // Faint until the pointer is over it: download the storyboard (PDF).
+            if live.board != nil { StoryboardButton().padding(14) }
+        }
         .onAppear { live.windowOpen = true; live.refresh() }
         .onDisappear { live.windowOpen = false; live.refresh() }
     }
@@ -215,7 +220,7 @@ struct LiveVideoSettings: View {
         Section {
             HStack {
                 BetaBadge()
-                Text("Pictures made on this Mac from what the lyrics are about, with the lyrics underneath. Needs Apple Intelligence and an image model (downloaded once, kept on this Mac).")
+                Text("Pictures made on this Mac from what the lyrics are about, with the lyrics underneath. Needs a story model (Apple Intelligence or Qwen) and an image model, downloaded once and kept on this Mac.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Picker("Image model", selection: $live.modelPath) {
@@ -239,6 +244,27 @@ struct LiveVideoSettings: View {
                 }
             }
             Button("Choose Model…") { live.chooseModel() }
+            Picker("Story model", selection: $live.storyModel) {
+                ForEach(StoryModel.allCases) { Text(LocalizedStringKey($0.label)).tag($0) }
+            }
+            Text(String(format: L("Reads the lyrics and plans the shots. In use: %@."), StoryModel.resolved.shortName))
+                .font(.caption).foregroundStyle(.secondary)
+            ForEach([StoryModel.qwen14, .qwen7]) { m in
+                if !m.installed {
+                    HStack {
+                        Text(LocalizedStringKey(m == .qwen14 ? "Qwen 2.5 14B — reads the lyrics best (Macs with 32 GB)" : "Qwen 2.5 7B — reads the lyrics well (Macs with 16 GB)"))
+                        Spacer()
+                        if let dl = live.storyDownload, dl.model == m {
+                            ProgressView(value: dl.progress).frame(width: 120)
+                            Button("Cancel") { live.cancelStoryDownload() }
+                        } else {
+                            let bytes = m.bytes + (LocalStoryModel.shadersInstalled ? 0 : LocalStoryModel.shadersBytes)
+                            Button(String(format: L("Download (%@)"), ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))) { live.startStoryDownload(m) }
+                                .disabled(live.storyDownload != nil)
+                        }
+                    }
+                }
+            }
             Picker("Style", selection: $live.style) {
                 ForEach(LiveVideoStyle.allCases) { Text(LocalizedStringKey($0.label)).tag($0) }
             }
@@ -253,9 +279,31 @@ struct LiveVideoSettings: View {
             if let e = live.error { Text(e).font(.caption).foregroundStyle(.red) }
             Text("Requirements: Mac with Apple Silicon and macOS 26, Apple Intelligence turned on, and a model: SDXL full needs 32 GB of memory and 7 GB of disk; SDXL 16 GB and 3 GB; SD 2.1 8 GB and 1.2 GB. Pictures are kept per song (about 2 MB each song).")
                 .font(.caption).foregroundStyle(.secondary)
+            Text("Story models on this Mac, instead of Apple Intelligence: Qwen 2.5 14B needs 32 GB of memory and 8.4 GB of disk, Qwen 2.5 7B 16 GB and 4.4 GB; they read the lyrics much better. Qwen (Alibaba, Apache 2.0) runs with Apple's MLX (MIT), whose GPU shaders come with the download (65 MB). The story model is freed from memory before the pictures are painted.")
+                .font(.caption).foregroundStyle(.secondary)
             Text("Models: Apple's Core ML conversions of Stable Diffusion (CreativeML Open RAIL++-M licence). A model folder or .zip can also be added by hand with Choose Model…; they're kept in Application Support/MusicAmp/Models.")
                 .font(.caption).foregroundStyle(.secondary)
         } header: { Text("Live Video") }
         .onAppear { cache = live.cacheSize }
+    }
+}
+
+/// A small, faint button over the Live Video: it saves the storyboard as a PDF.
+private struct StoryboardButton: View {
+    @State private var hover = false
+
+    var body: some View {
+        Button { LiveVideoExport.save() } label: {
+            Image(systemName: "square.and.arrow.down")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white)
+                .padding(7)
+                .background(Circle().fill(.black.opacity(hover ? 0.5 : 0.25)))
+        }
+        .buttonStyle(.plain)
+        .opacity(hover ? 1 : 0.35)
+        .animation(.easeOut(duration: 0.2), value: hover)
+        .onHover { hover = $0 }
+        .help("Download the storyboard (PDF)")
     }
 }

@@ -523,7 +523,7 @@
 "Painting %d of %d…" = "Dipingo %d di %d…";
 "The image model failed." = "Il modello di immagini si è fermato.";
 "Choose a Core ML Stable Diffusion model: a folder or a .zip from Apple's Hugging Face pages." = "Scegli un modello Core ML di Stable Diffusion: una cartella o uno .zip dalle pagine Hugging Face di Apple.";
-"Pictures made on this Mac from what the lyrics are about, with the lyrics underneath. Needs Apple Intelligence and an image model (downloaded once, kept on this Mac)." = "Immagini create su questo Mac da ciò che racconta il testo, con il testo sotto. Servono Apple Intelligence e un modello di immagini (scaricato una volta, resta su questo Mac).";
+"Pictures made on this Mac from what the lyrics are about, with the lyrics underneath. Needs a story model (Apple Intelligence or Qwen) and an image model, downloaded once and kept on this Mac." = "Immagini create su questo Mac da ciò che racconta il testo, con il testo sotto. Servono un modello per la storia (Apple Intelligence o Qwen) e un modello di immagini, scaricati una volta e tenuti su questo Mac.";
 "Image model" = "Modello di immagini";
 "None installed" = "Nessuno installato";
 "SD 2.1 — faster, 512 px, GPU" = "SD 2.1 — più veloce, 512 px, GPU";
@@ -551,3 +551,48 @@
 "SDXL — good and quicker, 768 px, Neural Engine" = "SDXL — buone e più rapide, 768 px, Neural Engine";
 "SDXL full, 1024 px" = "SDXL completo, 1024 px";
 "Requirements: Mac with Apple Silicon and macOS 26, Apple Intelligence turned on, and a model: SDXL full needs 32 GB of memory and 7 GB of disk; SDXL 16 GB and 3 GB; SD 2.1 8 GB and 1.2 GB. Pictures are kept per song (about 2 MB each song)." = "Requisiti: Mac con Apple Silicon e macOS 26, Apple Intelligence attivo e un modello. SDXL completo richiede 32 GB di memoria e 7 GB di disco; SDXL 16 GB e 3 GB; SD 2.1 8 GB e 1,2 GB. Le immagini restano salvate per canzone (circa 2 MB a canzone).";
+
+/* Storyboard export */
+"Download the storyboard (PDF)" = "Scarica lo storyboard (PDF)";
+"Live Video storyboard" = "Storyboard di Live Video";
+"From the lyrics to the pictures" = "Dal testo alle immagini";
+"Song structure (code)" = "Struttura della canzone (codice)";
+"Repeated lines are the chorus and refrains; the parts between are verses. A part that comes back shows its picture again, framed differently." = "Le righe che si ripetono sono ritornello e refrain; le parti in mezzo sono strofe. Una parte che torna mostra di nuovo la sua immagine, inquadrata diversamente.";
+"picture" = "immagine";
+"Picture" = "Immagine";
+"The reader's notes (%@)" = "Gli appunti del lettore (%@)";
+"Who speaks" = "Chi parla";
+"People" = "Persone";
+"World" = "Mondo";
+"Meaning" = "Significato";
+"The director's choices (%@)" = "Le scelte del regista (%@)";
+"The director never sees the lyrics, only the reader's notes." = "Il regista non vede mai il testo, solo gli appunti del lettore.";
+"Places" = "Luoghi";
+"Look" = "Stile";
+"Shots first written as poses, sent back to become actions" = "Inquadrature scritte prima come pose, rimandate indietro per diventare azioni";
+"Prompts (code)" = "Prompt (codice)";
+"The event first (people by their clothes, action, place), then the look, the framing, the light and the mood, within about 60 words. Nudity is always excluded." = "Prima l'evento (persone per come sono vestite, azione, luogo), poi lo stile, l'inquadratura, la luce e il mood, entro circa 60 parole. La nudità è sempre esclusa.";
+"Vision check" = "Controllo Vision";
+"Each picture is checked for people, framing and place; a clear miss is painted once more and the better one kept." = "Ogni immagine viene controllata per persone, inquadratura e luogo; se manca chiaramente il bersaglio viene ridipinta una volta e si tiene la migliore.";
+"The lyrics" = "Il testo";
+"What they say (reader)" = "Cosa dice (lettore)";
+"The shot (director)" = "L'inquadratura (regista)";
+"who" = "chi";
+"Prompt (code)" = "Prompt (codice)";
+"Negative" = "Negativo";
+"verse" = "strofa";
+"chorus" = "ritornello";
+"refrain" = "refrain";
+"bridge" = "bridge";
+"intro" = "intro";
+"outro" = "finale";
+
+/* Live Video: story model (Qwen on this Mac) */
+"Automatic" = "Automatico";
+"Qwen 2.5 14B (on this Mac, best)" = "Qwen 2.5 14B (su questo Mac, il migliore)";
+"Qwen 2.5 7B (on this Mac)" = "Qwen 2.5 7B (su questo Mac)";
+"Story model" = "Modello per la storia";
+"Reads the lyrics and plans the shots. In use: %@." = "Legge il testo e decide le inquadrature. In uso: %@.";
+"Qwen 2.5 14B — reads the lyrics best (Macs with 32 GB)" = "Qwen 2.5 14B — capisce meglio i testi (Mac con 32 GB)";
+"Qwen 2.5 7B — reads the lyrics well (Macs with 16 GB)" = "Qwen 2.5 7B — capisce bene i testi (Mac con 16 GB)";
+"Story models on this Mac, instead of Apple Intelligence: Qwen 2.5 14B needs 32 GB of memory and 8.4 GB of disk, Qwen 2.5 7B 16 GB and 4.4 GB; they read the lyrics much better. Qwen (Alibaba, Apache 2.0) runs with Apple's MLX (MIT), whose GPU shaders come with the download (65 MB). The story model is freed from memory before the pictures are painted." = "Modelli per la storia su questo Mac, al posto di Apple Intelligence: Qwen 2.5 14B richiede 32 GB di memoria e 8,4 GB di disco, Qwen 2.5 7B 16 GB e 4,4 GB; capiscono i testi molto meglio. Qwen (Alibaba, Apache 2.0) gira con MLX di Apple (MIT), i cui shader per la GPU arrivano con il download (65 MB). Il modello viene liberato dalla memoria prima di dipingere le immagini.";

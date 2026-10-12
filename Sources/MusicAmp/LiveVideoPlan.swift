@@ -10,7 +10,7 @@ import FoundationModels
 /// 4. Prompts built by code in the order Stable Diffusion weighs most, within its ~75 tokens.
 /// Repeated parts (the chorus) reuse their picture with another framing, so a song needs 6–8 pictures.
 enum LiveVideoPlan {
-    static let version = 5
+    static let version = 6
     /// Distinct pictures per song at most (a chorus coming back reuses its own).
     static let maxPictures = 8
 
@@ -448,6 +448,17 @@ enum LiveVideoPlan {
 
     // MARK: The plan
 
+    /// The reader's answer through ReaderCheck (names out, lyric phrases rewritten). A rewrite that lost notes or
+    /// parts isn't kept: the original is used with the names stripped.
+    static func checked(_ raw: String, lines: [String], artist: String, title: String, parts: Bool) async -> String {
+        guard !raw.isEmpty else { return raw }
+        let fixed = await ReaderCheck.checked(raw, lyrics: lines, artist: artist, title: title)
+        let a = LiveVideoStory.parse(raw), b = LiveVideoStory.parse(fixed)
+        let lost = parts ? b.parts.count < a.parts.count
+            : [\LiveVideoStory.Parsed.voice, \.characters, \.setting, \.theme].contains { !a[keyPath: $0].isEmpty && b[keyPath: $0].isEmpty }
+        return lost ? ReaderCheck.strip(raw, artist: artist, title: title) : fixed
+    }
+
     /// The storyboard for a song: sections on the timeline, one picture per distinct part.
     static func make(key: String, title: String, artist: String, lines: [String], times: [Double]?, style chosen: LiveVideoStyle) async throws -> LiveVideoBoard {
         let song = "Song: \"\(title)\"\(artist.isEmpty ? "" : " by \(artist)")."
@@ -463,8 +474,9 @@ enum LiveVideoPlan {
 
         // 2. The reader: the song's notes (whole lyrics), then what each distinct part says.
         let full = lines.filter { !$0.isEmpty }.joined(separator: "\n")
-        var notes = LiveVideoStory.parse((try? await LiveVideoStory.ask(LiveVideoStory.briefInstructions,
-            lines.isEmpty ? "\(song) Its lyrics aren't available: imagine its video from the title." : "\(song)\nThe lyrics:\n\n\(full)")) ?? "")
+        let briefRaw = (try? await LiveVideoStory.ask(LiveVideoStory.briefInstructions,
+            lines.isEmpty ? "\(song) Its lyrics aren't available: imagine its video from the title." : "\(song)\nThe lyrics:\n\n\(full)")) ?? ""
+        var notes = LiveVideoStory.parse(await checked(briefRaw, lines: lines, artist: artist, title: title, parts: false))
         let header = [notes.voice.isEmpty ? "" : "Who speaks: \(notes.voice)", notes.characters.isEmpty ? "" : "People: \(notes.characters)",
                       notes.setting.isEmpty ? "" : "World: \(notes.setting)", notes.theme.isEmpty ? "" : "Meaning: \(notes.theme)"]
             .filter { !$0.isEmpty }.joined(separator: "\n")
@@ -474,7 +486,8 @@ enum LiveVideoPlan {
             return "Group \(n + 1) (\(s.kind.rawValue)):\n\(words)"
         }.joined(separator: "\n\n")
         let partsRaw = (try? await LiveVideoStory.ask(LiveVideoStory.partsInstructions, "\(song)\n\(header)\n\nThe lyrics, in \(order.count) groups. Write exactly \(order.count) numbered lines.\n\n\(partText)")) ?? ""
-        notes.parts = LiveVideoStory.parse(partsRaw).parts.filter { !LiveVideoStory.isPlaceholder($0.value) }
+        notes.parts = LiveVideoStory.parse(await checked(partsRaw, lines: lines, artist: artist, title: title, parts: true)).parts
+            .filter { !LiveVideoStory.isPlaceholder($0.value) }
         if debug { print("--- reader\n\(header)\nMood: \(notes.mood)\n\(partsRaw)\n---") }
 
         // 3. The director: cast, places, look and the shots, from the notes only.
@@ -522,6 +535,7 @@ enum LiveVideoPlan {
         }
         // Poses sent back to the director once, to become events.
         let poses = (1...max(1, order.count)).filter { shots[$0].map { isPose($0.action) } ?? false }
+        let posesBefore = poses.map { "\($0). \(shots[$0]?.action ?? "")" }
         if !poses.isEmpty {
             let ask = poses.map { n in "\(n). (part: \(notes.parts[n] ?? notes.theme)) ACTION was: \(shots[n]?.action ?? "")" }.joined(separator: "\n")
             let fixed = (try? await LiveVideoStory.ask(fixInstructions, "\(song)\n\(header)\n\n\(ask)")) ?? ""
@@ -548,7 +562,14 @@ enum LiveVideoPlan {
             return LiveVideoScene(firstLine: s.lines.lowerBound, lastLine: s.lines.upperBound, prompt: prompts[img], image: img, variation: v,
                                   framing: shotList[img].framing, kind: s.kind.rawValue)
         }
+        let reasoning = LiveVideoReasoning(
+            voice: notes.voice, people: notes.characters, world: notes.setting, mood: notes.mood, theme: t.theme,
+            meanings: order.indices.map { notes.parts[$0 + 1] ?? "" },
+            sections: order.map { p in secs.first { $0.part == p }?.kind.rawValue ?? "" },
+            cast: t.characters.enumerated().map { i, c in "\(i == 0 ? "A" : "B"): \(c.role) — \(c.look)\(c.outfit.isEmpty ? "" : " — " + c.outfit)" },
+            places: t.places, look: look.rawValue, posesFixed: posesBefore)
         return LiveVideoBoard(key: key, theme: t.theme, style: look.rawValue, characters: t.characters.map(\.look).joined(separator: "; "),
-                              mood: t.mood, scenes: scenes, shots: prompts, negatives: shotList.map { negative($0.framing, allowOld: allowOld) }, shotInfo: shotList)
+                              mood: t.mood, scenes: scenes, shots: prompts, negatives: shotList.map { negative($0.framing, allowOld: allowOld) }, shotInfo: shotList,
+                              reasoning: reasoning)
     }
 }

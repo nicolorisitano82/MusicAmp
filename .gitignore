@@ -3,3 +3,4 @@ build/
 *.wsz
 vendor/
 .build-ffmpeg/
+Packages/

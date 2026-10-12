@@ -131,7 +131,7 @@ final class TVKaraoke {
                                   bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(pb), space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else { return }
         // Live Video on the TV when chosen (Settings → Visualization → Live Video), otherwise the lyrics karaoke.
-        let content: AnyView = LiveVideo.shared.onTV ? AnyView(LiveVideoFrame(input: LiveVideo.shared.input(s))) : AnyView(TVKaraokeFrame(s: s))
+        let content: AnyView = FeatureFlags.liveVideo && LiveVideo.shared.onTV ? AnyView(LiveVideoFrame(input: LiveVideo.shared.input(s))) : AnyView(TVKaraokeFrame(s: s))
         let r = ImageRenderer(content: content.frame(width: TVKaraoke.size.width, height: TVKaraoke.size.height))
         r.proposedSize = ProposedViewSize(TVKaraoke.size)
         r.render { _, paint in paint(ctx) }

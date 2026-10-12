@@ -165,7 +165,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.item(view, "Dock Mode (Hide the Player)", #selector(Ctl.toggleDockMode), "o", [.command, .option, .shift])
         c.item(view, "Show Player", #selector(Ctl.showPlayer), "p", [.command, .option])
         c.item(view, "Full-Screen Karaoke", #selector(Ctl.showKaraoke), "k", [.command, .option])
-        c.item(view, "Live Video", #selector(Ctl.showLiveVideo)).badge = NSMenuItemBadge(string: L("Beta"))
+        // Live Video: behind a feature flag, not ready yet.
+        if FeatureFlags.liveVideo { c.item(view, "Live Video", #selector(Ctl.showLiveVideo)).badge = NSMenuItemBadge(string: L("Beta")) }
         c.item(view, "Milkdrop", #selector(Ctl.showMilkdrop), "m", [.command, .option])
         view.addItem(.separator())
         c.item(view, "Windowshade Mode", #selector(Ctl.toggleMainShade), "w", [.option])
@@ -1526,6 +1527,13 @@ if let i = CommandLine.arguments.firstIndex(of: "--livevideo-paint"), CommandLin
 if let i = CommandLine.arguments.firstIndex(of: "--livevideo-bench"), CommandLine.arguments.count > i + 2 {
     let a = CommandLine.arguments
     let code: Int32 = await LiveVideoDiagnose.bench(count: Int(a[i + 1]) ?? 8, out: a[i + 2])
+    exit(code)
+}
+
+/// Debug: `MusicAmp --livevideo-prepare <title words> [sheet.jpg]`: a played song's Live Video made ahead.
+if let i = CommandLine.arguments.firstIndex(of: "--livevideo-prepare"), CommandLine.arguments.count > i + 1 {
+    let a = CommandLine.arguments
+    let code: Int32 = await LiveVideoDiagnose.prepare(a[i + 1], sheet: a.count > i + 2 ? a[i + 2] : nil)
     exit(code)
 }
 

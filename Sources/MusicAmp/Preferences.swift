@@ -236,7 +236,7 @@ private struct VisTab: View {
                 Text("Oscilloscope").tag(1)
                 Text("Off").tag(2)
             }
-            LiveVideoSettings()
+            if FeatureFlags.liveVideo { LiveVideoSettings() }
             Section("Seek Bar") {
                 Toggle("Waveform in the position bar", isOn: ctl.binding(\.waveSeekBar))
                 Text("Drawn inside the skin's bar in its oscilloscope colour (viscolor.txt); the skin's graphics stay unchanged. Local files only; radio keeps the classic bar.")

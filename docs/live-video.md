@@ -1,11 +1,27 @@
 # Live Video (Beta, branch experimental)
 
+> **Non rilasciato: dietro la feature flag `feature.liveVideo`**, spenta di default. Senza la flag non compaiono il menu Vista → Live Video, la sezione nelle Impostazioni, la versione per la TV e l'attesa prima della canzone; non parte nessuna elaborazione. Per accenderla su un Mac:
+>
+> ```bash
+> defaults write com.genomeup.musicamp feature.liveVideo -bool YES
+> ```
+>
+> poi si riavvia MusicAmp.
+
 Mentre una canzone suona, Live Video mostra una sequenza di immagini **create su questo Mac da ciò che racconta il testo**, con il testo sotto in stile karaoke. Si apre da Vista → Live Video, a tutto schermo o in finestra, e può andare anche sulla TV tramite Chromecast. Le impostazioni sono in Visualizzazione → Live Video.
 
 ## Requisiti di sistema
 
 - Mac con **Apple Silicon** e **macOS 26**.
-- **Apple Intelligence attivo** (Impostazioni di Sistema → Apple Intelligence e Siri): scrive lo storyboard.
+- **Un modello per la storia**, che legge il testo e decide le inquadrature (Impostazioni → Live Video → Modello per la storia):
+
+| Modello per la storia | Memoria | Disco | Comprensione del testo* | Storyboard di una canzone |
+| --- | --- | --- | --- | --- |
+| **Qwen 2.5 14B** (predefinito con 32 GB, se scaricato) | 32 GB | 8,4 GB | 71% | ~35 s |
+| Qwen 2.5 7B (predefinito con 16 GB, se scaricato) | 16 GB | 4,4 GB | 57% | ~20 s |
+| Apple Intelligence (senza download) | — | — | debole | ~20 s |
+
+  \* Fatti chiave indovinati (chi parla a chi, epoca, tema, significato delle metafore) su 5 canzoni di prova, 3 giri ciascuna; il 7B con le istruzioni dell'app prima della guida ne indovinava il 43%. Vedi [Modello per la storia](#modello-per-la-storia).
 - Un **modello di immagini**, scaricato una volta dalle Impostazioni di MusicAmp o aggiunto a mano:
 
 | Modello | Memoria consigliata | Disco | Immagine | Tempo per immagine (M3 Max) | Video di una canzone (7–8 immagini) |
@@ -20,6 +36,28 @@ Mentre una canzone suona, Live Video mostra una sequenza di immagini **create su
 - **Rete:** serve solo per scaricare il modello e il testo della canzone; storyboard e immagini sono fatti sul Mac.
 
 Su Mac più lenti (M1, M2 base) i tempi possono essere da 2 a 4 volte più lunghi: lì conviene SDXL compresso o SD 2.1.
+
+## Modello per la storia
+
+Il modello di Apple Intelligence sul Mac (~3B) sbaglia spesso chi canta a chi, prende alla lettera le metafore e inventa personaggi. In alternativa Live Video usa **Qwen 2.5** (Alibaba, Apache 2.0), eseguito sul Mac con **MLX** di Apple (`LiveVideoReader.swift`):
+
+- **Scelta** (Automatico, predefinito): il 14B se è scaricato e il Mac ha 32 GB, altrimenti il 7B se è scaricato, altrimenti Apple Intelligence. Il modello scelto scrive tutto lo storyboard (lettore, regista, correzioni). Con Qwen, Apple Intelligence non serve.
+- **Istruzioni per modello:**
+  - il 7B riceve un lettore guidato. Prima deduce il narratore dagli indizi, poi i riferimenti (persona o opera → epoca e look) e le metafore (→ significato), con un esempio su una canzone inventata; nelle parti niente dialoghi;
+  - il 14B e Apple ricevono le istruzioni semplici: la guida peggiorava il 14B (personaggi senza genere, letture sbagliate).
+- **Controlli nel codice** (`ReaderCheck`), per ogni modello:
+  - nomi di persone reali (l'artista e quelli che NaturalLanguage riconosce; il titolo è ammesso);
+  - frasi di 4 parole copiate dal testo.
+
+  Se ne trova, il lettore riscrive una volta; se la riscrittura perde righe si tiene l'originale. I nomi rimasti vengono tolti.
+- **Memoria:** Qwen si carica solo per lo storyboard (circa 2 s) e si libera prima che Stable Diffusion dipinga.
+- **Download** (Impostazioni → Live Video):
+  - i file del modello da Hugging Face (`mlx-community/Qwen2.5-14B-Instruct-4bit` o `-7B-`), in `Application Support/MusicAmp/Models/llm`;
+  - gli shader GPU di MLX già compilati (`mlx.metallib`, 182 MB) dalla wheel `mlx-metal` 0.32.2 su PyPI (65 MB, hash SHA-256 verificato), salvati come `Models/llm/mlx-0.32.2.metallib`.
+- **Build:** MLX distribuisce gli shader come sorgenti `.metal`, che SwiftPM compila solo con il Metal Toolchain (componente di Xcode). `Scripts/mlx-precompiled-shaders.sh`, lanciato da `build-app.sh`, li esclude dalla build quando il toolchain manca: mette mlx-swift in edit mode in `Packages/`, ignorato da git. mlx-swift è fissato alla 0.32.3, che corrisponde agli shader di MLX 0.32.2 scaricati.
+- **Risultati** sul banco di prova (5 canzoni, fatti chiave):
+  - Qwen 14B legge bene Juno (anche il riferimento al figlio), Ligabue e Blowing Smoke ("blowing smoke" = lusinghe vuote);
+  - Clara Bow resta difficile per tutti: nessun modello capisce che a parlare è l'industria che promette la fama, ma il 14B coglie epoca e pressione della fama.
 
 ## Come funziona
 
@@ -107,6 +145,8 @@ I modelli sono le conversioni Core ML di Apple su Hugging Face e stanno in `Appl
 `ImageCreator` (Image Playground) su macOS 27 risponde `notSupported` ed è deprecato a favore della finestra interattiva. In più offre solo tre stili cartoon e non permette di fissare il seed.
 
 ## Test
+
+`MusicAmp --test-livevideo [frame.png]` controlla anche i controlli sugli appunti (nomi, frasi copiate) e la scelta del modello per la storia; con `MUSICAMP_TEST_QWEN=1` il Qwen installato legge un testo di prova. `MUSICAMP_LV_READER=apple|qwen7|qwen14` forza il modello per la storia, ad esempio con `--livevideo-board`.
 
 `MusicAmp --test-livevideo [frame.png]` controlla:
 - raggruppamento delle righe, chiavi della cache e tempi delle scene;

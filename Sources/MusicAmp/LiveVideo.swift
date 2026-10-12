@@ -121,6 +121,38 @@ struct LiveVideoScene: Codable, Equatable {
     var kind: String = ""
 }
 
+/// Each step from the lyrics to the pictures: the song's structure (code), the reader's notes and the
+/// director's choices (Apple Intelligence).
+struct LiveVideoReasoning: Codable, Equatable {
+    var voice = ""
+    var people = ""
+    var world = ""
+    var mood = ""
+    var theme = ""
+    /// Per picture: what that part of the lyrics says, in the reader's words.
+    var meanings: [String] = []
+    /// Per picture: the kind of section it was made for (verse, chorus…).
+    var sections: [String] = []
+    var cast: [String] = []
+    var places: [String] = []
+    var look = ""
+    /// Shots the director first wrote as poses, before they were sent back to become actions.
+    var posesFixed: [String] = []
+    /// The story model that read the lyrics and planned the shots ("Apple Intelligence", "Qwen 2.5 14B").
+    var reader = ""
+}
+
+extension LiveVideoReasoning {
+    /// Boards saved before a field existed still load (the field gets its default).
+    init(from decoder: Swift.Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func get<T: Decodable>(_ k: CodingKeys, _ d: T) -> T { (try? c.decodeIfPresent(T.self, forKey: k)) ?? d }
+        self.init(voice: get(.voice, ""), people: get(.people, ""), world: get(.world, ""), mood: get(.mood, ""), theme: get(.theme, ""),
+                  meanings: get(.meanings, []), sections: get(.sections, []), cast: get(.cast, []), places: get(.places, []),
+                  look: get(.look, ""), posesFixed: get(.posesFixed, []), reader: get(.reader, ""))
+    }
+}
+
 struct LiveVideoBoard: Codable, Equatable {
     var key: String
     var theme: String
@@ -135,6 +167,10 @@ struct LiveVideoBoard: Codable, Equatable {
     var negatives: [String] = []
     /// The shot each picture was asked for, for checking it with Vision.
     var shotInfo: [LiveVideoPlan.Shot] = []
+    /// How the text became pictures, kept for the storyboard export.
+    var reasoning: LiveVideoReasoning?
+    /// What Vision saw in each picture ("ok" or why it was painted again), filled in as they're made.
+    var checks: [Int: String] = [:]
 
     var imageCount: Int { shots.isEmpty ? scenes.count : shots.count }
     func imageIndex(_ scene: Int) -> Int { scenes.indices.contains(scene) && scenes[scene].image >= 0 ? scenes[scene].image : scene }
@@ -145,8 +181,14 @@ enum LiveVideoStory {
     /// Bumped when the storyboard recipe changes, so cached boards made the old way are made again.
     static let version = 11
 
+    /// The reader's instructions for the model writing this board: Qwen 7B gets the guided ones (it reads much
+    /// better when it first works out the narrator, the references and the figures of speech); the 14B and Apple
+    /// Intelligence the plain ones (the guidance made the 14B worse: it dropped who the people are).
+    static var briefInstructions: String { StoryModel.current == .qwen7 ? briefGuided : briefPlain }
+    static var partsInstructions: String { StoryModel.current == .qwen7 ? partsGuided : partsPlain }
+
     /// Step 1a, the reader: who speaks to whom and the concrete world of the song, in its own words (no quotes).
-    static let briefInstructions = """
+    static let briefPlain = """
         You read song lyrics (any language) and take notes for a music video director. The lyrics may talk about \
         love, heartbreak, fame, partying or loss. Never quote or translate them: use your own plain words. A \
         reference to a real person, film or song becomes its look and era, never its name ("1920s silent film \
@@ -161,13 +203,67 @@ enum LiveVideoStory {
         """
 
     /// Step 1b, the reader again: what each group of lines says, simply and literally, in its own words.
-    static let partsInstructions = """
+    static let partsPlain = """
         You read song lyrics (any language) for a music video director, group by group. For each group say, in \
         your own plain English words, what those lines say: who does what, where, what happens. Name people as women \
         and men ("the young woman", "the executives"), never "a figure" or "a person". Never quote or \
         translate the lyrics; references to real people, films or songs become their look and era, never their \
         names. Write one numbered line per group (the group's number, a period, then at most 20 words) and \
         nothing else.
+        """
+
+    /// The guided reader (Qwen 7B): first the narrator from clues, the references and the figures of speech (lines
+    /// the parser skips), then the same five notes; one worked example on an invented song.
+    static let briefGuided = """
+        You read song lyrics (any language) and take notes for a music video director. The lyrics may talk about \
+        love, heartbreak, fame, partying or loss. Never quote or translate them: use your own plain words.
+
+        First think, then write the notes. Answer with exactly these nine lines, in English, without brackets:
+        NARRATOR: who sings these words? First name two clues in your own words (what the singer promises, asks, \
+        blames or remembers), then ask who would say exactly that. Often it is not the main character but someone \
+        speaking TO them: a lover, an ex, a parent, a crowd, the people who sell fame, even a place.
+        ADDRESSEE: who the words are spoken to.
+        REFERENCES: each real person, film, song or brand named in the lyrics, with the era and look it evokes \
+        (the song's own artist does not count); "none" if there are none.
+        FIGURES: each idiom or metaphor and what it plainly means (at most 4).
+        VOICE: who is speaking and to whom, from NARRATOR and ADDRESSEE (at most 12 words)
+        CHARACTERS: the people as women and men, each with age, hair and clothes (at most 18 words)
+        WORLD: concrete places, objects and events; the era comes from REFERENCES (at most 25 words)
+        MOOD: light and colors (at most 10 words)
+        THEME: the song's meaning in one sentence, using what the FIGURES mean
+
+        VOICE, CHARACTERS, WORLD, MOOD and THEME never contain a name of a real person (they become a look and \
+        an era: "1950s beat road trip", not the writer's name) and never repeat the lyrics' images word for word.
+
+        Example, for an invented song:
+        Lyrics: "Pack your boxes, love, I'll keep the stairs / I've held your birthdays and your quiet prayers / \
+        You're off like Kerouac with the windows down / Burning every bridge out of this town / Leave the porch \
+        light on, I won't tell / The walls remember you too well"
+        NARRATOR: the singer keeps the stairs and remembers her birthdays: only the family house itself would say that.
+        ADDRESSEE: the young woman who is moving out.
+        REFERENCES: Kerouac = 1950s beat road trip, open highway, vintage car.
+        FIGURES: burning every bridge = cutting all ties with home; the walls remember = the house keeps her memories.
+        VOICE: the old family house speaking to the daughter who leaves
+        CHARACTERS: a young woman, 22, long dark hair, denim jacket; her parents in their 50s, cardigans
+        WORLD: a wooden house with porch and stairs, moving boxes, a 1950s car on an open highway, small town
+        MOOD: warm porch light, fading amber dusk
+        THEME: leaving home for freedom while home quietly keeps every memory
+        """
+
+    /// The guided parts (Qwen 7B): actions someone could film, no dialogue (it otherwise quoted the lyrics as lines).
+    static let partsGuided = """
+        You read song lyrics (any language) for a music video director, group by group. For each group say what \
+        literally happens in those lines: who does what, where. Use the notes: the narrator is who VOICE says, the \
+        people are only the ones in CHARACTERS, and every image or idiom becomes what it means, shown as an action \
+        someone could film. Name people as women and men ("the young woman", "the executives"), never "a figure", \
+        "a person" or any real person's name.
+        Never use quotation marks, dialogue or the word "saying": describe what people do, not what they say. Never \
+        repeat or translate the lyrics' words. Write one numbered line per group (the group's number, a period, then \
+        at most 20 words) and nothing else.
+
+        Example, for an invented song about a family house watching the daughter move out:
+        1. The young woman tapes moving boxes on the stairs while the empty house holds her childhood photos.
+        2. She drives a 1950s car down the open highway, never looking back at the town.
         """
 
     /// Step 2, the director: from the reader's notes only (never the lyrics), the concept, an arc through changing
@@ -280,9 +376,12 @@ enum LiveVideoStory {
         return LanguageModelSession(model: SystemLanguageModel(guardrails: .permissiveContentTransformations), instructions: instructions)
     }
 
-    /// Low temperature: faithful to the lyrics and steady from one try to the next.
+    /// Low temperature: faithful to the lyrics and steady from one try to the next. Apple Intelligence, or Qwen on
+    /// this Mac when it's the story model.
     static func ask(_ instructions: String, _ prompt: String) async throws -> String {
-        try await session(instructions).respond(to: prompt, options: GenerationOptions(temperature: 0.3)).content
+        let m = StoryModel.current
+        if m.isLocal { return try await LocalStoryModel.shared.ask(m, instructions: instructions, prompt: prompt) }
+        return try await session(instructions).respond(to: prompt, options: GenerationOptions(temperature: 0.3)).content
     }
 
     /// The song's storyboard, written on this Mac by Apple Intelligence in two steps: a retelling of the lyrics
@@ -482,6 +581,13 @@ final class LiveVideo: ObservableObject {
     private var releasedTrack: ObjectIdentifier?
     private var resuming = false
 
+    /// Who reads the lyrics and plans the shots: Apple Intelligence or Qwen on this Mac (see StoryModel).
+    @Published var storyModel = StoryModel.chosen {
+        didSet { UserDefaults.standard.set(storyModel.rawValue, forKey: "liveVideo.storyModel"); restart() }
+    }
+    @Published private(set) var storyDownload: (model: StoryModel, progress: Double)?
+    private var storyDownloadTask: Task<Void, Never>?
+
     /// The TV (Chromecast with lyrics) shows Live Video instead of the plain karaoke.
     @Published var onTV = UserDefaults.standard.bool(forKey: "liveVideo.onTV") {
         didSet { UserDefaults.standard.set(onTV, forKey: "liveVideo.onTV"); refresh() }
@@ -495,7 +601,7 @@ final class LiveVideo: ObservableObject {
     @Published private(set) var download: (id: String, progress: Double)?
 
     var windowOpen = false
-    var active: Bool { windowOpen || (onTV && TVKaraoke.shared.active) }
+    var active: Bool { FeatureFlags.liveVideo && (windowOpen || (onTV && TVKaraoke.shared.active)) }
 
     var model: LiveVideoModel? {
         // MUSICAMP_LV_MODEL=<part of the folder name>: a model for benchmarks.
@@ -509,6 +615,8 @@ final class LiveVideo: ObservableObject {
     private var idleTimer: Timer?
     private var downloader: ModelDownloader?
     private var lyricsWatch: AnyCancellable?
+    /// The track whose pictures are on screen.
+    private var shownTrack: ObjectIdentifier?
 
     init() {
         // The lyrics arrive or change (found, synced from the audio): illustrate the right version.
@@ -528,7 +636,9 @@ final class LiveVideo: ObservableObject {
 
     /// What a song's pictures depend on: the model, the style, the song and its lyrics.
     static func key(model: LiveVideoModel, style: LiveVideoStyle, title: String, artist: String, lines: [String]) -> String {
-        let s = ["v\(LiveVideoStory.version).\(LiveVideoPlan.version)\(LiveVideo.useDirectorRecipe ? "d" : "p")", model.name, style.rawValue, artist.lowercased(), title.lowercased(), lines.joined(separator: "\n")].joined(separator: "|")
+        // The story model is part of the key when it's Qwen (boards Apple Intelligence wrote keep their key).
+        let reader = StoryModel.resolved
+        let s = ["v\(LiveVideoStory.version).\(LiveVideoPlan.version)\(LiveVideo.useDirectorRecipe ? "d" : "p")\(reader.isLocal ? "." + reader.rawValue : "")", model.name, style.rawValue, artist.lowercased(), title.lowercased(), lines.joined(separator: "\n")].joined(separator: "|")
         return SHA256.hash(data: Data(s.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
     }
 
@@ -544,6 +654,10 @@ final class LiveVideo: ObservableObject {
         let c = Ctl.shared
         guard let t = c.playlist.currentTrack, !t.isStream else { return nil }
         let title = t.songTitle ?? t.title, artist = t.artist ?? ""
+        // No artist/title to look lyrics up with: the video comes from the title alone.
+        guard let wanted = LyricsService.query(for: t, duration: c.audio.duration) else { return Song(title: title, artist: artist, lines: [], times: nil) }
+        // The lyrics service may still hold the previous track's lyrics: wait for this one's.
+        guard let q = LyricsService.shared.query, q.title.lowercased() == wanted.title.lowercased(), q.artist.lowercased() == wanted.artist.lowercased() else { return nil }
         switch LyricsService.shared.state {
         case .loading, .idle: return nil
         case .found(let l):
@@ -560,11 +674,28 @@ final class LiveVideo: ObservableObject {
     func refresh() {
         models = LiveVideoModel.installed()
         guard active else { stopJob(); release(); return }
+        // Another track: drop the previous one's pictures at once (the cover shows until the new ones come).
+        let track = Ctl.shared.playlist.currentTrack.map(ObjectIdentifier.init)
+        if track != shownTrack {
+            shownTrack = track
+            stopJob()
+            board = nil
+            images = [:]
+        }
         Ctl.shared.refreshLyrics(evenIfHidden: true)
         if case .found(let l) = LyricsService.shared.state, l.synced?.isEmpty != false { LyricsService.shared.autoSyncIfUseful() }
         guard let model else { status = L("Live Video needs an image model: Settings → Visualization → Live Video."); board = nil; images = [:]; release(); return }
-        guard AI.languageModelAvailable else { status = AI.unavailableReason ?? "Apple Intelligence is off."; release(); return }
-        guard let song = currentSong() else { status = L("Waiting for the lyrics…"); holdIfStarting(complete: false); return }
+        guard StoryModel.resolved.isLocal || AI.languageModelAvailable else { status = AI.unavailableReason ?? "Apple Intelligence is off."; release(); return }
+        guard let song = currentSong() else {
+            status = L("Waiting for the lyrics…")
+            holdIfStarting(complete: false)
+            // Never keep a song waiting for its lyrics for more than 15 s.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+                guard let self, self.holding, self.currentSong() == nil else { return }
+                self.playNow()
+            }
+            return
+        }
         let key = Self.key(model: model, style: style, title: song.title, artist: song.artist, lines: song.lines)
         holdIfStarting(complete: Self.hasFirstPicture(key))
         guard key != jobKey else { return }
@@ -659,12 +790,20 @@ final class LiveVideo: ObservableObject {
     nonisolated static var useDirectorRecipe: Bool { ProcessInfo.processInfo.environment["MUSICAMP_LV_RECIPE"] == "director" }
 
     /// The storyboard for a song.
+    /// One story model for the whole board (Apple Intelligence or Qwen on this Mac); Qwen is freed when the board
+    /// is done, before the image model paints.
     static func makeBoard(_ song: Song, key: String, style: LiveVideoStyle, director: Bool = useDirectorRecipe) async throws -> LiveVideoBoard {
-        if director {
-            let groups = LiveVideoStory.groups(times: song.times, count: song.lines.count)
-            return try await LiveVideoStory.make(key: key, title: song.title, artist: song.artist, lines: song.lines, groups: groups)
+        let reader = StoryModel.resolved
+        defer { if reader.isLocal { Task { await LocalStoryModel.shared.unload() } } }
+        return try await StoryModel.$using.withValue(reader) {
+            if director {
+                let groups = LiveVideoStory.groups(times: song.times, count: song.lines.count)
+                return try await LiveVideoStory.make(key: key, title: song.title, artist: song.artist, lines: song.lines, groups: groups)
+            }
+            var b = try await LiveVideoPlan.make(key: key, title: song.title, artist: song.artist, lines: song.lines, times: song.times, style: style)
+            b.reasoning?.reader = reader.shortName
+            return b
         }
-        return try await LiveVideoPlan.make(key: key, title: song.title, artist: song.artist, lines: song.lines, times: song.times, style: style)
     }
 
     /// The prompt and negative prompt for picture `i` of a board.
@@ -723,8 +862,15 @@ final class LiveVideo: ObservableObject {
                     : L("Preparing the image model (the first time takes a couple of minutes)…")
             }
             do {
-                guard let (img, _) = try await paint(b, image: i, seed: seed, model: model, style: style) else { return }
+                guard let (img, check) = try await paint(b, image: i, seed: seed, model: model, style: style) else { return }
                 Self.save(img, file)
+                if let check {
+                    // Keep what Vision saw, for the storyboard export.
+                    b.checks[i] = (check.ok ? "ok" : "painted again: " + check.reasons.joined(separator: ", ")) +
+                        " · people \(check.people) · face \(Int(check.faceArea * 100))% · " + check.labels.prefix(5).joined(separator: ", ")
+                    try? JSONEncoder().encode(b).write(to: boardFile)
+                    if current { board = b }
+                }
                 if current, !Task.isCancelled {
                     images[i] = img
                     // The first picture is enough to start the song: the next ones come before their scenes.
@@ -859,6 +1005,25 @@ final class LiveVideo: ObservableObject {
     }
 
     func cancelDownload() { downloader?.cancel(); downloader = nil; download = nil }
+
+    /// Qwen's files (Hugging Face) and MLX's shaders (PyPI) into Models/llm.
+    func startStoryDownload(_ m: StoryModel) {
+        guard storyDownload == nil else { return }
+        storyDownload = (m, 0)
+        storyDownloadTask = Task {
+            do {
+                try await StoryModelDownload.run(m) { p in Task { @MainActor [weak self] in if self?.storyDownload != nil { self?.storyDownload = (m, p) } } }
+                storyDownload = nil
+                objectWillChange.send()
+                restart()
+            } catch {
+                storyDownload = nil
+                if !(error is CancellationError), (error as? URLError)?.code != .cancelled { self.error = error.localizedDescription }
+            }
+        }
+    }
+
+    func cancelStoryDownload() { storyDownloadTask?.cancel(); storyDownloadTask = nil; storyDownload = nil }
 
     /// Bytes used by the picture cache.
     var cacheSize: Int64 {

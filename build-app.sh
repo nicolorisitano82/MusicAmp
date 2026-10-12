@@ -10,6 +10,7 @@ cd "$(dirname "$0")"
 
 # Apple Silicon only (macOS 26): one release build. The App Intents constant values
 # (.build/<module>.swiftconstvalues) are written when a module compiles: if one is missing, make it compile.
+Scripts/mlx-precompiled-shaders.sh
 for m in MusicAmp MusicAmpWidget; do
     [[ -f ".build/$m.swiftconstvalues" ]] || touch Sources/$m/*.swift
 done
@@ -25,6 +26,10 @@ cp "$BIN/MusicAmp" "$APP/Contents/MacOS/MusicAmp"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp -R Resources/en.lproj Resources/it.lproj "$APP/Contents/Resources/"
+# Resource bundles of the Swift packages (tokenizer configs, …); MLX's shaders are downloaded with the model.
+for b in "$BIN"/*.bundle; do
+    [[ "$(basename "$b")" == mlx-swift_Cmlx.bundle ]] || cp -R "$b" "$APP/Contents/Resources/"
+done
 
 # App Intents metadata (Shortcuts actions, widget buttons): what Xcode does, from the constant values the
 # release build wrote (see Package.swift).

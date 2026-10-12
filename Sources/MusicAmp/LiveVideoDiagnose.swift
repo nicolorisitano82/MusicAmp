@@ -145,13 +145,62 @@ enum LiveVideoDiagnose {
         (title as NSString).draw(at: NSPoint(x: 10, y: size.height - 30), withAttributes: [.font: NSFont.boldSystemFont(ofSize: 18), .foregroundColor: NSColor.white])
         for (r, row) in rows.enumerated() {
             let y = Int(size.height) - top - (r + 1) * (w + 6)
-            ((r == 0 ? "before" : "after") as NSString).draw(at: NSPoint(x: 8, y: y + w / 2), withAttributes: [.font: NSFont.systemFont(ofSize: 14, weight: .semibold), .foregroundColor: NSColor.white])
+            ((rows.count == 1 ? "" : (r == 0 ? "before" : "after")) as NSString).draw(at: NSPoint(x: 8, y: y + w / 2), withAttributes: [.font: NSFont.systemFont(ofSize: 14, weight: .semibold), .foregroundColor: NSColor.white])
             for (c, cg) in row.enumerated() {
                 NSImage(cgImage: cg, size: NSSize(width: w, height: w)).draw(in: NSRect(x: label + c * (w + 6), y: y, width: w, height: w))
             }
         }
         img.unlockFocus()
         if let t = img.tiffRepresentation, let rep = NSBitmapImageRep(data: t), let d = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) { try? d.write(to: url) }
+    }
+
+    /// `--livevideo-prepare <title words> [out.jpg]`: makes a played song's whole Live Video into the app's cache
+    /// (same key as when it plays: model, style, tags and lyrics), so it starts complete; saves a contact sheet.
+    static func prepare(_ query: String, sheet: String?) async -> Int32 {
+        let live = LiveVideo.shared
+        guard let model = live.model else { print("no model"); return 1 }
+        let dir = LyricsService.shared.cacheDir
+        let entries = PlayStats.shared.entries.values.filter { ($0.title ?? "").localizedCaseInsensitiveContains(query) }
+        for e in entries {
+            guard let title = e.title, let artist = e.artist else { continue }
+            for d in [e.duration ?? 0, 0] {
+                let q = LyricsService.Query(artist: artist, title: title, album: nil, duration: d, file: nil)
+                guard let data = try? Data(contentsOf: dir.appendingPathComponent(LyricsService.cacheKey(q) + ".json")),
+                      let l = (try? JSONDecoder().decode(Cached.self, from: data))?.lyrics, let synced = l.synced, !synced.isEmpty else { continue }
+                let song = LiveVideo.Song(title: title, artist: artist, lines: synced.map(\.text), times: synced.map(\.time))
+                let key = LiveVideo.key(model: model, style: live.style, title: title, artist: artist, lines: song.lines)
+                let folder = LiveVideo.cacheFolder.appendingPathComponent(key, isDirectory: true)
+                try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                print("\(title) — \(artist), \(model.label), style \(live.style.rawValue), key \(key)")
+                var t = Date()
+                guard var b = try? await LiveVideo.makeBoard(song, key: key, style: live.style) else { print("storyboard failed"); return 1 }
+                try? JSONEncoder().encode(b).write(to: folder.appendingPathComponent("board.json"))
+                print(String(format: "storyboard %.0f s: %d scenes, %d pictures, look %@", Date().timeIntervalSince(t), b.scenes.count, b.imageCount, b.style))
+                print("cast: \(b.characters)")
+                for (i, sc) in b.scenes.enumerated() { print("  \(sc.kind) [picture \(b.imageIndex(i) + 1)\(sc.variation > 0 ? ", again" : "")]: \(b.shotInfo.indices.contains(b.imageIndex(i)) ? b.shotInfo[b.imageIndex(i)].action + " — " + b.shotInfo[b.imageIndex(i)].place + " (" + b.shotInfo[b.imageIndex(i)].framing + ")" : sc.prompt)") }
+                var imgs: [CGImage] = []
+                let seed = UInt32(key.prefix(8), radix: 16) ?? 4242
+                for i in 0..<b.imageCount {
+                    t = Date()
+                    var r = try? await live.paint(b, image: i, seed: seed, model: model, style: live.style)
+                    if r == nil { r = try? await live.paint(b, image: i, seed: seed, model: model, style: live.style) }
+                    guard let (img, check) = r ?? nil else { print("picture \(i + 1): failed"); continue }
+                    LiveVideo.save(img, folder.appendingPathComponent("image\(i).jpg"))
+                    imgs.append(img)
+                    if let check {
+                        b.checks[i] = (check.ok ? "ok" : "painted again: " + check.reasons.joined(separator: ", ")) +
+                            " · people \(check.people) · face \(Int(check.faceArea * 100))% · " + check.labels.prefix(5).joined(separator: ", ")
+                        try? JSONEncoder().encode(b).write(to: folder.appendingPathComponent("board.json"))
+                    }
+                    print(String(format: "picture %d: %.0f s%@", i + 1, Date().timeIntervalSince(t), check.map { $0.ok ? "" : " (Vision: " + $0.reasons.joined(separator: ", ") + ")" } ?? ""))
+                }
+                if let sheet { grid([imgs], title: "\(title) — \(artist)", to: URL(fileURLWithPath: sheet)) }
+                print("ready: play the song with Live Video open")
+                return 0
+            }
+        }
+        print("no played song with synced lyrics matching \"\(query)\"")
+        return 1
     }
 
     static func describe(_ e: Error) -> String {

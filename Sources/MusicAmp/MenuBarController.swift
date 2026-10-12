@@ -12,7 +12,11 @@ final class MenuBarController: NSObject {
         self.ctl = ctl
         super.init()
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: MiniPlayerView(ctl: ctl))
+        // The SwiftUI view reports its size to the popover: without it the popover is placed for one size, then
+        // resizes and ends up well below the menu bar icon.
+        let host = NSHostingController(rootView: MiniPlayerView(ctl: ctl))
+        host.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = host
     }
 
     func setEnabled(_ on: Bool) {
@@ -43,6 +47,12 @@ final class MenuBarController: NSObject {
         if popover.isShown {
             popover.performClose(nil)
         } else {
+            // Size known before showing, so it opens right under the icon.
+            if let v = popover.contentViewController?.view {
+                v.layoutSubtreeIfNeeded()
+                let size = v.fittingSize
+                if size.width > 0, size.height > 0 { popover.contentSize = size }
+            }
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }

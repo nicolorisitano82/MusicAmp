@@ -143,6 +143,19 @@ enum LiveVideoTest {
         } else {
             check(false, "frame renders")
         }
+        // Storyboard PDF: cover, the reasoning page, one page per picture.
+        var pdfBoard = board
+        pdfBoard.shots = ["a young woman in a red coat runs for a train", "a young man reads a letter"]
+        pdfBoard.shotInfo = [LiveVideoPlan.Shot(who: "A", action: "runs for a train", place: "a station", framing: "wide", light: "dusk"),
+                             LiveVideoPlan.Shot(who: "B", action: "reads a letter", place: "a café", framing: "medium", light: "warm")]
+        pdfBoard.reasoning = LiveVideoReasoning(voice: "a woman to a friend", people: "two friends", world: "a station, a café", mood: "dusk",
+                                                theme: "leaving home", meanings: ["she leaves", "he reads her letter"], sections: ["verse", "chorus"],
+                                                cast: ["A: friend — a young woman — red coat"], places: ["a station", "a café"], look: "watercolor")
+        pdfBoard.checks = [0: "ok · people 1"]
+        let pdf = FileManager.default.temporaryDirectory.appendingPathComponent("musicamp-storyboard.pdf")
+        LiveVideoExport.write(pdfBoard, pictures: [red, blue], title: "Test Song", artist: "Test Artist", lyrics: synced, model: "SDXL", to: pdf)
+        let doc = CGPDFDocument(pdf as CFURL)
+        check(doc?.numberOfPages == 2 + pdfBoard.imageCount, "storyboard PDF: cover, how it was made, one page per picture (\(doc?.numberOfPages ?? 0) pages)")
         live.setForTesting(board: nil, images: [:])
 
         // Installed models.
@@ -176,7 +189,50 @@ enum LiveVideoTest {
                 check(false, "storyboard and picture: \(error)")
             }
         }
+        await readerChecks()
         print(fails == 0 ? "ALL OK" : "\(fails) FAILED")
         return fails == 0 ? 0 : 1
+    }
+
+    /// The story model and the code checks on the reader's notes. With MUSICAMP_TEST_QWEN=1 also asks the installed
+    /// Qwen to read the test text (MLX, its shaders, loading and freeing).
+    static func readerChecks() async {
+        // Names: the artist's and people NaturalLanguage recognizes go, the title stays.
+        let notes = "VOICE: a fan speaking to a young woman who looks like Stevie Nicks\nTHEME: Clara Bow glamour, the way Taylor Swift sings it"
+        let n = ReaderCheck.names(in: notes, artist: "Taylor Swift", title: "Clara Bow")
+        check(n.contains("Taylor Swift") && n.contains("Stevie Nicks") && !n.contains("Clara Bow"), "names found, title allowed: \(n)")
+        let stripped = ReaderCheck.strip(notes, artist: "Taylor Swift", title: "Clara Bow")
+        check(!stripped.contains("Stevie") && !stripped.contains("Taylor") && stripped.contains("Clara Bow"), "names stripped: \(stripped)")
+
+        // Copied runs of the lyrics' words (the original test text): four words in a row, not common words only.
+        let copied = ReaderCheck.copied(in: "She stands by the sea; ogni luce nel buio sembrava bright. I know you know it",
+                                        lyrics: lines + ["I know you know it all"], title: "Ritorno")
+        check(copied == ["ogni luce nel buio", "luce nel buio sembrava"], "lyric phrases found: \(copied)")
+        check(ReaderCheck.request("VOICE: a woman leaving her town by night train", lyrics: lines, artist: "", title: "Ritorno") == nil, "clean notes pass")
+
+        // The story model: Apple when Qwen isn't there; the guided instructions only for the 7B.
+        check(StoryModel.$using.withValue(.qwen7) { LiveVideoStory.briefInstructions.contains("NARRATOR:") }, "Qwen 7B gets the guided reader")
+        check(StoryModel.$using.withValue(.qwen14) { !LiveVideoStory.briefInstructions.contains("NARRATOR:") }, "Qwen 14B gets the plain reader")
+        check(!StoryModel.resolved.isLocal || StoryModel.resolved.installed, "story model in use is installed: \(StoryModel.resolved.shortName)")
+
+        // A board saved before `reader` existed still loads.
+        let old = #"{"voice":"v","people":"p","world":"w","mood":"m","theme":"t","meanings":[],"sections":[],"cast":[],"places":[],"look":"oil","posesFixed":[]}"#
+        let r = try? JSONDecoder().decode(LiveVideoReasoning.self, from: Data(old.utf8))
+        check(r?.look == "oil" && r?.reader == "", "old reasoning decodes")
+
+        guard ProcessInfo.processInfo.environment["MUSICAMP_TEST_QWEN"] == "1" else { return }
+        guard let m = [StoryModel.qwen14, .qwen7].first(where: { $0.installed && $0.fitsThisMac }) else { check(false, "no Qwen installed"); return }
+        let t = Date()
+        do {
+            let a = try await StoryModel.$using.withValue(m) {
+                try await LiveVideoStory.ask(LiveVideoStory.briefInstructions, "Song: \"Ritorno\".\nThe lyrics:\n\n" + lines.joined(separator: "\n"))
+            }
+            let p = LiveVideoStory.parse(a)
+            check(!p.voice.isEmpty && !p.characters.isEmpty && !p.theme.isEmpty, String(format: "%@ read the test text in %.1f s", m.shortName, Date().timeIntervalSince(t)))
+            print("     VOICE: \(p.voice)\n     WORLD: \(p.setting)\n     THEME: \(p.theme)")
+        } catch {
+            check(false, "\(m.shortName): \(error)")
+        }
+        await LocalStoryModel.shared.unload()
     }
 }
